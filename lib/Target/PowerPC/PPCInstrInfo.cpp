@@ -51,6 +51,10 @@ cl::desc("Disable compare instruction optimization"), cl::Hidden);
 static cl::opt<bool> DisableVSXFMAMutate("disable-ppc-vsx-fma-mutation",
 cl::desc("Disable VSX FMA instruction mutation"), cl::Hidden);
 
+static cl::opt<bool> VSXSelfCopyCrash("crash-on-ppc-vsx-self-copy",
+cl::desc("Causes the backend to crash instead of generating a nop VSX copy"),
+cl::Hidden);
+
 // Pin the vtable to this file.
 void PPCInstrInfo::anchor() {}
 
@@ -679,15 +683,15 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                unsigned DestReg, unsigned SrcReg,
                                bool KillSrc) const {
   // We can end up with self copies and similar things as a result of VSX copy
-  // legalization. Promote (or just ignore) them here.
+  // legalization. Promote them here.
   const TargetRegisterInfo *TRI = &getRegisterInfo();
   if (PPC::F8RCRegClass.contains(DestReg) &&
       PPC::VSLRCRegClass.contains(SrcReg)) {
     unsigned SuperReg =
       TRI->getMatchingSuperReg(DestReg, PPC::sub_64, &PPC::VSRCRegClass);
 
-    if (SrcReg == SuperReg)
-      return;
+    if (VSXSelfCopyCrash && SrcReg == SuperReg)
+      llvm_unreachable("nop VSX copy");
 
     DestReg = SuperReg;
   } else if (PPC::VRRCRegClass.contains(DestReg) &&
@@ -695,8 +699,8 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     unsigned SuperReg =
       TRI->getMatchingSuperReg(DestReg, PPC::sub_128, &PPC::VSRCRegClass);
 
-    if (SrcReg == SuperReg)
-      return;
+    if (VSXSelfCopyCrash && SrcReg == SuperReg)
+      llvm_unreachable("nop VSX copy");
 
     DestReg = SuperReg;
   } else if (PPC::F8RCRegClass.contains(SrcReg) &&
@@ -704,8 +708,8 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     unsigned SuperReg =
       TRI->getMatchingSuperReg(SrcReg, PPC::sub_64, &PPC::VSRCRegClass);
 
-    if (DestReg == SuperReg)
-      return;
+    if (VSXSelfCopyCrash && DestReg == SuperReg)
+      llvm_unreachable("nop VSX copy");
 
     SrcReg = SuperReg;
   } else if (PPC::VRRCRegClass.contains(SrcReg) &&
@@ -713,8 +717,8 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     unsigned SuperReg =
       TRI->getMatchingSuperReg(SrcReg, PPC::sub_128, &PPC::VSRCRegClass);
 
-    if (DestReg == SuperReg)
-      return;
+    if (VSXSelfCopyCrash && DestReg == SuperReg)
+      llvm_unreachable("nop VSX copy");
 
     SrcReg = SuperReg;
   }
@@ -740,6 +744,8 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     // copies are generated, they are close enough to some use that the
     // lower-latency form is preferable.
     Opc = PPC::XXLOR;
+  else if (PPC::VSFRCRegClass.contains(DestReg, SrcReg))
+    Opc = PPC::XXLORf;
   else if (PPC::CRBITRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::CROR;
   else
@@ -807,6 +813,12 @@ PPCInstrInfo::StoreRegToStackSlot(MachineFunction &MF,
     NonRI = true;
   } else if (PPC::VSRCRegClass.hasSubClassEq(RC)) {
     NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXVD2X))
+                                       .addReg(SrcReg,
+                                               getKillRegState(isKill)),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::STXSDX))
                                        .addReg(SrcReg,
                                                getKillRegState(isKill)),
                                        FrameIdx));
@@ -900,6 +912,10 @@ PPCInstrInfo::LoadRegFromStackSlot(MachineFunction &MF, DebugLoc DL,
     NonRI = true;
   } else if (PPC::VSRCRegClass.hasSubClassEq(RC)) {
     NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXVD2X), DestReg),
+                                       FrameIdx));
+    NonRI = true;
+  } else if (PPC::VSFRCRegClass.hasSubClassEq(RC)) {
+    NewMIs.push_back(addFrameReference(BuildMI(MF, DL, get(PPC::LXSDX), DestReg),
                                        FrameIdx));
     NonRI = true;
   } else if (PPC::VRSAVERCRegClass.hasSubClassEq(RC)) {
@@ -1634,7 +1650,7 @@ protected:
 
         // The addend and this instruction must be in the same block.
 
-        if (AddendMI->getParent() != MI->getParent())
+        if (!AddendMI || AddendMI->getParent() != MI->getParent())
           continue;
 
         // The addend must be a full copy within the same register class.
@@ -1642,9 +1658,18 @@ protected:
         if (!AddendMI->isFullCopy())
           continue;
 
-        if (MRI.getRegClass(AddendMI->getOperand(0).getReg()) !=
-            MRI.getRegClass(AddendMI->getOperand(1).getReg()))
-          continue;
+        unsigned AddendSrcReg = AddendMI->getOperand(1).getReg();
+        if (TargetRegisterInfo::isVirtualRegister(AddendSrcReg)) {
+          if (MRI.getRegClass(AddendMI->getOperand(0).getReg()) !=
+              MRI.getRegClass(AddendSrcReg))
+            continue;
+        } else {
+          // If AddendSrcReg is a physical register, make sure the destination
+          // register class contains it.
+          if (!MRI.getRegClass(AddendMI->getOperand(0).getReg())
+                ->contains(AddendSrcReg))
+            continue;
+        }
 
         // In theory, there could be other uses of the addend copy before this
         // fma.  We could deal with this, but that would require additional
@@ -1674,8 +1699,8 @@ protected:
           OtherProdOp  = 2;
         }
 
-	// If there are no killed product operands, then this transformation is
-	// likely not profitable.
+        // If there are no killed product operands, then this transformation is
+        // likely not profitable.
         if (!KilledProdOp)
           continue;
 
@@ -1964,6 +1989,80 @@ INITIALIZE_PASS(PPCVSXCopy, DEBUG_TYPE,
 char PPCVSXCopy::ID = 0;
 FunctionPass*
 llvm::createPPCVSXCopyPass() { return new PPCVSXCopy(); }
+
+#undef DEBUG_TYPE
+#define DEBUG_TYPE "ppc-vsx-copy-cleanup"
+
+namespace llvm {
+  void initializePPCVSXCopyCleanupPass(PassRegistry&);
+}
+
+namespace {
+  // PPCVSXCopyCleanup pass - We sometimes end up generating self copies of VSX
+  // registers (mostly because the ABI code still places all values into the
+  // "traditional" floating-point and vector registers). Remove them here.
+  struct PPCVSXCopyCleanup : public MachineFunctionPass {
+    static char ID;
+    PPCVSXCopyCleanup() : MachineFunctionPass(ID) {
+      initializePPCVSXCopyCleanupPass(*PassRegistry::getPassRegistry());
+    }
+
+    const PPCTargetMachine *TM;
+    const PPCInstrInfo *TII;
+
+protected:
+    bool processBlock(MachineBasicBlock &MBB) {
+      bool Changed = false;
+
+      SmallVector<MachineInstr *, 4> ToDelete;
+      for (MachineBasicBlock::iterator I = MBB.begin(), IE = MBB.end();
+           I != IE; ++I) {
+        MachineInstr *MI = I;
+        if (MI->getOpcode() == PPC::XXLOR &&
+            MI->getOperand(0).getReg() == MI->getOperand(1).getReg() &&
+            MI->getOperand(0).getReg() == MI->getOperand(2).getReg())
+          ToDelete.push_back(MI);
+      }
+
+      if (!ToDelete.empty())
+        Changed = true;
+
+      for (unsigned i = 0, ie = ToDelete.size(); i != ie; ++i) {
+        DEBUG(dbgs() << "Removing VSX self-copy: " << *ToDelete[i]);
+        ToDelete[i]->eraseFromParent();
+      }
+
+      return Changed;
+    }
+
+public:
+    virtual bool runOnMachineFunction(MachineFunction &MF) {
+      TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
+      TII = TM->getInstrInfo();
+
+      bool Changed = false;
+
+      for (MachineFunction::iterator I = MF.begin(); I != MF.end();) {
+        MachineBasicBlock &B = *I++;
+        if (processBlock(B))
+          Changed = true;
+      }
+
+      return Changed;
+    }
+
+    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+      MachineFunctionPass::getAnalysisUsage(AU);
+    }
+  };
+}
+
+INITIALIZE_PASS(PPCVSXCopyCleanup, DEBUG_TYPE,
+                "PowerPC VSX Copy Cleanup", false, false)
+
+char PPCVSXCopyCleanup::ID = 0;
+FunctionPass*
+llvm::createPPCVSXCopyCleanupPass() { return new PPCVSXCopyCleanup(); }
 
 #undef DEBUG_TYPE
 #define DEBUG_TYPE "ppc-early-ret"

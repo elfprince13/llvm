@@ -19,6 +19,7 @@
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCDwarf.h"
+#include "llvm/MC/MCLinkerOptimizationHint.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/Support/DataTypes.h"
 #include <string>
@@ -466,6 +467,10 @@ public:
   ///
   virtual void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) = 0;
 
+  /// \brief Emit a Linker Optimization Hint (LOH) directive.
+  /// \param Args - Arguments of the LOH.
+  virtual void EmitLOHDirective(MCLOHType Kind, const MCLOHArgs &Args) {}
+
   /// EmitCommonSymbol - Emit a common symbol.
   ///
   /// @param Symbol - The common symbol to emit.
@@ -758,7 +763,8 @@ MCStreamer *createAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
 /// Takes ownership of \p TAB and \p CE.
 MCStreamer *createMachOStreamer(MCContext &Ctx, MCAsmBackend &TAB,
                                 raw_ostream &OS, MCCodeEmitter *CE,
-                                bool RelaxAll = false);
+                                bool RelaxAll = false,
+                                bool LabelSections = false);
 
 /// createWinCOFFStreamer - Create a machine code streamer which will
 /// generate Microsoft COFF format object files.

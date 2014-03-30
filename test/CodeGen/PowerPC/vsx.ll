@@ -465,7 +465,7 @@ define <2 x double> @test54(<2 x double> %a, <2 x double> %b) {
   ret <2 x double> %v
 
 ; CHECK-LABEL: @test54
-; CHECK: xxpermdi 34, 34, 35, 1
+; CHECK: xxpermdi 34, 34, 35, 2
 ; CHECK: blr
 }
 
@@ -484,6 +484,99 @@ define <2 x i64> @test56(<2 x i64> %a, <2 x i64> %b) {
 
 ; CHECK-LABEL: @test56
 ; CHECK: xxpermdi 34, 34, 35, 3
+; CHECK: blr
+}
+
+define <2 x i64> @test60(<2 x i64> %a, <2 x i64> %b) {
+  %v = shl <2 x i64> %a, %b
+  ret <2 x i64> %v
+
+; CHECK-LABEL: @test60
+; This should scalarize, and the current code quality is not good.
+; CHECK: stxvd2x
+; CHECK: stxvd2x
+; CHECK: sld
+; CHECK: sld
+; CHECK: lxvd2x
+; CHECK: blr
+}
+
+define <2 x i64> @test61(<2 x i64> %a, <2 x i64> %b) {
+  %v = lshr <2 x i64> %a, %b
+  ret <2 x i64> %v
+
+; CHECK-LABEL: @test61
+; This should scalarize, and the current code quality is not good.
+; CHECK: stxvd2x
+; CHECK: stxvd2x
+; CHECK: srd
+; CHECK: srd
+; CHECK: lxvd2x
+; CHECK: blr
+}
+
+define <2 x i64> @test62(<2 x i64> %a, <2 x i64> %b) {
+  %v = ashr <2 x i64> %a, %b
+  ret <2 x i64> %v
+
+; CHECK-LABEL: @test62
+; This should scalarize, and the current code quality is not good.
+; CHECK: stxvd2x
+; CHECK: stxvd2x
+; CHECK: srad
+; CHECK: srad
+; CHECK: lxvd2x
+; CHECK: blr
+}
+
+define double @test63(<2 x double> %a) {
+  %v = extractelement <2 x double> %a, i32 0
+  ret double %v
+
+; CHECK-LABEL: @test63
+; CHECK: xxlor 1, 34, 34
+; CHECK: blr
+}
+
+define double @test64(<2 x double> %a) {
+  %v = extractelement <2 x double> %a, i32 1
+  ret double %v
+
+; CHECK-LABEL: @test64
+; CHECK: xxpermdi 1, 34, 34, 2
+; CHECK: blr
+}
+
+define <2 x i1> @test65(<2 x i64> %a, <2 x i64> %b) {
+  %w = icmp eq <2 x i64> %a, %b
+  ret <2 x i1> %w
+
+; CHECK-LABEL: @test65
+; CHECK: vcmpequw 2, 2, 3
+; CHECK: blr
+}
+
+define <2 x i1> @test66(<2 x i64> %a, <2 x i64> %b) {
+  %w = icmp ne <2 x i64> %a, %b
+  ret <2 x i1> %w
+
+; CHECK-LABEL: @test66
+; CHECK: vcmpequw {{[0-9]+}}, 2, 3
+; CHECK: xxlnor 34, {{[0-9]+}}, {{[0-9]+}}
+; CHECK: blr
+}
+
+define <2 x i1> @test67(<2 x i64> %a, <2 x i64> %b) {
+  %w = icmp ult <2 x i64> %a, %b
+  ret <2 x i1> %w
+
+; CHECK-LABEL: @test67
+; This should scalarize, and the current code quality is not good.
+; CHECK: stxvd2x
+; CHECK: stxvd2x
+; CHECK: cmpld
+; CHECK: cmpld
+; CHECK: lxvd2x
 ; CHECK: blr
 }
 

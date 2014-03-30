@@ -101,52 +101,6 @@ class BumpPtrAllocator {
   BumpPtrAllocator(const BumpPtrAllocator &) LLVM_DELETED_FUNCTION;
   void operator=(const BumpPtrAllocator &) LLVM_DELETED_FUNCTION;
 
-  /// \brief Allocate at least this many bytes of memory in a slab.
-  size_t SlabSize;
-
-  /// \brief Threshold above which allocations to go into a dedicated slab.
-  size_t SizeThreshold;
-
-  /// \brief The default allocator used if one is not provided.
-  MallocSlabAllocator DefaultSlabAllocator;
-
-  /// \brief The underlying allocator we use to get slabs of memory.
-  ///
-  /// This defaults to MallocSlabAllocator, which wraps malloc, but it could be
-  /// changed to use a custom allocator.
-  SlabAllocator &Allocator;
-
-  /// \brief The slab that we are currently allocating into.
-  MemSlab *CurSlab;
-
-  /// \brief The current pointer into the current slab.
-  ///
-  /// This points to the next free byte in the slab.
-  char *CurPtr;
-
-  /// \brief The end of the current slab.
-  char *End;
-
-  /// \brief How many bytes we've allocated.
-  ///
-  /// Used so that we can compute how much space was wasted.
-  size_t BytesAllocated;
-
-  /// \brief Aligns \c Ptr to \c Alignment bytes, rounding up.
-  ///
-  /// Alignment should be a power of two.  This method rounds up, so
-  /// AlignPtr(7, 4) == 8 and AlignPtr(8, 4) == 8.
-  static char *AlignPtr(char *Ptr, size_t Alignment);
-
-  /// \brief Allocate a new slab and move the bump pointers over into the new
-  /// slab, modifying CurPtr and End.
-  void StartNewSlab();
-
-  /// \brief Deallocate all memory slabs after and including this one.
-  void DeallocateSlabs(MemSlab *Slab);
-
-  template <typename T> friend class SpecificBumpPtrAllocator;
-
 public:
   BumpPtrAllocator(size_t size = 4096, size_t threshold = 4096);
   BumpPtrAllocator(size_t size, size_t threshold, SlabAllocator &allocator);
@@ -179,12 +133,59 @@ public:
 
   void Deallocate(const void * /*Ptr*/) {}
 
-  unsigned GetNumSlabs() const;
+  size_t GetNumSlabs() const { return NumSlabs; }
 
   void PrintStats() const;
 
   /// \brief Returns the total physical memory allocated by this allocator.
   size_t getTotalMemory() const;
+
+private:
+  /// \brief Allocate at least this many bytes of memory in a slab.
+  size_t SlabSize;
+
+  /// \brief Threshold above which allocations to go into a dedicated slab.
+  size_t SizeThreshold;
+
+  /// \brief The default allocator used if one is not provided.
+  MallocSlabAllocator DefaultSlabAllocator;
+
+  /// \brief The underlying allocator we use to get slabs of memory.
+  ///
+  /// This defaults to MallocSlabAllocator, which wraps malloc, but it could be
+  /// changed to use a custom allocator.
+  SlabAllocator &Allocator;
+
+  /// \brief The slab that we are currently allocating into.
+  MemSlab *CurSlab;
+
+  /// \brief The current pointer into the current slab.
+  ///
+  /// This points to the next free byte in the slab.
+  char *CurPtr;
+
+  /// \brief The end of the current slab.
+  char *End;
+
+  /// \brief How many bytes we've allocated.
+  ///
+  /// Used so that we can compute how much space was wasted.
+  size_t BytesAllocated;
+
+  /// \brief How many slabs we've allocated.
+  ///
+  /// Used to scale the size of each slab and reduce the number of allocations
+  /// for extremely heavy memory use scenarios.
+  size_t NumSlabs;
+
+  /// \brief Allocate a new slab and move the bump pointers over into the new
+  /// slab, modifying CurPtr and End.
+  void StartNewSlab();
+
+  /// \brief Deallocate all memory slabs after and including this one.
+  void DeallocateSlabs(MemSlab *Slab);
+
+  template <typename T> friend class SpecificBumpPtrAllocator;
 };
 
 /// \brief A BumpPtrAllocator that allows only elements of a specific type to be
@@ -213,7 +214,7 @@ public:
       char *End = Slab == Allocator.CurSlab ? Allocator.CurPtr
                                             : (char *)Slab + Slab->Size;
       for (char *Ptr = (char *)(Slab + 1); Ptr < End; Ptr += sizeof(T)) {
-        Ptr = Allocator.AlignPtr(Ptr, alignOf<T>());
+        Ptr = alignPtr(Ptr, alignOf<T>());
         if (Ptr + sizeof(T) <= End)
           reinterpret_cast<T *>(Ptr)->~T();
       }

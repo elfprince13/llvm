@@ -116,7 +116,8 @@ MCObjectWriter *MipsAsmBackend::createObjectWriter(raw_ostream &OS) const {
 /// data fragment, at the offset specified by the fixup and following the
 /// fixup kind as appropriate.
 void MipsAsmBackend::applyFixup(const MCFixup &Fixup, char *Data,
-                                unsigned DataSize, uint64_t Value) const {
+                                unsigned DataSize, uint64_t Value,
+                                bool IsPCRel) const {
   MCFixupKind Kind = Fixup.getKind();
   Value = adjustFixupValue(Fixup, Value);
 
@@ -254,7 +255,7 @@ void MipsAsmBackend::processFixupValue(const MCAssembler &Asm,
                                        const MCAsmLayout &Layout,
                                        const MCFixup &Fixup,
                                        const MCFragment *DF,
-                                       MCValue &Target,
+                                       const MCValue &Target,
                                        uint64_t &Value,
                                        bool &IsResolved) {
   // At this point we'll ignore the value returned by adjustFixupValue as
