@@ -11,8 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "mips-subtarget"
-
 #include "MipsMachineFunction.h"
 #include "Mips.h"
 #include "MipsRegisterInfo.h"
@@ -25,12 +23,13 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 
+using namespace llvm;
+
+#define DEBUG_TYPE "mips-subtarget"
+
 #define GET_SUBTARGETINFO_TARGET_DESC
 #define GET_SUBTARGETINFO_CTOR
 #include "MipsGenSubtargetInfo.inc"
-
-
-using namespace llvm;
 
 // FIXME: Maybe this should be on by default when Mips16 is specified
 //
@@ -77,17 +76,16 @@ void MipsSubtarget::anchor() { }
 
 MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
                              const std::string &FS, bool little,
-                             Reloc::Model _RM, MipsTargetMachine *_TM) :
-  MipsGenSubtargetInfo(TT, CPU, FS),
-  MipsArchVersion(Mips32), MipsABI(UnknownABI), IsLittle(little),
-  IsSingleFloat(false), IsFP64bit(false), IsGP64bit(false), HasVFPU(false),
-  HasCnMips(false), IsLinux(true), HasSEInReg(false), HasCondMov(false),
-  HasSwap(false), HasBitCount(false), HasFPIdx(false),
-  InMips16Mode(false), InMips16HardFloat(Mips16HardFloat),
-  InMicroMipsMode(false), HasDSP(false), HasDSPR2(false),
-  AllowMixed16_32(Mixed16_32 | Mips_Os16), Os16(Mips_Os16), HasMSA(false),
-  RM(_RM), OverrideMode(NoOverride), TM(_TM), TargetTriple(TT)
-{
+                             Reloc::Model _RM, MipsTargetMachine *_TM)
+    : MipsGenSubtargetInfo(TT, CPU, FS), MipsArchVersion(Mips32),
+      MipsABI(UnknownABI), IsLittle(little), IsSingleFloat(false),
+      IsFP64bit(false), IsNaN2008bit(false), IsGP64bit(false), HasVFPU(false),
+      HasCnMips(false), IsLinux(true), HasSEInReg(false), HasCondMov(false),
+      HasSwap(false), HasBitCount(false), HasFPIdx(false), InMips16Mode(false),
+      InMips16HardFloat(Mips16HardFloat), InMicroMipsMode(false), HasDSP(false),
+      HasDSPR2(false), AllowMixed16_32(Mixed16_32 | Mips_Os16), Os16(Mips_Os16),
+      HasMSA(false), RM(_RM), OverrideMode(NoOverride), TM(_TM),
+      TargetTriple(TT) {
   std::string CPUName = CPU;
   CPUName = selectMipsCPU(TT, CPUName);
 
@@ -108,6 +106,19 @@ MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
 
   // Initialize scheduling itinerary for the specified CPU.
   InstrItins = getInstrItineraryForCPU(CPUName);
+
+  // Don't even attempt to generate code for MIPS-I, MIPS-II, MIPS-III, and
+  // MIPS-V. They have not been tested and currently exist for the integrated
+  // assembler only.
+  if (MipsArchVersion == Mips1)
+    report_fatal_error("Code generation for MIPS-I is not implemented", false);
+  if (MipsArchVersion == Mips2)
+    report_fatal_error("Code generation for MIPS-II is not implemented", false);
+  if (MipsArchVersion == Mips3)
+    report_fatal_error("Code generation for MIPS-III is not implemented",
+                       false);
+  if (MipsArchVersion == Mips5)
+    report_fatal_error("Code generation for MIPS-V is not implemented", false);
 
   // Assert exactly one ABI was chosen.
   assert(MipsABI != UnknownABI);
@@ -131,6 +142,8 @@ MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
     IsLinux = false;
 
   // Set UseSmallSection.
+  // TODO: Investigate the IsLinux check. I suspect it's really checking for
+  //       bare-metal.
   UseSmallSection = !IsLinux && (RM == Reloc::Static);
   // set some subtarget specific features
   if (inMips16Mode())

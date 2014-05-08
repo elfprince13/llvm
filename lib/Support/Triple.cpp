@@ -24,6 +24,7 @@ const char *Triple::getArchTypeName(ArchType Kind) {
   case arm:         return "arm";
   case armeb:       return "armeb";
   case arm64:       return "arm64";
+  case arm64_be:    return "arm64_be";
   case hexagon:     return "hexagon";
   case mips:        return "mips";
   case mipsel:      return "mipsel";
@@ -57,7 +58,7 @@ const char *Triple::getArchTypeName(ArchType Kind) {
 const char *Triple::getArchTypePrefix(ArchType Kind) {
   switch (Kind) {
   default:
-    return 0;
+    return nullptr;
 
   case aarch64:
   case aarch64_be:  return "aarch64";
@@ -67,7 +68,8 @@ const char *Triple::getArchTypePrefix(ArchType Kind) {
   case thumb:
   case thumbeb:     return "arm";
 
-  case arm64:       return "arm64";
+  case arm64:       
+  case arm64_be:    return "arm64";
 
   case ppc64:
   case ppc64le:
@@ -178,6 +180,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("arm", arm)
     .Case("armeb", armeb)
     .Case("arm64", arm64)
+    .Case("arm64_be", arm64_be)
     .Case("mips", mips)
     .Case("mipsel", mipsel)
     .Case("mips64", mips64)
@@ -210,7 +213,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
 // Returns architecture name that is understood by the target assembler.
 const char *Triple::getArchNameForAssembler() {
   if (!isOSDarwin() && getVendor() != Triple::Apple)
-    return NULL;
+    return nullptr;
 
   return StringSwitch<const char*>(getArchName())
     .Case("i386", "i386")
@@ -225,6 +228,7 @@ const char *Triple::getArchNameForAssembler() {
     .Cases("armv7", "thumbv7", "armv7")
     .Case("armeb", "armeb")
     .Case("arm64", "arm64")
+    .Case("arm64_be", "arm64")
     .Case("r600", "r600")
     .Case("nvptx", "nvptx")
     .Case("nvptx64", "nvptx64")
@@ -232,7 +236,7 @@ const char *Triple::getArchNameForAssembler() {
     .Case("amdil", "amdil")
     .Case("spir", "spir")
     .Case("spir64", "spir64")
-    .Default(NULL);
+    .Default(nullptr);
 }
 
 static Triple::ArchType parseArch(StringRef ArchName) {
@@ -257,6 +261,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .Case("thumbeb", Triple::thumbeb)
     .StartsWith("thumbebv", Triple::thumbeb)
     .Case("arm64", Triple::arm64)
+    .Case("arm64_be", Triple::arm64_be)
     .Case("msp430", Triple::msp430)
     .Cases("mips", "mipseb", "mipsallegrex", Triple::mips)
     .Cases("mipsel", "mipsallegrexel", Triple::mipsel)
@@ -434,6 +439,8 @@ std::string Triple::normalize(StringRef Str) {
   if (Components.size() > 3)
     Environment = parseEnvironment(Components[3]);
   ObjectFormatType ObjectFormat = UnknownObjectFormat;
+  if (Components.size() > 4)
+    ObjectFormat = parseFormat(Components[4]);
 
   // Note which components are already in their final position.  These will not
   // be moved.
@@ -544,16 +551,27 @@ std::string Triple::normalize(StringRef Str) {
   if (OS == Triple::Win32) {
     Components.resize(4);
     Components[2] = "windows";
-    if (Environment == UnknownEnvironment && ObjectFormat == UnknownObjectFormat)
-      Components[3] = "msvc";
+    if (Environment == UnknownEnvironment) {
+      if (ObjectFormat == UnknownObjectFormat || ObjectFormat == Triple::COFF)
+        Components[3] = "msvc";
+      else
+        Components[3] = getObjectFormatTypeName(ObjectFormat);
+    }
   } else if (OS == Triple::MinGW32) {
     Components.resize(4);
     Components[2] = "windows";
-    Components[3] = (ObjectFormat == Triple::ELF) ? "gnuelf" : "gnu";
+    Components[3] = "gnu";
   } else if (OS == Triple::Cygwin) {
     Components.resize(4);
     Components[2] = "windows";
     Components[3] = "cygnus";
+  }
+  if (OS == Triple::MinGW32 || OS == Triple::Cygwin ||
+      (OS == Triple::Win32 && Environment != UnknownEnvironment)) {
+    if (ObjectFormat != UnknownObjectFormat && ObjectFormat != Triple::COFF) {
+      Components.resize(5);
+      Components[4] = getObjectFormatTypeName(ObjectFormat);
+    }
   }
 
   // Stick the corrected components back together to form the normalized string.
@@ -716,7 +734,12 @@ void Triple::setEnvironment(EnvironmentType Kind) {
 }
 
 void Triple::setObjectFormat(ObjectFormatType Kind) {
-  setEnvironmentName(getObjectFormatTypeName(Kind));
+  if (Environment == UnknownEnvironment)
+    return setEnvironmentName(getObjectFormatTypeName(Kind));
+
+  Twine Env = getEnvironmentTypeName(Environment) + Twine("-") +
+              getObjectFormatTypeName(Kind);
+  setEnvironmentName(Env.str());
 }
 
 void Triple::setArchName(StringRef Str) {
@@ -779,6 +802,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
     return 32;
 
   case llvm::Triple::arm64:
+  case llvm::Triple::arm64_be:
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
   case llvm::Triple::mips64:
@@ -813,6 +837,8 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::UnknownArch:
   case Triple::aarch64:
   case Triple::aarch64_be:
+  case Triple::arm64:
+  case Triple::arm64_be:
   case Triple::msp430:
   case Triple::systemz:
   case Triple::ppc64le:
@@ -846,7 +872,6 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::sparcv9:   T.setArch(Triple::sparc);   break;
   case Triple::x86_64:    T.setArch(Triple::x86);     break;
   case Triple::spir64:    T.setArch(Triple::spir);    break;
-  case Triple::arm64:     T.setArch(Triple::arm);     break;
   }
   return T;
 }
@@ -856,6 +881,7 @@ Triple Triple::get64BitArchVariant() const {
   switch (getArch()) {
   case Triple::UnknownArch:
   case Triple::amdil:
+  case Triple::arm:
   case Triple::armeb:
   case Triple::hexagon:
   case Triple::le32:
@@ -880,6 +906,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::systemz:
   case Triple::x86_64:
   case Triple::arm64:
+  case Triple::arm64_be:
     // Already 64-bit.
     break;
 
@@ -890,7 +917,6 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::sparc:   T.setArch(Triple::sparcv9);   break;
   case Triple::x86:     T.setArch(Triple::x86_64);    break;
   case Triple::spir:    T.setArch(Triple::spir64);    break;
-  case Triple::arm:     T.setArch(Triple::arm64);     break;
   }
   return T;
 }

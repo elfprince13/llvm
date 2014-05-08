@@ -28,6 +28,16 @@ namespace PBQP {
   public:
     typedef unsigned NodeId;
     typedef unsigned EdgeId;
+
+    /// \brief Returns a value representing an invalid (non-existent) node.
+    static NodeId invalidNodeId() {
+      return std::numeric_limits<NodeId>::max();
+    }
+
+    /// \brief Returns a value representing an invalid (non-existent) edge.
+    static EdgeId invalidEdgeId() {
+      return std::numeric_limits<EdgeId>::max();
+    }
   };
 
   /// PBQP Graph class.
@@ -326,7 +336,7 @@ namespace PBQP {
     /// each node in the graph, and handleAddEdge for each edge, to give the
     /// solver an opportunity to set up any requried metadata.
     void setSolver(SolverT &S) {
-      assert(Solver == nullptr && "Solver already set. Call unsetSolver().");
+      assert(!Solver && "Solver already set. Call unsetSolver().");
       Solver = &S;
       for (auto NId : nodeIds())
         Solver->handleAddNode(NId);
@@ -336,7 +346,7 @@ namespace PBQP {
 
     /// \brief Release from solver instance.
     void unsetSolver() {
-      assert(Solver != nullptr && "Solver not set.");
+      assert(Solver && "Solver not set.");
       Solver = nullptr;
     }
 
@@ -464,16 +474,6 @@ namespace PBQP {
         return E.getN2Id();
       } // else
       return E.getN1Id();
-    }
-
-    /// \brief Returns a value representing an invalid (non-existant) node.
-    static NodeId invalidNodeId() {
-      return std::numeric_limits<NodeId>::max();
-    }
-
-    /// \brief Returns a value representing an invalid (non-existant) edge.
-    static EdgeId invalidEdgeId() {
-      return std::numeric_limits<EdgeId>::max();
     }
 
     /// \brief Get the edge connecting two nodes.

@@ -53,21 +53,42 @@ void GlobalValue::destroyConstant() {
 /// copyAttributesFrom - copy all additional attributes (those not needed to
 /// create a GlobalValue) from the GlobalValue Src to this one.
 void GlobalValue::copyAttributesFrom(const GlobalValue *Src) {
-  setAlignment(Src->getAlignment());
-  setSection(Src->getSection());
+  if (!isa<GlobalAlias>(this)) {
+    setAlignment(Src->getAlignment());
+    setSection(Src->getSection());
+  }
+
   setVisibility(Src->getVisibility());
   setUnnamedAddr(Src->hasUnnamedAddr());
   setDLLStorageClass(Src->getDLLStorageClass());
 }
 
+unsigned GlobalValue::getAlignment() const {
+  if (auto *GA = dyn_cast<GlobalAlias>(this))
+    return GA->getAliasedGlobal()->getAlignment();
+
+  return (1u << Alignment) >> 1;
+}
+
 void GlobalValue::setAlignment(unsigned Align) {
-  assert((!isa<GlobalAlias>(this) || !Align) &&
+  assert((!isa<GlobalAlias>(this)) &&
          "GlobalAlias should not have an alignment!");
   assert((Align & (Align-1)) == 0 && "Alignment is not a power of 2!");
   assert(Align <= MaximumAlignment &&
          "Alignment is greater than MaximumAlignment!");
   Alignment = Log2_32(Align) + 1;
   assert(getAlignment() == Align && "Alignment representation error!");
+}
+
+const std::string &GlobalValue::getSection() const {
+  if (auto *GA = dyn_cast<GlobalAlias>(this))
+    return GA->getAliasedGlobal()->getSection();
+  return Section;
+}
+
+void GlobalValue::setSection(StringRef S) {
+  assert(!isa<GlobalAlias>(this) && "GlobalAlias should not have a section!");
+  Section = S;
 }
 
 bool GlobalValue::isDeclaration() const {
@@ -96,7 +117,7 @@ GlobalVariable::GlobalVariable(Type *Ty, bool constant, LinkageTypes Link,
   : GlobalValue(PointerType::get(Ty, AddressSpace),
                 Value::GlobalVariableVal,
                 OperandTraits<GlobalVariable>::op_begin(this),
-                InitVal != 0, Link, Name),
+                InitVal != nullptr, Link, Name),
     isConstantGlobal(constant), threadLocalMode(TLMode),
     isExternallyInitializedConstant(isExternallyInitialized) {
   if (InitVal) {
@@ -117,7 +138,7 @@ GlobalVariable::GlobalVariable(Module &M, Type *Ty, bool constant,
   : GlobalValue(PointerType::get(Ty, AddressSpace),
                 Value::GlobalVariableVal,
                 OperandTraits<GlobalVariable>::op_begin(this),
-                InitVal != 0, Link, Name),
+                InitVal != nullptr, Link, Name),
     isConstantGlobal(constant), threadLocalMode(TLMode),
     isExternallyInitializedConstant(isExternallyInitialized) {
   if (InitVal) {
@@ -171,9 +192,9 @@ void GlobalVariable::replaceUsesOfWithOnConstant(Value *From, Value *To,
 }
 
 void GlobalVariable::setInitializer(Constant *InitVal) {
-  if (InitVal == 0) {
+  if (!InitVal) {
     if (hasInitializer()) {
-      Op<0>().set(0);
+      Op<0>().set(nullptr);
       NumOperands = 0;
     }
   } else {
@@ -260,7 +281,7 @@ GlobalValue *GlobalAlias::getAliasedGlobal() {
   for (;;) {
     GlobalValue *GV = getAliaseeGV(GA);
     if (!Visited.insert(GV))
-      return 0;
+      return nullptr;
 
     // Iterate over aliasing chain.
     GA = dyn_cast<GlobalAlias>(GV);

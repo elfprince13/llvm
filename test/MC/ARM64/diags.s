@@ -8,7 +8,7 @@ foo:
   ldr x3, (foo + 4)
   ldr x3, [foo + 4]
 ; CHECK:  ldr x3, foo+4               ; encoding: [0bAAA00011,A,A,0x58]
-; CHECK:                              ;   fixup A - offset: 0, value: foo+4, kind: fixup_arm64_pcrel_imm19
+; CHECK:                              ;   fixup A - offset: 0, value: foo+4, kind: fixup_arm64_ldr_pcrel_imm19
 ; CHECK-ERRORS: error: register expected
 
 ; The last argument should be flagged as an error.  rdar://9576009
@@ -33,47 +33,59 @@ foo:
 
         ldur x0, [x1, #-257]
 
-; CHECK-ERRORS: error: index must be a multiple of 8 in range [0,32760].
+; CHECK-ERRORS: error: index must be a multiple of 8 in range [0, 32760].
 ; CHECK-ERRORS:         ldr x0, [x0, #804]
 ; CHECK-ERRORS:                 ^
-; CHECK-ERRORS: error: index must be a multiple of 4 in range [0,16380].
+; CHECK-ERRORS: error: index must be a multiple of 4 in range [0, 16380].
 ; CHECK-ERRORS:         ldr w0, [x0, #802]
 ; CHECK-ERRORS:                 ^
-; CHECK-ERRORS: error: index must be an integer in range [-256,255].
+; CHECK-ERRORS: error: index must be an integer in range [-256, 255].
 ; CHECK-ERRORS:         ldr x0, [x0, #804]!
 ; CHECK-ERRORS:                 ^
-; CHECK-ERRORS: error: index must be an integer in range [-256,255].
+; CHECK-ERRORS: error: index must be an integer in range [-256, 255].
 ; CHECK-ERRORS:         ldr w0, [w0, #301]!
 ; CHECK-ERRORS:                 ^
-; CHECK-ERRORS: error: index must be an integer in range [-256,255].
+; CHECK-ERRORS: error: index must be an integer in range [-256, 255].
 ; CHECK-ERRORS:         ldr x0, [x0], #804
 ; CHECK-ERRORS:                       ^
-; CHECK-ERRORS: error: index must be an integer in range [-256,255].
+; CHECK-ERRORS: error: index must be an integer in range [-256, 255].
 ; CHECK-ERRORS:         ldr w0, [w0], #301
 ; CHECK-ERRORS:                       ^
-; CHECK-ERRORS: error: index must be a multiple of 4 in range [-256,252].
+; CHECK-ERRORS: error: index must be a multiple of 4 in range [-256, 252].
 ; CHECK-ERRORS:         ldp w3, w4, [x5, #11]!
 ; CHECK-ERRORS:                     ^
-; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512,504].
+; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512, 504].
 ; CHECK-ERRORS:         ldp x3, x4, [x5, #12]!
 ; CHECK-ERRORS:                     ^
-; CHECK-ERRORS: error: index must be a multiple of 16 in range [-1024,1008].
+; CHECK-ERRORS: error: index must be a multiple of 16 in range [-1024, 1008].
 ; CHECK-ERRORS:         ldp q3, q4, [x5, #12]!
 ; CHECK-ERRORS:                     ^
-; CHECK-ERRORS: error: index must be a multiple of 4 in range [-256,252].
+; CHECK-ERRORS: error: index must be a multiple of 4 in range [-256, 252].
 ; CHECK-ERRORS:         ldp w3, w4, [x5], #11
 ; CHECK-ERRORS:                           ^
-; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512,504].
+; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512, 504].
 ; CHECK-ERRORS:         ldp x3, x4, [x5], #12
 ; CHECK-ERRORS:                           ^
-; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512,504].
+; CHECK-ERRORS: error: index must be a multiple of 8 in range [-512, 504].
 ; CHECK-ERRORS:         ldp q3, q4, [x5], #12
 ; CHECK-ERRORS:                           ^
-; CHECK-ERRORS: error: index must be an integer in range [-256,255].
+; CHECK-ERRORS: error: index must be an integer in range [-256, 255].
 ; CHECK-ERRORS:         ldur x0, [x1, #-257]
 ; CHECK-ERRORS:                   ^
 
 
+; Check that register offset addressing modes only accept 32-bit offset
+; registers when using uxtw/sxtw extends. Everything else requires a 64-bit
+; register.
+  str    d1, [x3, w3, sxtx #3]
+  ldr    s1, [x3, d3, sxtx #2]
+
+; CHECK-ERRORS: 32-bit general purpose offset register requires sxtw or uxtw extend
+; CHECK-ERRORS:   str    d1, [x3, w3, sxtx #3]
+; CHECK-ERRORS:                       ^
+; CHECK-ERRORS: error: 64-bit general purpose offset register expected
+; CHECK-ERRORS:   ldr    s1, [x3, d3, sxtx #2]
+; CHECK-ERRORS:                   ^
 
 ; Shift immediates range checking.
   sqrshrn b4, h9, #10
@@ -81,16 +93,16 @@ foo:
   sqrshrn v7.4h, v8.4s, #39
   uqshrn2 v4.4s, v5.2d, #67
 
-; CHECK-ERRORS: error: immediate must be an integer in range [1,8].
+; CHECK-ERRORS: error: immediate must be an integer in range [1, 8].
 ; CHECK-ERRORS:   sqrshrn b4, h9, #10
 ; CHECK-ERRORS:                   ^
-; CHECK-ERRORS: error: immediate must be an integer in range [1,8].
+; CHECK-ERRORS: error: immediate must be an integer in range [1, 8].
 ; CHECK-ERRORS:   rshrn v9.8b, v11.8h, #17
 ; CHECK-ERRORS:                        ^
-; CHECK-ERRORS: error: immediate must be an integer in range [1,16].
+; CHECK-ERRORS: error: immediate must be an integer in range [1, 16].
 ; CHECK-ERRORS:   sqrshrn v7.4h, v8.4s, #39
 ; CHECK-ERRORS:                         ^
-; CHECK-ERRORS: error: immediate must be an integer in range [1,32].
+; CHECK-ERRORS: error: immediate must be an integer in range [1, 32].
 ; CHECK-ERRORS:   uqshrn2 v4.4s, v5.2d, #67
 ; CHECK-ERRORS:                         ^
 
@@ -240,3 +252,103 @@ b.c #0x4
 ; CHECK-ERRORS: error: invalid condition code
 ; CHECK-ERRORS: b.c #0x4
 ; CHECK-ERRORS:   ^
+
+ic ialluis, x0
+; CHECK-ERRORS: error: specified ic op does not use a register
+ic iallu, x0
+; CHECK-ERRORS: error: specified ic op does not use a register
+ic ivau
+; CHECK-ERRORS: error: specified ic op requires a register
+
+dc zva
+; CHECK-ERRORS: error: specified dc op requires a register
+dc ivac
+; CHECK-ERRORS: error: specified dc op requires a register
+dc isw
+; CHECK-ERRORS: error: specified dc op requires a register
+dc cvac
+; CHECK-ERRORS: error: specified dc op requires a register
+dc csw
+; CHECK-ERRORS: error: specified dc op requires a register
+dc cvau
+; CHECK-ERRORS: error: specified dc op requires a register
+dc civac
+; CHECK-ERRORS: error: specified dc op requires a register
+dc cisw
+; CHECK-ERRORS: error: specified dc op requires a register
+
+at s1e1r
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e2r
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e3r
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e1w
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e2w
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e3w
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e0r
+; CHECK-ERRORS: error: specified at op requires a register
+at s1e0w
+; CHECK-ERRORS: error: specified at op requires a register
+at s12e1r
+; CHECK-ERRORS: error: specified at op requires a register
+at s12e1w
+; CHECK-ERRORS: error: specified at op requires a register
+at s12e0r
+; CHECK-ERRORS: error: specified at op requires a register
+at s12e0w
+; CHECK-ERRORS: error: specified at op requires a register
+
+tlbi vmalle1is, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi vmalle1, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle1is, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle2is, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle3is, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle1, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle2, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi alle3, x0
+; CHECK-ERRORS: error: specified tlbi op does not use a register
+tlbi vae1is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vae2is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vae3is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi aside1is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vaae1is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale1is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vaale1is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale2is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale3is
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vae1
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vae2
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vae3
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi aside1
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vaae1
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale1
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale2
+; CHECK-ERRORS: error: specified tlbi op requires a register
+tlbi vale3
+; CHECK-ERRORS: error: specified tlbi op requires a register

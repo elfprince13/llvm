@@ -112,14 +112,14 @@ def X25   : ARM64Reg<25, "x25", [W25]>, DwarfRegAlias<W25>;
 def X26   : ARM64Reg<26, "x26", [W26]>, DwarfRegAlias<W26>;
 def X27   : ARM64Reg<27, "x27", [W27]>, DwarfRegAlias<W27>;
 def X28   : ARM64Reg<28, "x28", [W28]>, DwarfRegAlias<W28>;
-def FP    : ARM64Reg<29, "fp",  [W29]>, DwarfRegAlias<W29>;
-def LR    : ARM64Reg<30, "lr",  [W30]>, DwarfRegAlias<W30>;
+def FP    : ARM64Reg<29, "x29", [W29]>, DwarfRegAlias<W29>;
+def LR    : ARM64Reg<30, "x30", [W30]>, DwarfRegAlias<W30>;
 def SP    : ARM64Reg<31, "sp",  [WSP]>, DwarfRegAlias<WSP>;
 def XZR   : ARM64Reg<31, "xzr", [WZR]>, DwarfRegAlias<WSP>;
 }
 
 // Condition code register.
-def CPSR  : ARM64Reg<0, "cpsr">;
+def NZCV  : ARM64Reg<0, "nzcv">;
 
 // GPR register classes with the intersections of GPR32/GPR32sp and
 // GPR64/GPR64sp for use by the coalescer.
@@ -164,24 +164,24 @@ def tcGPR64 : RegisterClass<"ARM64", [i64], 64, (sub GPR64common, X19, X20, X21,
                                                      X22, X23, X24, X25, X26,
                                                      X27, X28)>;
 
-// GPR register classes for post increment ammount of vector load/store that
+// GPR register classes for post increment amount of vector load/store that
 // has alternate printing when Rm=31 and prints a constant immediate value
 // equal to the total number of bytes transferred.
-def GPR64pi1  : RegisterOperand<GPR64, "printPostIncOperand1">;
-def GPR64pi2  : RegisterOperand<GPR64, "printPostIncOperand2">;
-def GPR64pi3  : RegisterOperand<GPR64, "printPostIncOperand3">;
-def GPR64pi4  : RegisterOperand<GPR64, "printPostIncOperand4">;
-def GPR64pi6  : RegisterOperand<GPR64, "printPostIncOperand6">;
-def GPR64pi8  : RegisterOperand<GPR64, "printPostIncOperand8">;
-def GPR64pi12 : RegisterOperand<GPR64, "printPostIncOperand12">;
-def GPR64pi16 : RegisterOperand<GPR64, "printPostIncOperand16">;
-def GPR64pi24 : RegisterOperand<GPR64, "printPostIncOperand24">;
-def GPR64pi32 : RegisterOperand<GPR64, "printPostIncOperand32">;
-def GPR64pi48 : RegisterOperand<GPR64, "printPostIncOperand48">;
-def GPR64pi64 : RegisterOperand<GPR64, "printPostIncOperand64">;
+def GPR64pi1  : RegisterOperand<GPR64, "printPostIncOperand<1>">;
+def GPR64pi2  : RegisterOperand<GPR64, "printPostIncOperand<2>">;
+def GPR64pi3  : RegisterOperand<GPR64, "printPostIncOperand<3>">;
+def GPR64pi4  : RegisterOperand<GPR64, "printPostIncOperand<4>">;
+def GPR64pi6  : RegisterOperand<GPR64, "printPostIncOperand<6>">;
+def GPR64pi8  : RegisterOperand<GPR64, "printPostIncOperand<8>">;
+def GPR64pi12 : RegisterOperand<GPR64, "printPostIncOperand<12>">;
+def GPR64pi16 : RegisterOperand<GPR64, "printPostIncOperand<16>">;
+def GPR64pi24 : RegisterOperand<GPR64, "printPostIncOperand<24>">;
+def GPR64pi32 : RegisterOperand<GPR64, "printPostIncOperand<32>">;
+def GPR64pi48 : RegisterOperand<GPR64, "printPostIncOperand<48>">;
+def GPR64pi64 : RegisterOperand<GPR64, "printPostIncOperand<64>">;
 
 // Condition code regclass.
-def CCR : RegisterClass<"ARM64", [i32], 32, (add CPSR)> {
+def CCR : RegisterClass<"ARM64", [i32], 32, (add NZCV)> {
   let CopyCost = -1;  // Don't allow copying of status registers.
 
   // CCR is not allocatable.
@@ -368,7 +368,7 @@ def Q31   : ARM64Reg<31, "q31", [D31], ["v31", ""]>, DwarfRegAlias<B31>;
 def FPR8  : RegisterClass<"ARM64", [untyped], 8, (sequence "B%u", 0, 31)> {
   let Size = 8;
 }
-def FPR16 : RegisterClass<"ARM64", [untyped], 16, (sequence "H%u", 0, 31)> {
+def FPR16 : RegisterClass<"ARM64", [f16], 16, (sequence "H%u", 0, 31)> {
   let Size = 16;
 }
 def FPR32 : RegisterClass<"ARM64", [f32, i32], 32,(sequence "S%u", 0, 31)>;
@@ -431,7 +431,11 @@ def VectorRegAsmOperand : AsmOperandClass { let Name = "VectorReg"; }
 let ParserMatchClass = VectorRegAsmOperand in {
 def V64  : RegisterOperand<FPR64, "printVRegOperand">;
 def V128 : RegisterOperand<FPR128, "printVRegOperand">;
-def V128_lo : RegisterOperand<FPR128_lo, "printVRegOperand">;
+}
+
+def VectorRegLoAsmOperand : AsmOperandClass { let Name = "VectorRegLo"; }
+def V128_lo : RegisterOperand<FPR128_lo, "printVRegOperand"> {
+  let ParserMatchClass = VectorRegLoAsmOperand;
 }
 
 class TypedVecListAsmOperand<int count, int regsize, int lanes, string kind>

@@ -100,8 +100,8 @@ protected:
 
 public:
   /// Code Generation virtual methods...
-  const uint16_t *
-  getCalleeSavedRegs(const MachineFunction *MF = 0) const override;
+  const MCPhysReg *
+  getCalleeSavedRegs(const MachineFunction *MF = nullptr) const override;
   const uint32_t *getCallPreservedMask(CallingConv::ID) const override;
   const uint32_t *getNoPreservedMask() const;
 
@@ -150,8 +150,8 @@ public:
   void materializeFrameBaseRegister(MachineBasicBlock *MBB,
                                     unsigned BaseReg, int FrameIdx,
                                     int64_t Offset) const override;
-  void resolveFrameIndex(MachineBasicBlock::iterator I,
-                         unsigned BaseReg, int64_t Offset) const override;
+  void resolveFrameIndex(MachineInstr &MI, unsigned BaseReg,
+                         int64_t Offset) const override;
   bool isFrameOffsetLegal(const MachineInstr *MI,
                           int64_t Offset) const override;
 
@@ -186,7 +186,7 @@ public:
 
   void eliminateFrameIndex(MachineBasicBlock::iterator II,
                            int SPAdj, unsigned FIOperandNum,
-                           RegScavenger *RS = NULL) const override;
+                           RegScavenger *RS = nullptr) const override;
 };
 
 } // end namespace llvm

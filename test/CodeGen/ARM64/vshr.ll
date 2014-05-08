@@ -1,4 +1,4 @@
-; RUN: llc -march=arm64 -arm64-neon-syntax=apple < %s | FileCheck %s
+; RUN: llc -march=arm64 -arm64-neon-syntax=apple < %s -mcpu=cyclone | FileCheck %s
 
 define <8 x i16> @testShiftRightArith_v8i16(<8 x i16> %a, <8 x i16> %b) #0 {
 ; CHECK-LABEL: testShiftRightArith_v8i16:
@@ -44,6 +44,20 @@ entry:
   %1 = load <8 x i16>* %b.addr, align 16
   %shr = lshr <8 x i16> %0, %1
   ret <8 x i16> %shr
+}
+
+define <1 x i64> @sshr_v1i64(<1 x i64> %A) nounwind {
+; CHECK-LABEL: sshr_v1i64:
+; CHECK: sshr d0, d0, #63
+  %tmp3 = ashr <1 x i64> %A, < i64 63 >
+  ret <1 x i64> %tmp3
+}
+
+define <1 x i64> @ushr_v1i64(<1 x i64> %A) nounwind {
+; CHECK-LABEL: ushr_v1i64:
+; CHECK: ushr d0, d0, #63
+  %tmp3 = lshr <1 x i64> %A, < i64 63 >
+  ret <1 x i64> %tmp3
 }
 
 attributes #0 = { nounwind }

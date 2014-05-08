@@ -19,6 +19,7 @@
 
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/FileSystem.h"
 using namespace llvm;
 
 namespace {
@@ -33,7 +34,7 @@ namespace {
       return false;
     }
 
-    void print(raw_ostream &OS, const Module* = 0) const override {}
+    void print(raw_ostream &OS, const Module* = nullptr) const override {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();
@@ -56,7 +57,7 @@ namespace {
       return false;
     }
 
-    void print(raw_ostream &OS, const Module* = 0) const override {}
+    void print(raw_ostream &OS, const Module* = nullptr) const override {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();
@@ -90,7 +91,7 @@ namespace {
       return false;
     }
 
-    void print(raw_ostream &OS, const Module* = 0) const override {}
+    void print(raw_ostream &OS, const Module* = nullptr) const override {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();
@@ -123,7 +124,7 @@ namespace {
       errs() << "\n";
       return false;
     }
-    void print(raw_ostream &OS, const Module* = 0) const override {}
+    void print(raw_ostream &OS, const Module* = nullptr) const override {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();

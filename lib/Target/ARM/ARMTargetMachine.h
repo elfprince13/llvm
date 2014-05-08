@@ -23,7 +23,6 @@
 #include "Thumb1FrameLowering.h"
 #include "Thumb1InstrInfo.h"
 #include "Thumb2InstrInfo.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Target/TargetMachine.h"
@@ -99,23 +98,23 @@ class ARMTargetMachine : public ARMBaseTargetMachine {
   const DataLayout *getDataLayout() const override { return &DL; }
 };
 
-/// ARMleTargetMachine - ARM little endian target machine.
+/// ARMLETargetMachine - ARM little endian target machine.
 ///
-class ARMleTargetMachine : public ARMTargetMachine {
-  virtual void anchor();
+class ARMLETargetMachine : public ARMTargetMachine {
+  void anchor() override;
 public:
-  ARMleTargetMachine(const Target &T, StringRef TT,
+  ARMLETargetMachine(const Target &T, StringRef TT,
                      StringRef CPU, StringRef FS, const TargetOptions &Options,
                      Reloc::Model RM, CodeModel::Model CM,
                      CodeGenOpt::Level OL);
 };
 
-/// ARMbeTargetMachine - ARM big endian target machine.
+/// ARMBETargetMachine - ARM big endian target machine.
 ///
-class ARMbeTargetMachine : public ARMTargetMachine {
-  virtual void anchor();
+class ARMBETargetMachine : public ARMTargetMachine {
+  void anchor() override;
 public:
-  ARMbeTargetMachine(const Target &T, StringRef TT,
+  ARMBETargetMachine(const Target &T, StringRef TT,
                      StringRef CPU, StringRef FS, const TargetOptions &Options,
                      Reloc::Model RM, CodeModel::Model CM,
                      CodeGenOpt::Level OL);
@@ -128,12 +127,12 @@ public:
 class ThumbTargetMachine : public ARMBaseTargetMachine {
   virtual void anchor();
   // Either Thumb1InstrInfo or Thumb2InstrInfo.
-  OwningPtr<ARMBaseInstrInfo> InstrInfo;
+  std::unique_ptr<ARMBaseInstrInfo> InstrInfo;
   const DataLayout    DL;   // Calculates type size & alignment
   ARMTargetLowering   TLInfo;
   ARMSelectionDAGInfo TSInfo;
   // Either Thumb1FrameLowering or ARMFrameLowering.
-  OwningPtr<ARMFrameLowering> FrameLowering;
+  std::unique_ptr<ARMFrameLowering> FrameLowering;
 public:
   ThumbTargetMachine(const Target &T, StringRef TT,
                      StringRef CPU, StringRef FS,
@@ -166,24 +165,24 @@ public:
   const DataLayout *getDataLayout() const override { return &DL; }
 };
 
-/// ThumbleTargetMachine - Thumb little endian target machine.
+/// ThumbLETargetMachine - Thumb little endian target machine.
 ///
-class ThumbleTargetMachine : public ThumbTargetMachine {
-  virtual void anchor();
+class ThumbLETargetMachine : public ThumbTargetMachine {
+  void anchor() override;
 public:
-  ThumbleTargetMachine(const Target &T, StringRef TT,
+  ThumbLETargetMachine(const Target &T, StringRef TT,
                      StringRef CPU, StringRef FS, const TargetOptions &Options,
                      Reloc::Model RM, CodeModel::Model CM,
                      CodeGenOpt::Level OL);
 };
 
-/// ThumbbeTargetMachine - Thumb big endian target machine.
+/// ThumbBETargetMachine - Thumb big endian target machine.
 ///
-class ThumbbeTargetMachine : public ThumbTargetMachine {
-  virtual void anchor();
+class ThumbBETargetMachine : public ThumbTargetMachine {
+  void anchor() override;
 public:
-  ThumbbeTargetMachine(const Target &T, StringRef TT,
-                       StringRef CPU, StringRef FS, const TargetOptions &Options,
+  ThumbBETargetMachine(const Target &T, StringRef TT, StringRef CPU,
+                       StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL);
 };

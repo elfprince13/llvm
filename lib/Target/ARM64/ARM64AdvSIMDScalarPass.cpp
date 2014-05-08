@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 // TODO: Graph based predicate heuristics.
 // Walking the instruction list linearly will get many, perhaps most, of
-// the cases, but to do a truly throrough job of this, we need a more
+// the cases, but to do a truly thorough job of this, we need a more
 // wholistic approach.
 //
 // This optimization is very similar in spirit to the register allocator's
@@ -33,7 +33,6 @@
 // solution.
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "arm64-simd-scalar"
 #include "ARM64.h"
 #include "ARM64InstrInfo.h"
 #include "ARM64RegisterInfo.h"
@@ -48,10 +47,8 @@
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
-static cl::opt<bool>
-AdvSIMDScalar("arm64-simd-scalar",
-              cl::desc("enable use of AdvSIMD scalar integer instructions"),
-              cl::init(false), cl::Hidden);
+#define DEBUG_TYPE "arm64-simd-scalar"
+
 // Allow forcing all i64 operations with equivalent SIMD instructions to use
 // them. For stress-testing the transformation function.
 static cl::opt<bool>
@@ -74,7 +71,7 @@ private:
   // instruction. "add Xd, Xn, Xm" ==> "add Dd, Da, Db", for example.
   bool isProfitableToTransform(const MachineInstr *MI) const;
 
-  // tranformInstruction - Perform the transformation of an instruction
+  // transformInstruction - Perform the transformation of an instruction
   // to its equivalant AdvSIMD scalar instruction. Update inputs and outputs
   // to be the correct register class, minimizing cross-class copies.
   void transformInstruction(MachineInstr *MI);
@@ -86,13 +83,13 @@ public:
   static char ID; // Pass identification, replacement for typeid.
   explicit ARM64AdvSIMDScalar() : MachineFunctionPass(ID) {}
 
-  virtual bool runOnMachineFunction(MachineFunction &F);
+  bool runOnMachineFunction(MachineFunction &F) override;
 
-  const char *getPassName() const {
-    return "AdvSIMD scalar operation optimization";
+  const char *getPassName() const override {
+    return "AdvSIMD Scalar Operation Optimization";
   }
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
@@ -116,7 +113,7 @@ static bool isFPR64(unsigned Reg, unsigned SubReg,
             SubReg == 0) ||
            (MRI->getRegClass(Reg)->hasSuperClassEq(&ARM64::FPR128RegClass) &&
             SubReg == ARM64::dsub);
-  // Physical register references just check the regist class directly.
+  // Physical register references just check the register class directly.
   return (ARM64::FPR64RegClass.contains(Reg) && SubReg == 0) ||
          (ARM64::FPR128RegClass.contains(Reg) && SubReg == ARM64::dsub);
 }
@@ -147,7 +144,7 @@ static unsigned getSrcFromCopy(const MachineInstr *MI,
                 MRI) &&
         isFPR64(MI->getOperand(1).getReg(), MI->getOperand(1).getSubReg(),
                 MRI)) {
-      SubReg = ARM64::dsub;
+      SubReg = MI->getOperand(1).getSubReg();
       return MI->getOperand(1).getReg();
     }
   }
@@ -252,7 +249,7 @@ bool ARM64AdvSIMDScalar::isProfitableToTransform(const MachineInstr *MI) const {
   if (AllUsesAreCopies)
     --NumNewCopies;
 
-  // If a tranform will not increase the number of cross-class copies required,
+  // If a transform will not increase the number of cross-class copies required,
   // return true.
   if (NumNewCopies <= NumRemovableCopies)
     return true;
@@ -273,7 +270,7 @@ static MachineInstr *insertCopy(const ARM64InstrInfo *TII, MachineInstr *MI,
   return MIB;
 }
 
-// tranformInstruction - Perform the transformation of an instruction
+// transformInstruction - Perform the transformation of an instruction
 // to its equivalant AdvSIMD scalar instruction. Update inputs and outputs
 // to be the correct register class, minimizing cross-class copies.
 void ARM64AdvSIMDScalar::transformInstruction(MachineInstr *MI) {
@@ -367,10 +364,6 @@ bool ARM64AdvSIMDScalar::processMachineBasicBlock(MachineBasicBlock *MBB) {
 
 // runOnMachineFunction - Pass entry point from PassManager.
 bool ARM64AdvSIMDScalar::runOnMachineFunction(MachineFunction &mf) {
-  // Early exit if pass disabled.
-  if (!AdvSIMDScalar)
-    return false;
-
   bool Changed = false;
   DEBUG(dbgs() << "***** ARM64AdvSIMDScalar *****\n");
 

@@ -16,6 +16,7 @@
 #ifndef LLVM_CODEGEN_COMMANDFLAGS_H
 #define LLVM_CODEGEN_COMMANDFLAGS_H
 
+#include "llvm/MC/MCTargetOptionsCommandFlags.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetMachine.h"
@@ -85,9 +86,6 @@ FileType("filetype", cl::init(TargetMachine::CGFT_AssemblyFile),
              clEnumValN(TargetMachine::CGFT_Null, "null",
                         "Emit nothing, for performance testing"),
              clEnumValEnd));
-
-cl::opt<bool> DisableCFI("disable-cfi", cl::Hidden,
-                         cl::desc("Do not use .cfi_* directives"));
 
 cl::opt<bool> EnableDwarfDirectory("enable-dwarf-directory", cl::Hidden,
                   cl::desc("Use .file directives with an explicit directory."));
@@ -190,11 +188,6 @@ EnablePIE("enable-pie",
           cl::init(false));
 
 cl::opt<bool>
-SegmentedStacks("segmented-stacks",
-                cl::desc("Use segmented stacks if possible."),
-                cl::init(false));
-
-cl::opt<bool>
 UseInitArray("use-init-array",
              cl::desc("Use .init_array instead of .ctors."),
              cl::init(false));
@@ -229,8 +222,10 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.StackAlignmentOverride = OverrideStackAlignment;
   Options.TrapFuncName = TrapFuncName;
   Options.PositionIndependentExecutable = EnablePIE;
-  Options.EnableSegmentedStacks = SegmentedStacks;
   Options.UseInitArray = UseInitArray;
+
+  Options.MCOptions = InitMCTargetOptionsFromFlags();
+
   return Options;
 }
 

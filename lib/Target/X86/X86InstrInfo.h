@@ -128,7 +128,7 @@ inline static bool isMem(const MachineInstr *MI, unsigned Op) {
     isLeaMem(MI, Op);
 }
 
-class X86InstrInfo : public X86GenInstrInfo {
+class X86InstrInfo final : public X86GenInstrInfo {
   X86TargetMachine &TM;
   const X86RegisterInfo RI;
 
@@ -229,6 +229,9 @@ public:
   ///
   MachineInstr *commuteInstruction(MachineInstr *MI, bool NewMI) const override;
 
+  bool findCommutedOpIndices(MachineInstr *MI, unsigned &SrcOpIdx1,
+                             unsigned &SrcOpIdx2) const override;
+
   // Branch analysis.
   bool isUnpredicatedTerminator(const MachineInstr* MI) const override;
   bool AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
@@ -322,7 +325,7 @@ public:
   /// value.
   unsigned getOpcodeAfterMemoryUnfold(unsigned Opc,
                               bool UnfoldLoad, bool UnfoldStore,
-                              unsigned *LoadRegIndex = 0) const override;
+                              unsigned *LoadRegIndex = nullptr) const override;
 
   /// areLoadsFromSameBasePtr - This is used by the pre-regalloc scheduler
   /// to determine if two loads are loading from the same base address. It

@@ -1,4 +1,5 @@
 ; RUN: llc < %s -O0 -fast-isel-abort -mtriple=arm64-apple-darwin | FileCheck %s
+; RUN: llc < %s -O0 -fast-isel-abort -mtriple=arm64_be-linux-gnu | FileCheck %s --check-prefix=CHECK-BE
 
 define void @call0() nounwind {
 entry:
@@ -24,8 +25,8 @@ entry:
 define i32 @foo1(i32 %a) nounwind {
 entry:
 ; CHECK: foo1
-; CHECK: stur w0, [fp, #-4]
-; CHECK-NEXT: ldur w0, [fp, #-4]
+; CHECK: stur w0, [x29, #-4]
+; CHECK-NEXT: ldur w0, [x29, #-4]
 ; CHECK-NEXT: bl _call1
   %a.addr = alloca i32, align 4
   store i32 %a, i32* %a.addr, align 4
@@ -89,3 +90,11 @@ entry:
 }
 
 declare i32 @func2(i64 zeroext, i32 signext, i16 zeroext, i8 signext, i1 zeroext, i1 zeroext)
+
+declare void @callee_b0f(i8 %bp10, i8 %bp11, i8 %bp12, i8 %bp13, i8 %bp14, i8 %bp15, i8 %bp17, i8 %bp18, i8 %bp19)
+define void @caller_b1f() {
+entry:
+  ; CHECK-BE: strb w{{.*}}, [sp, #7]
+  call void @callee_b0f(i8 1, i8 2, i8 3, i8 4, i8 5, i8 6, i8 7, i8 8, i8 42)
+  ret void
+}

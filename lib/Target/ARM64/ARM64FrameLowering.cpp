@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "frame-info"
 #include "ARM64FrameLowering.h"
 #include "ARM64InstrInfo.h"
 #include "ARM64MachineFunctionInfo.h"
@@ -31,6 +30,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
+
+#define DEBUG_TYPE "frame-info"
 
 static cl::opt<bool> EnableRedZone("arm64-redzone",
                                    cl::desc("enable use of redzone on ARM64"),
@@ -161,11 +162,9 @@ ARM64FrameLowering::emitCalleeSavedFrameMoves(MachineBasicBlock &MBB,
   // Calculate offsets.
   int64_t saveAreaOffset = (HasFP ? 2 : 1) * stackGrowth;
   unsigned TotalSkipped = 0;
-  for (std::vector<CalleeSavedInfo>::const_iterator I = CSI.begin(),
-                                                    E = CSI.end();
-       I != E; ++I) {
-    unsigned Reg = I->getReg();
-    int64_t Offset = MFI->getObjectOffset(I->getFrameIdx()) -
+  for (const auto &Info : CSI) {
+    unsigned Reg = Info.getReg();
+    int64_t Offset = MFI->getObjectOffset(Info.getFrameIdx()) -
                      getOffsetOfLocalArea() + saveAreaOffset;
 
     // Don't output a new CFI directive if we're re-saving the frame pointer or
@@ -390,14 +389,14 @@ void ARM64FrameLowering::emitPrologue(MachineFunction &MF) const {
   }
 }
 
-static bool isCalleeSavedRegister(unsigned Reg, const uint16_t *CSRegs) {
+static bool isCalleeSavedRegister(unsigned Reg, const MCPhysReg *CSRegs) {
   for (unsigned i = 0; CSRegs[i]; ++i)
     if (Reg == CSRegs[i])
       return true;
   return false;
 }
 
-static bool isCSRestore(MachineInstr *MI, const uint16_t *CSRegs) {
+static bool isCSRestore(MachineInstr *MI, const MCPhysReg *CSRegs) {
   if (MI->getOpcode() == ARM64::LDPXpost ||
       MI->getOpcode() == ARM64::LDPDpost || MI->getOpcode() == ARM64::LDPXi ||
       MI->getOpcode() == ARM64::LDPDi) {
@@ -422,11 +421,11 @@ void ARM64FrameLowering::emitEpilogue(MachineFunction &MF,
       static_cast<const ARM64RegisterInfo *>(MF.getTarget().getRegisterInfo());
   DebugLoc DL = MBBI->getDebugLoc();
 
-  unsigned NumBytes = MFI->getStackSize();
+  int NumBytes = MFI->getStackSize();
   unsigned NumRestores = 0;
   // Move past the restores of the callee-saved registers.
   MachineBasicBlock::iterator LastPopI = MBBI;
-  const uint16_t *CSRegs = RegInfo->getCalleeSavedRegs(&MF);
+  const MCPhysReg *CSRegs = RegInfo->getCalleeSavedRegs(&MF);
   if (LastPopI != MBB.begin()) {
     do {
       ++NumRestores;
@@ -710,7 +709,7 @@ void ARM64FrameLowering::processFunctionBeforeCalleeSavedScan(
   bool ExtraCSSpill = false;
   bool CanEliminateFrame = true;
   DEBUG(dbgs() << "*** processFunctionBeforeCalleeSavedScan\nUsed CSRs:");
-  const uint16_t *CSRegs = RegInfo->getCalleeSavedRegs(&MF);
+  const MCPhysReg *CSRegs = RegInfo->getCalleeSavedRegs(&MF);
 
   // Check pairs of consecutive callee-saved registers.
   for (unsigned i = 0; CSRegs[i]; i += 2) {

@@ -281,6 +281,12 @@ define <2 x i64> @test26(<2 x i64> %a, <2 x i64> %b) {
   ret <2 x i64> %v
 
 ; CHECK-LABEL: @test26
+
+; Make sure we use only two stores (one for each operand).
+; CHECK: stxvd2x 35,
+; CHECK: stxvd2x 34,
+; CHECK-NOT: stxvd2x
+
 ; FIXME: The code quality here is not good; just make sure we do something for now.
 ; CHECK: add
 ; CHECK: add
@@ -577,6 +583,69 @@ define <2 x i1> @test67(<2 x i64> %a, <2 x i64> %b) {
 ; CHECK: cmpld
 ; CHECK: cmpld
 ; CHECK: lxvd2x
+; CHECK: blr
+}
+
+define <2 x double> @test68(<2 x i32> %a) {
+  %w = sitofp <2 x i32> %a to <2 x double>
+  ret <2 x double> %w
+
+; CHECK-LABEL: @test68
+; CHECK: xxsldwi [[V1:[0-9]+]], 34, 34, 1
+; CHECK: xvcvsxwdp 34, [[V1]]
+; CHECK: blr
+}
+
+define <2 x double> @test69(<2 x i16> %a) {
+  %w = sitofp <2 x i16> %a to <2 x double>
+  ret <2 x double> %w
+
+; CHECK-LABEL: @test69
+; CHECK: vspltisw [[V1:[0-9]+]], 8
+; CHECK: vadduwm [[V2:[0-9]+]], [[V1]], [[V1]]
+; CHECK: vslw [[V3:[0-9]+]], 2, [[V2]]
+; CHECK: vsraw {{[0-9]+}}, [[V3]], [[V2]]
+; CHECK: xxsldwi [[V4:[0-9]+]], {{[0-9]+}}, {{[0-9]+}}, 1
+; CHECK: xvcvsxwdp 34, [[V4]]
+; CHECK: blr
+}
+
+define <2 x double> @test70(<2 x i8> %a) {
+  %w = sitofp <2 x i8> %a to <2 x double>
+  ret <2 x double> %w
+
+; CHECK-LABEL: @test70
+; CHECK: vspltisw [[V1:[0-9]+]], 12
+; CHECK: vadduwm [[V2:[0-9]+]], [[V1]], [[V1]]
+; CHECK: vslw [[V3:[0-9]+]], 2, [[V2]]
+; CHECK: vsraw {{[0-9]+}}, [[V3]], [[V2]]
+; CHECK: xxsldwi [[V4:[0-9]+]], {{[0-9]+}}, {{[0-9]+}}, 1
+; CHECK: xvcvsxwdp 34, [[V4]]
+; CHECK: blr
+}
+
+define <2 x i32> @test80(i32 %v) {
+  %b1 = insertelement <2 x i32> undef, i32 %v, i32 0
+  %b2 = shufflevector <2 x i32> %b1, <2 x i32> undef, <2 x i32> zeroinitializer
+  %i = add <2 x i32> %b2, <i32 2, i32 3>
+  ret <2 x i32> %i
+
+; CHECK-LABEL: @test80
+; CHECK-DAG: addi [[R1:[0-9]+]], 3, 3
+; CHECK-DAG: addi [[R2:[0-9]+]], 1, -16
+; CHECK-DAG: addi [[R3:[0-9]+]], 3, 2
+; CHECK: std [[R1]], 8([[R2]])
+; CHECK: std [[R3]], -16(1)
+; CHECK: lxvd2x 34, 0, [[R2]]
+; CHECK-NOT: stxvd2x
+; CHECK: blr
+}
+
+define <2 x double> @test81(<4 x float> %b) {
+  %w = bitcast <4 x float> %b to <2 x double>
+  ret <2 x double> %w
+
+; CHECK-LABEL: @test81
 ; CHECK: blr
 }
 

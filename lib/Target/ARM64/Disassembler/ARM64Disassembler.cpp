@@ -10,22 +10,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "arm64-disassembler"
-
 #include "ARM64Disassembler.h"
+#include "ARM64ExternalSymbolizer.h"
 #include "ARM64Subtarget.h"
-#include "MCTargetDesc/ARM64BaseInfo.h"
 #include "MCTargetDesc/ARM64AddressingModes.h"
+#include "Utils/ARM64BaseInfo.h"
 #include "llvm/MC/MCInst.h"
-#include "llvm/MC/MCExpr.h"
-#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MemoryObject.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/Format.h"
-#include "llvm/Support/raw_ostream.h"
+
+using namespace llvm;
+
+#define DEBUG_TYPE "arm64-disassembler"
 
 // Pull DecodeStatus and its enum values into the global namespace.
 typedef llvm::MCDisassembler::DecodeStatus DecodeStatus;
@@ -82,14 +81,18 @@ static DecodeStatus DecodeDDDDRegisterClass(llvm::MCInst &Inst, unsigned RegNo,
                                             uint64_t Address,
                                             const void *Decoder);
 
-static DecodeStatus DecodeFixedPointScaleImm(llvm::MCInst &Inst, unsigned Imm,
-                                             uint64_t Address,
-                                             const void *Decoder);
-static DecodeStatus DecodeCondBranchTarget(llvm::MCInst &Inst, unsigned Imm,
-                                           uint64_t Address,
-                                           const void *Decoder);
-static DecodeStatus DecodeSystemRegister(llvm::MCInst &Inst, unsigned Imm,
-                                         uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeFixedPointScaleImm32(llvm::MCInst &Inst, unsigned Imm,
+                                               uint64_t Address,
+                                               const void *Decoder);
+static DecodeStatus DecodeFixedPointScaleImm64(llvm::MCInst &Inst, unsigned Imm,
+                                               uint64_t Address,
+                                               const void *Decoder);
+static DecodeStatus DecodePCRelLabel19(llvm::MCInst &Inst, unsigned Imm,
+                                       uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeMRSSystemRegister(llvm::MCInst &Inst, unsigned Imm,
+                                            uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeMSRSystemRegister(llvm::MCInst &Inst, unsigned Imm,
+                                            uint64_t Address, const void *Decoder);
 static DecodeStatus DecodeThreeAddrSRegInstruction(llvm::MCInst &Inst,
                                                    uint32_t insn,
                                                    uint64_t Address,
@@ -134,18 +137,12 @@ static DecodeStatus DecodeBaseAddSubImm(llvm::MCInst &Inst, uint32_t insn,
 static DecodeStatus DecodeUnconditionalBranch(llvm::MCInst &Inst, uint32_t insn,
                                               uint64_t Address,
                                               const void *Decoder);
-static DecodeStatus DecodeSystemCPSRInstruction(llvm::MCInst &Inst,
-                                                uint32_t insn, uint64_t Address,
-                                                const void *Decoder);
+static DecodeStatus DecodeSystemPStateInstruction(llvm::MCInst &Inst,
+                                                  uint32_t insn,
+                                                  uint64_t Address,
+                                                  const void *Decoder);
 static DecodeStatus DecodeTestAndBranch(llvm::MCInst &Inst, uint32_t insn,
                                         uint64_t Address, const void *Decoder);
-static DecodeStatus DecodeSIMDLdStPost(llvm::MCInst &Inst, uint32_t insn,
-                                       uint64_t Addr, const void *Decoder);
-static DecodeStatus DecodeSIMDLdStSingle(llvm::MCInst &Inst, uint32_t insn,
-                                         uint64_t Addr, const void *Decoder);
-static DecodeStatus DecodeSIMDLdStSingleTied(llvm::MCInst &Inst, uint32_t insn,
-                                             uint64_t Addr,
-                                             const void *Decoder);
 
 static DecodeStatus DecodeVecShiftR64Imm(llvm::MCInst &Inst, unsigned Imm,
                                          uint64_t Addr, const void *Decoder);
@@ -173,17 +170,32 @@ static DecodeStatus DecodeVecShiftL16Imm(llvm::MCInst &Inst, unsigned Imm,
 static DecodeStatus DecodeVecShiftL8Imm(llvm::MCInst &Inst, unsigned Imm,
                                         uint64_t Addr, const void *Decoder);
 
+static bool Check(DecodeStatus &Out, DecodeStatus In) {
+  switch (In) {
+    case MCDisassembler::Success:
+      // Out stays the same.
+      return true;
+    case MCDisassembler::SoftFail:
+      Out = In;
+      return true;
+    case MCDisassembler::Fail:
+      Out = In;
+      return false;
+  }
+  llvm_unreachable("Invalid DecodeStatus!");
+}
+
 #include "ARM64GenDisassemblerTables.inc"
 #include "ARM64GenInstrInfo.inc"
 
-using namespace llvm;
-
 #define Success llvm::MCDisassembler::Success
 #define Fail llvm::MCDisassembler::Fail
+#define SoftFail llvm::MCDisassembler::SoftFail
 
 static MCDisassembler *createARM64Disassembler(const Target &T,
-                                               const MCSubtargetInfo &STI) {
-  return new ARM64Disassembler(STI);
+                                               const MCSubtargetInfo &STI,
+                                               MCContext &Ctx) {
+  return new ARM64Disassembler(STI, Ctx);
 }
 
 DecodeStatus ARM64Disassembler::getInstruction(MCInst &MI, uint64_t &Size,
@@ -195,224 +207,40 @@ DecodeStatus ARM64Disassembler::getInstruction(MCInst &MI, uint64_t &Size,
 
   uint8_t bytes[4];
 
+  Size = 0;
   // We want to read exactly 4 bytes of data.
   if (Region.readBytes(Address, 4, (uint8_t *)bytes) == -1)
     return Fail;
+  Size = 4;
 
   // Encoded as a small-endian 32-bit word in the stream.
   uint32_t insn =
       (bytes[3] << 24) | (bytes[2] << 16) | (bytes[1] << 8) | (bytes[0] << 0);
 
   // Calling the auto-generated decoder function.
-  DecodeStatus result =
-      decodeInstruction(DecoderTable32, MI, insn, Address, this, STI);
-  if (!result)
-    return Fail;
-
-  Size = 4;
-
-  return Success;
+  return decodeInstruction(DecoderTable32, MI, insn, Address, this, STI);
 }
 
-static MCSymbolRefExpr::VariantKind
-getVariant(uint64_t LLVMDisassembler_VariantKind) {
-  switch (LLVMDisassembler_VariantKind) {
-  case LLVMDisassembler_VariantKind_None:
-    return MCSymbolRefExpr::VK_None;
-  case LLVMDisassembler_VariantKind_ARM64_PAGE:
-    return MCSymbolRefExpr::VK_PAGE;
-  case LLVMDisassembler_VariantKind_ARM64_PAGEOFF:
-    return MCSymbolRefExpr::VK_PAGEOFF;
-  case LLVMDisassembler_VariantKind_ARM64_GOTPAGE:
-    return MCSymbolRefExpr::VK_GOTPAGE;
-  case LLVMDisassembler_VariantKind_ARM64_GOTPAGEOFF:
-    return MCSymbolRefExpr::VK_GOTPAGEOFF;
-  case LLVMDisassembler_VariantKind_ARM64_TLVP:
-  case LLVMDisassembler_VariantKind_ARM64_TLVOFF:
-  default:
-    assert(0 && "bad LLVMDisassembler_VariantKind");
-    return MCSymbolRefExpr::VK_None;
-  }
-}
-
-/// tryAddingSymbolicOperand - tryAddingSymbolicOperand trys to add a symbolic
-/// operand in place of the immediate Value in the MCInst.  The immediate
-/// Value has not had any PC adjustment made by the caller. If the instruction
-/// is a branch that adds the PC to the immediate Value then isBranch is
-/// Success, else Fail.  If the getOpInfo() function was set as part of the
-/// setupForSymbolicDisassembly() call then that function is called to get any
-/// symbolic information at the Address for this instrution.  If that returns
-/// non-zero then the symbolic information it returns is used to create an
-/// MCExpr and that is added as an operand to the MCInst.  If getOpInfo()
-/// returns zero and isBranch is Success then a symbol look up for
-/// Address + Value is done and if a symbol is found an MCExpr is created with
-/// that, else an MCExpr with Address + Value is created.  If getOpInfo()
-/// returns zero and isBranch is Fail then the the Opcode of the MCInst is
-/// tested and for ADRP an other instructions that help to load of pointers
-/// a symbol look up is done to see it is returns a specific reference type
-/// to add to the comment stream.  This function returns Success if it adds
-/// an operand to the MCInst and Fail otherwise.
-bool ARM64Disassembler::tryAddingSymbolicOperand(uint64_t Address, int Value,
-                                                 bool isBranch,
-                                                 uint64_t InstSize, MCInst &MI,
-                                                 uint32_t insn) const {
-  LLVMOpInfoCallback getOpInfo = getLLVMOpInfoCallback();
-
-  struct LLVMOpInfo1 SymbolicOp;
-  memset(&SymbolicOp, '\0', sizeof(struct LLVMOpInfo1));
-  SymbolicOp.Value = Value;
-  void *DisInfo = getDisInfoBlock();
-  uint64_t ReferenceType;
-  const char *ReferenceName;
-  const char *Name;
-  LLVMSymbolLookupCallback SymbolLookUp = getLLVMSymbolLookupCallback();
-  if (!getOpInfo ||
-      !getOpInfo(DisInfo, Address, 0 /* Offset */, InstSize, 1, &SymbolicOp)) {
-    if (isBranch) {
-      if (SymbolLookUp) {
-        ReferenceType = LLVMDisassembler_ReferenceType_In_Branch;
-        Name = SymbolLookUp(DisInfo, Address + Value, &ReferenceType, Address,
-                            &ReferenceName);
-        if (Name) {
-          SymbolicOp.AddSymbol.Name = Name;
-          SymbolicOp.AddSymbol.Present = Success;
-          SymbolicOp.Value = 0;
-        } else {
-          SymbolicOp.Value = Address + Value;
-        }
-        if (ReferenceType == LLVMDisassembler_ReferenceType_Out_SymbolStub)
-          (*CommentStream) << "symbol stub for: " << ReferenceName;
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_Message)
-          (*CommentStream) << "Objc message: " << ReferenceName;
-      } else {
-        return false;
-      }
-    } else if (MI.getOpcode() == ARM64::ADRP) {
-      if (SymbolLookUp) {
-        ReferenceType = LLVMDisassembler_ReferenceType_In_ARM64_ADRP;
-        Name = SymbolLookUp(DisInfo, insn, &ReferenceType, Address,
-                            &ReferenceName);
-        (*CommentStream) << format("0x%llx",
-                                   0xfffffffffffff000LL & (Address + Value));
-      } else {
-        return false;
-      }
-    } else if (MI.getOpcode() == ARM64::ADDXri ||
-               MI.getOpcode() == ARM64::LDRXui ||
-               MI.getOpcode() == ARM64::LDRXl || MI.getOpcode() == ARM64::ADR) {
-      if (SymbolLookUp) {
-        if (MI.getOpcode() == ARM64::ADDXri)
-          ReferenceType = LLVMDisassembler_ReferenceType_In_ARM64_ADDXri;
-        else if (MI.getOpcode() == ARM64::LDRXui)
-          ReferenceType = LLVMDisassembler_ReferenceType_In_ARM64_LDRXui;
-        if (MI.getOpcode() == ARM64::LDRXl) {
-          ReferenceType = LLVMDisassembler_ReferenceType_In_ARM64_LDRXl;
-          Name = SymbolLookUp(DisInfo, Address + Value, &ReferenceType, Address,
-                              &ReferenceName);
-        } else if (MI.getOpcode() == ARM64::ADR) {
-          ReferenceType = LLVMDisassembler_ReferenceType_In_ARM64_ADR;
-          Name = SymbolLookUp(DisInfo, Address + Value, &ReferenceType, Address,
-                              &ReferenceName);
-        } else {
-          Name = SymbolLookUp(DisInfo, insn, &ReferenceType, Address,
-                              &ReferenceName);
-        }
-        if (ReferenceType == LLVMDisassembler_ReferenceType_Out_LitPool_SymAddr)
-          (*CommentStream) << "literal pool symbol address: " << ReferenceName;
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_LitPool_CstrAddr)
-          (*CommentStream) << "literal pool for: \"" << ReferenceName << "\"";
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_CFString_Ref)
-          (*CommentStream) << "Objc cfstring ref: @\"" << ReferenceName << "\"";
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_Message)
-          (*CommentStream) << "Objc message: " << ReferenceName;
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_Message_Ref)
-          (*CommentStream) << "Objc message ref: " << ReferenceName;
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_Selector_Ref)
-          (*CommentStream) << "Objc selector ref: " << ReferenceName;
-        else if (ReferenceType ==
-                 LLVMDisassembler_ReferenceType_Out_Objc_Class_Ref)
-          (*CommentStream) << "Objc class ref: " << ReferenceName;
-        // For these instructions, the SymbolLookUp() above is just to get the
-        // ReferenceType and ReferenceName.  We want to make sure not to
-        // fall through so we don't build an MCExpr to leave the disassembly
-        // of the immediate values of these instructions to the InstPrinter.
-        return false;
-      } else {
-        return false;
-      }
-    } else {
-      return false;
-    }
-  }
-
-  MCContext *Ctx = getMCContext();
-  const MCExpr *Add = NULL;
-  if (SymbolicOp.AddSymbol.Present) {
-    if (SymbolicOp.AddSymbol.Name) {
-      StringRef Name(SymbolicOp.AddSymbol.Name);
-      MCSymbol *Sym = Ctx->GetOrCreateSymbol(Name);
-      MCSymbolRefExpr::VariantKind Variant = getVariant(SymbolicOp.VariantKind);
-      if (Variant != MCSymbolRefExpr::VK_None)
-        Add = MCSymbolRefExpr::Create(Sym, Variant, *Ctx);
-      else
-        Add = MCSymbolRefExpr::Create(Sym, *Ctx);
-    } else {
-      Add = MCConstantExpr::Create(SymbolicOp.AddSymbol.Value, *Ctx);
-    }
-  }
-
-  const MCExpr *Sub = NULL;
-  if (SymbolicOp.SubtractSymbol.Present) {
-    if (SymbolicOp.SubtractSymbol.Name) {
-      StringRef Name(SymbolicOp.SubtractSymbol.Name);
-      MCSymbol *Sym = Ctx->GetOrCreateSymbol(Name);
-      Sub = MCSymbolRefExpr::Create(Sym, *Ctx);
-    } else {
-      Sub = MCConstantExpr::Create(SymbolicOp.SubtractSymbol.Value, *Ctx);
-    }
-  }
-
-  const MCExpr *Off = NULL;
-  if (SymbolicOp.Value != 0)
-    Off = MCConstantExpr::Create(SymbolicOp.Value, *Ctx);
-
-  const MCExpr *Expr;
-  if (Sub) {
-    const MCExpr *LHS;
-    if (Add)
-      LHS = MCBinaryExpr::CreateSub(Add, Sub, *Ctx);
-    else
-      LHS = MCUnaryExpr::CreateMinus(Sub, *Ctx);
-    if (Off != 0)
-      Expr = MCBinaryExpr::CreateAdd(LHS, Off, *Ctx);
-    else
-      Expr = LHS;
-  } else if (Add) {
-    if (Off != 0)
-      Expr = MCBinaryExpr::CreateAdd(Add, Off, *Ctx);
-    else
-      Expr = Add;
-  } else {
-    if (Off != 0)
-      Expr = Off;
-    else
-      Expr = MCConstantExpr::Create(0, *Ctx);
-  }
-
-  MI.addOperand(MCOperand::CreateExpr(Expr));
-
-  return true;
+static MCSymbolizer *
+createARM64ExternalSymbolizer(StringRef TT, LLVMOpInfoCallback GetOpInfo,
+                              LLVMSymbolLookupCallback SymbolLookUp,
+                              void *DisInfo, MCContext *Ctx,
+                              MCRelocationInfo *RelInfo) {
+  return new llvm::ARM64ExternalSymbolizer(
+                                     *Ctx,
+                                     std::unique_ptr<MCRelocationInfo>(RelInfo),
+                                     GetOpInfo, SymbolLookUp, DisInfo);
 }
 
 extern "C" void LLVMInitializeARM64Disassembler() {
-  TargetRegistry::RegisterMCDisassembler(TheARM64Target,
+  TargetRegistry::RegisterMCDisassembler(TheARM64leTarget,
                                          createARM64Disassembler);
+  TargetRegistry::RegisterMCDisassembler(TheARM64beTarget,
+                                         createARM64Disassembler);
+  TargetRegistry::RegisterMCSymbolizer(TheARM64leTarget,
+                                       createARM64ExternalSymbolizer);
+  TargetRegistry::RegisterMCSymbolizer(TheARM64beTarget,
+                                       createARM64ExternalSymbolizer);
 }
 
 static const unsigned FPR128DecoderTable[] = {
@@ -742,15 +570,24 @@ static DecodeStatus DecodeDDDDRegisterClass(MCInst &Inst, unsigned RegNo,
   return Success;
 }
 
-static DecodeStatus DecodeFixedPointScaleImm(llvm::MCInst &Inst, unsigned Imm,
-                                             uint64_t Addr,
-                                             const void *Decoder) {
+static DecodeStatus DecodeFixedPointScaleImm32(llvm::MCInst &Inst, unsigned Imm,
+                                               uint64_t Addr,
+                                               const void *Decoder) {
+  // scale{5} is asserted as 1 in tblgen.
+  Imm |= 0x20;  
   Inst.addOperand(MCOperand::CreateImm(64 - Imm));
   return Success;
 }
 
-static DecodeStatus DecodeCondBranchTarget(llvm::MCInst &Inst, unsigned Imm,
-                                           uint64_t Addr, const void *Decoder) {
+static DecodeStatus DecodeFixedPointScaleImm64(llvm::MCInst &Inst, unsigned Imm,
+                                               uint64_t Addr,
+                                               const void *Decoder) {
+  Inst.addOperand(MCOperand::CreateImm(64 - Imm));
+  return Success;
+}
+
+static DecodeStatus DecodePCRelLabel19(llvm::MCInst &Inst, unsigned Imm,
+                                       uint64_t Addr, const void *Decoder) {
   int64_t ImmVal = Imm;
   const ARM64Disassembler *Dis =
       static_cast<const ARM64Disassembler *>(Decoder);
@@ -759,17 +596,42 @@ static DecodeStatus DecodeCondBranchTarget(llvm::MCInst &Inst, unsigned Imm,
   if (ImmVal & (1 << (19 - 1)))
     ImmVal |= ~((1LL << 19) - 1);
 
-  if (!Dis->tryAddingSymbolicOperand(Addr, ImmVal << 2,
-                                     Inst.getOpcode() != ARM64::LDRXl, 4, Inst))
+  if (!Dis->tryAddingSymbolicOperand(Inst, ImmVal << 2, Addr,
+                                     Inst.getOpcode() != ARM64::LDRXl, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(ImmVal));
   return Success;
 }
 
-static DecodeStatus DecodeSystemRegister(llvm::MCInst &Inst, unsigned Imm,
-                                         uint64_t Address,
-                                         const void *Decoder) {
-  Inst.addOperand(MCOperand::CreateImm(Imm | 0x8000));
-  return Success;
+static DecodeStatus DecodeMRSSystemRegister(llvm::MCInst &Inst, unsigned Imm,
+                                            uint64_t Address,
+                                            const void *Decoder) {
+  const ARM64Disassembler *Dis =
+      static_cast<const ARM64Disassembler *>(Decoder);
+  const MCSubtargetInfo &STI = Dis->getSubtargetInfo();
+
+  Imm |= 0x8000;
+  Inst.addOperand(MCOperand::CreateImm(Imm));
+
+  bool ValidNamed;
+  (void)ARM64SysReg::MRSMapper(STI.getFeatureBits()).toString(Imm, ValidNamed);
+
+  return ValidNamed ? Success : Fail;
+}
+
+static DecodeStatus DecodeMSRSystemRegister(llvm::MCInst &Inst, unsigned Imm,
+                                            uint64_t Address,
+                                            const void *Decoder) {
+  const ARM64Disassembler *Dis =
+      static_cast<const ARM64Disassembler *>(Decoder);
+  const MCSubtargetInfo &STI = Dis->getSubtargetInfo();
+
+  Imm |= 0x8000;
+  Inst.addOperand(MCOperand::CreateImm(Imm));
+
+  bool ValidNamed;
+  (void)ARM64SysReg::MSRMapper(STI.getFeatureBits()).toString(Imm, ValidNamed);
+
+  return ValidNamed ? Success : Fail;
 }
 
 static DecodeStatus DecodeVecShiftRImm(llvm::MCInst &Inst, unsigned Imm,
@@ -854,6 +716,14 @@ static DecodeStatus DecodeThreeAddrSRegInstruction(llvm::MCInst &Inst,
   switch (Inst.getOpcode()) {
   default:
     return Fail;
+  case ARM64::ADDWrs:
+  case ARM64::ADDSWrs:
+  case ARM64::SUBWrs:
+  case ARM64::SUBSWrs:
+    // if shift == '11' then ReservedValue()
+    if (shiftHi == 0x3)
+      return Fail;
+    // Deliberate fallthrough
   case ARM64::ANDWrs:
   case ARM64::ANDSWrs:
   case ARM64::BICWrs:
@@ -861,16 +731,23 @@ static DecodeStatus DecodeThreeAddrSRegInstruction(llvm::MCInst &Inst,
   case ARM64::ORRWrs:
   case ARM64::ORNWrs:
   case ARM64::EORWrs:
-  case ARM64::EONWrs:
-  case ARM64::ADDWrs:
-  case ARM64::ADDSWrs:
-  case ARM64::SUBWrs:
-  case ARM64::SUBSWrs: {
+  case ARM64::EONWrs: {
+    // if sf == '0' and imm6<5> == '1' then ReservedValue()
+    if (shiftLo >> 5 == 1)
+      return Fail;
     DecodeGPR32RegisterClass(Inst, Rd, Addr, Decoder);
     DecodeGPR32RegisterClass(Inst, Rn, Addr, Decoder);
     DecodeGPR32RegisterClass(Inst, Rm, Addr, Decoder);
     break;
   }
+  case ARM64::ADDXrs:
+  case ARM64::ADDSXrs:
+  case ARM64::SUBXrs:
+  case ARM64::SUBSXrs:
+    // if shift == '11' then ReservedValue()
+    if (shiftHi == 0x3)
+      return Fail;
+    // Deliberate fallthrough
   case ARM64::ANDXrs:
   case ARM64::ANDSXrs:
   case ARM64::BICXrs:
@@ -879,10 +756,6 @@ static DecodeStatus DecodeThreeAddrSRegInstruction(llvm::MCInst &Inst,
   case ARM64::ORNXrs:
   case ARM64::EORXrs:
   case ARM64::EONXrs:
-  case ARM64::ADDXrs:
-  case ARM64::ADDSXrs:
-  case ARM64::SUBXrs:
-  case ARM64::SUBSXrs:
     DecodeGPR64RegisterClass(Inst, Rd, Addr, Decoder);
     DecodeGPR64RegisterClass(Inst, Rn, Addr, Decoder);
     DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
@@ -906,6 +779,8 @@ static DecodeStatus DecodeMoveImmInstruction(llvm::MCInst &Inst, uint32_t insn,
   case ARM64::MOVZWi:
   case ARM64::MOVNWi:
   case ARM64::MOVKWi:
+    if (shift & (1U << 5))
+      return Fail;
     DecodeGPR32RegisterClass(Inst, Rd, Addr, Decoder);
     break;
   case ARM64::MOVZXi:
@@ -979,7 +854,7 @@ static DecodeStatus DecodeUnsignedLdStInstruction(llvm::MCInst &Inst,
   }
 
   DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
-  if (!Dis->tryAddingSymbolicOperand(Addr, offset, Fail, 4, Inst, insn))
+  if (!Dis->tryAddingSymbolicOperand(Inst, offset, Addr, Fail, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(offset));
   return Success;
 }
@@ -1103,6 +978,15 @@ static DecodeStatus DecodeSignedLdStInstruction(llvm::MCInst &Inst,
 
   DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
   Inst.addOperand(MCOperand::CreateImm(offset));
+
+  bool IsLoad = fieldFromInstruction(insn, 22, 1);
+  bool IsIndexed = fieldFromInstruction(insn, 10, 2) != 0;
+  bool IsFP = fieldFromInstruction(insn, 26, 1);
+
+  // Cannot write back to a transfer register (but xzr != sp).
+  if (IsLoad && IsIndexed && !IsFP && Rn != 31 && Rt == Rn)
+    return SoftFail;
+
   return Success;
 }
 
@@ -1114,7 +998,8 @@ static DecodeStatus DecodeExclusiveLdStInstruction(llvm::MCInst &Inst,
   unsigned Rt2 = fieldFromInstruction(insn, 10, 5);
   unsigned Rs = fieldFromInstruction(insn, 16, 5);
 
-  switch (Inst.getOpcode()) {
+  unsigned Opcode = Inst.getOpcode();
+  switch (Opcode) {
   default:
     return Fail;
   case ARM64::STLXRW:
@@ -1170,6 +1055,13 @@ static DecodeStatus DecodeExclusiveLdStInstruction(llvm::MCInst &Inst,
   }
 
   DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
+
+  // You shouldn't load to the same register twice in an instruction...
+  if ((Opcode == ARM64::LDAXPW || Opcode == ARM64::LDXPW ||
+       Opcode == ARM64::LDAXPX || Opcode == ARM64::LDXPX) &&
+      Rt == Rt2)
+    return SoftFail;
+
   return Success;
 }
 
@@ -1180,37 +1072,44 @@ static DecodeStatus DecodePairLdStInstruction(llvm::MCInst &Inst, uint32_t insn,
   unsigned Rn = fieldFromInstruction(insn, 5, 5);
   unsigned Rt2 = fieldFromInstruction(insn, 10, 5);
   int64_t offset = fieldFromInstruction(insn, 15, 7);
+  bool IsLoad = fieldFromInstruction(insn, 22, 1);
 
   // offset is a 7-bit signed immediate, so sign extend it to
   // fill the unsigned.
   if (offset & (1 << (7 - 1)))
     offset |= ~((1LL << 7) - 1);
 
-  switch (Inst.getOpcode()) {
+  unsigned Opcode = Inst.getOpcode();
+  bool NeedsDisjointWritebackTransfer = false;
+  switch (Opcode) {
   default:
     return Fail;
-  case ARM64::LDNPXi:
-  case ARM64::STNPXi:
   case ARM64::LDPXpost:
   case ARM64::STPXpost:
   case ARM64::LDPSWpost:
-  case ARM64::LDPXi:
-  case ARM64::STPXi:
-  case ARM64::LDPSWi:
   case ARM64::LDPXpre:
   case ARM64::STPXpre:
   case ARM64::LDPSWpre:
+    NeedsDisjointWritebackTransfer = true;
+    // Fallthrough
+  case ARM64::LDNPXi:
+  case ARM64::STNPXi:
+  case ARM64::LDPXi:
+  case ARM64::STPXi:
+  case ARM64::LDPSWi:
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
     DecodeGPR64RegisterClass(Inst, Rt2, Addr, Decoder);
     break;
-  case ARM64::LDNPWi:
-  case ARM64::STNPWi:
   case ARM64::LDPWpost:
   case ARM64::STPWpost:
-  case ARM64::LDPWi:
-  case ARM64::STPWi:
   case ARM64::LDPWpre:
   case ARM64::STPWpre:
+    NeedsDisjointWritebackTransfer = true;
+    // Fallthrough
+  case ARM64::LDNPWi:
+  case ARM64::STNPWi:
+  case ARM64::LDPWi:
+  case ARM64::STPWi:
     DecodeGPR32RegisterClass(Inst, Rt, Addr, Decoder);
     DecodeGPR32RegisterClass(Inst, Rt2, Addr, Decoder);
     break;
@@ -1251,6 +1150,16 @@ static DecodeStatus DecodePairLdStInstruction(llvm::MCInst &Inst, uint32_t insn,
 
   DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
   Inst.addOperand(MCOperand::CreateImm(offset));
+
+  // You shouldn't load to the same register twice in an instruction...
+  if (IsLoad && Rt == Rt2)
+    return SoftFail;
+
+  // ... or do any operation that writes-back to a transfer register. But note
+  // that "stp xzr, xzr, [sp], #4" is fine because xzr and sp are different.
+  if (NeedsDisjointWritebackTransfer && Rn != 31 && (Rt == Rn || Rt2 == Rn))
+    return SoftFail;
+
   return Success;
 }
 
@@ -1262,79 +1171,68 @@ static DecodeStatus DecodeRegOffsetLdStInstruction(llvm::MCInst &Inst,
   unsigned Rm = fieldFromInstruction(insn, 16, 5);
   unsigned extendHi = fieldFromInstruction(insn, 13, 3);
   unsigned extendLo = fieldFromInstruction(insn, 12, 1);
-  unsigned extend = 0;
+  unsigned extend = (extendHi << 1) | extendLo;
+
+  // All RO load-store instructions are undefined if option == 00x or 10x.
+  if (extend >> 2 == 0x0 || extend >> 2 == 0x2)
+    return Fail;
 
   switch (Inst.getOpcode()) {
   default:
     return Fail;
   case ARM64::LDRSWro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRXro:
   case ARM64::STRXro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRWro:
   case ARM64::STRWro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR32RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRQro:
   case ARM64::STRQro:
-    extend = (extendHi << 1) | extendLo;
     DecodeFPR128RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRDro:
   case ARM64::STRDro:
-    extend = (extendHi << 1) | extendLo;
     DecodeFPR64RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRSro:
   case ARM64::STRSro:
-    extend = (extendHi << 1) | extendLo;
     DecodeFPR32RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRHro:
-    extend = (extendHi << 1) | extendLo;
+  case ARM64::STRHro:
     DecodeFPR16RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRBro:
-    extend = (extendHi << 1) | extendLo;
+  case ARM64::STRBro:
     DecodeFPR8RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRBBro:
   case ARM64::STRBBro:
   case ARM64::LDRSBWro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR32RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRHHro:
   case ARM64::STRHHro:
   case ARM64::LDRSHWro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR32RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRSHXro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::LDRSBXro:
-    extend = (extendHi << 1) | extendLo;
     DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
     break;
   case ARM64::PRFMro:
-    extend = (extendHi << 1) | extendLo;
     Inst.addOperand(MCOperand::CreateImm(Rt));
   }
 
   DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
-
-  if (extendHi == 0x3)
-    DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
-  else
-    DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
+  DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
 
   Inst.addOperand(MCOperand::CreateImm(extend));
   return Success;
@@ -1347,6 +1245,10 @@ static DecodeStatus DecodeAddSubERegInstruction(llvm::MCInst &Inst,
   unsigned Rn = fieldFromInstruction(insn, 5, 5);
   unsigned Rm = fieldFromInstruction(insn, 16, 5);
   unsigned extend = fieldFromInstruction(insn, 10, 6);
+
+  unsigned shift = extend & 0x7;
+  if (shift > 4)
+    return Fail;
 
   switch (Inst.getOpcode()) {
   default:
@@ -1376,10 +1278,14 @@ static DecodeStatus DecodeAddSubERegInstruction(llvm::MCInst &Inst,
     DecodeGPR32RegisterClass(Inst, Rm, Addr, Decoder);
     break;
   case ARM64::ADDXrx64:
-  case ARM64::ADDSXrx64:
   case ARM64::SUBXrx64:
-  case ARM64::SUBSXrx64:
     DecodeGPR64spRegisterClass(Inst, Rd, Addr, Decoder);
+    DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
+    DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
+    break;
+  case ARM64::SUBSXrx64:
+  case ARM64::ADDSXrx64:
+    DecodeGPR64RegisterClass(Inst, Rd, Addr, Decoder);
     DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
     DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
     break;
@@ -1398,13 +1304,19 @@ static DecodeStatus DecodeLogicalImmInstruction(llvm::MCInst &Inst,
   unsigned imm;
 
   if (Datasize) {
-    DecodeGPR64spRegisterClass(Inst, Rd, Addr, Decoder);
+    if (Inst.getOpcode() == ARM64::ANDSXri)
+      DecodeGPR64RegisterClass(Inst, Rd, Addr, Decoder);
+    else
+      DecodeGPR64spRegisterClass(Inst, Rd, Addr, Decoder);
     DecodeGPR64RegisterClass(Inst, Rn, Addr, Decoder);
     imm = fieldFromInstruction(insn, 10, 13);
     if (!ARM64_AM::isValidDecodeLogicalImmediate(imm, 64))
       return Fail;
   } else {
-    DecodeGPR32RegisterClass(Inst, Rd, Addr, Decoder);
+    if (Inst.getOpcode() == ARM64::ANDSWri)
+      DecodeGPR32RegisterClass(Inst, Rd, Addr, Decoder);
+    else
+      DecodeGPR32spRegisterClass(Inst, Rd, Addr, Decoder);
     DecodeGPR32RegisterClass(Inst, Rn, Addr, Decoder);
     imm = fieldFromInstruction(insn, 10, 12);
     if (!ARM64_AM::isValidDecodeLogicalImmediate(imm, 32))
@@ -1484,7 +1396,7 @@ static DecodeStatus DecodeAdrInstruction(llvm::MCInst &Inst, uint32_t insn,
     imm |= ~((1LL << 21) - 1);
 
   DecodeGPR64RegisterClass(Inst, Rd, Addr, Decoder);
-  if (!Dis->tryAddingSymbolicOperand(Addr, imm, Fail, 4, Inst, insn))
+  if (!Dis->tryAddingSymbolicOperand(Inst, imm, Addr, Fail, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(imm));
 
   return Success;
@@ -1520,7 +1432,7 @@ static DecodeStatus DecodeBaseAddSubImm(llvm::MCInst &Inst, uint32_t insn,
     DecodeGPR32spRegisterClass(Inst, Rn, Addr, Decoder);
   }
 
-  if (!Dis->tryAddingSymbolicOperand(Addr, ImmVal, Fail, 4, Inst, insn))
+  if (!Dis->tryAddingSymbolicOperand(Inst, Imm, Addr, Fail, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(ImmVal));
   Inst.addOperand(MCOperand::CreateImm(12 * ShifterVal));
   return Success;
@@ -1537,23 +1449,28 @@ static DecodeStatus DecodeUnconditionalBranch(llvm::MCInst &Inst, uint32_t insn,
   if (imm & (1 << (26 - 1)))
     imm |= ~((1LL << 26) - 1);
 
-  if (!Dis->tryAddingSymbolicOperand(Addr, imm << 2, Success, 4, Inst))
+  if (!Dis->tryAddingSymbolicOperand(Inst, imm << 2, Addr, true, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(imm));
 
   return Success;
 }
 
-static DecodeStatus DecodeSystemCPSRInstruction(llvm::MCInst &Inst,
-                                                uint32_t insn, uint64_t Addr,
-                                                const void *Decoder) {
+static DecodeStatus DecodeSystemPStateInstruction(llvm::MCInst &Inst,
+                                                  uint32_t insn, uint64_t Addr,
+                                                  const void *Decoder) {
   uint64_t op1 = fieldFromInstruction(insn, 16, 3);
   uint64_t op2 = fieldFromInstruction(insn, 5, 3);
   uint64_t crm = fieldFromInstruction(insn, 8, 4);
 
-  Inst.addOperand(MCOperand::CreateImm((op1 << 3) | op2));
+  uint64_t pstate_field = (op1 << 3) | op2;
+
+  Inst.addOperand(MCOperand::CreateImm(pstate_field));
   Inst.addOperand(MCOperand::CreateImm(crm));
 
-  return Success;
+  bool ValidNamed;
+  (void)ARM64PState::PStateMapper().toString(pstate_field, ValidNamed);
+  
+  return ValidNamed ? Success : Fail;
 }
 
 static DecodeStatus DecodeTestAndBranch(llvm::MCInst &Inst, uint32_t insn,
@@ -1571,572 +1488,8 @@ static DecodeStatus DecodeTestAndBranch(llvm::MCInst &Inst, uint32_t insn,
 
   DecodeGPR64RegisterClass(Inst, Rt, Addr, Decoder);
   Inst.addOperand(MCOperand::CreateImm(bit));
-  if (!Dis->tryAddingSymbolicOperand(Addr, dst << 2, Success, 4, Inst))
+  if (!Dis->tryAddingSymbolicOperand(Inst, dst << 2, Addr, true, 0, 4))
     Inst.addOperand(MCOperand::CreateImm(dst));
 
-  return Success;
-}
-
-static DecodeStatus DecodeSIMDLdStPost(llvm::MCInst &Inst, uint32_t insn,
-                                       uint64_t Addr, const void *Decoder) {
-  uint64_t Rd = fieldFromInstruction(insn, 0, 5);
-  uint64_t Rn = fieldFromInstruction(insn, 5, 5);
-  uint64_t Rm = fieldFromInstruction(insn, 16, 5);
-
-  switch (Inst.getOpcode()) {
-  default:
-    return Fail;
-  case ARM64::ST1Onev8b_POST:
-  case ARM64::ST1Onev4h_POST:
-  case ARM64::ST1Onev2s_POST:
-  case ARM64::ST1Onev1d_POST:
-  case ARM64::LD1Onev8b_POST:
-  case ARM64::LD1Onev4h_POST:
-  case ARM64::LD1Onev2s_POST:
-  case ARM64::LD1Onev1d_POST:
-    DecodeFPR64RegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Onev16b_POST:
-  case ARM64::ST1Onev8h_POST:
-  case ARM64::ST1Onev4s_POST:
-  case ARM64::ST1Onev2d_POST:
-  case ARM64::LD1Onev16b_POST:
-  case ARM64::LD1Onev8h_POST:
-  case ARM64::LD1Onev4s_POST:
-  case ARM64::LD1Onev2d_POST:
-    DecodeFPR128RegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Twov8b_POST:
-  case ARM64::ST1Twov4h_POST:
-  case ARM64::ST1Twov2s_POST:
-  case ARM64::ST1Twov1d_POST:
-  case ARM64::ST2Twov8b_POST:
-  case ARM64::ST2Twov4h_POST:
-  case ARM64::ST2Twov2s_POST:
-  case ARM64::LD1Twov8b_POST:
-  case ARM64::LD1Twov4h_POST:
-  case ARM64::LD1Twov2s_POST:
-  case ARM64::LD1Twov1d_POST:
-  case ARM64::LD2Twov8b_POST:
-  case ARM64::LD2Twov4h_POST:
-  case ARM64::LD2Twov2s_POST:
-    DecodeDDRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Threev8b_POST:
-  case ARM64::ST1Threev4h_POST:
-  case ARM64::ST1Threev2s_POST:
-  case ARM64::ST1Threev1d_POST:
-  case ARM64::ST3Threev8b_POST:
-  case ARM64::ST3Threev4h_POST:
-  case ARM64::ST3Threev2s_POST:
-  case ARM64::LD1Threev8b_POST:
-  case ARM64::LD1Threev4h_POST:
-  case ARM64::LD1Threev2s_POST:
-  case ARM64::LD1Threev1d_POST:
-  case ARM64::LD3Threev8b_POST:
-  case ARM64::LD3Threev4h_POST:
-  case ARM64::LD3Threev2s_POST:
-    DecodeDDDRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Fourv8b_POST:
-  case ARM64::ST1Fourv4h_POST:
-  case ARM64::ST1Fourv2s_POST:
-  case ARM64::ST1Fourv1d_POST:
-  case ARM64::ST4Fourv8b_POST:
-  case ARM64::ST4Fourv4h_POST:
-  case ARM64::ST4Fourv2s_POST:
-  case ARM64::LD1Fourv8b_POST:
-  case ARM64::LD1Fourv4h_POST:
-  case ARM64::LD1Fourv2s_POST:
-  case ARM64::LD1Fourv1d_POST:
-  case ARM64::LD4Fourv8b_POST:
-  case ARM64::LD4Fourv4h_POST:
-  case ARM64::LD4Fourv2s_POST:
-    DecodeDDDDRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Twov16b_POST:
-  case ARM64::ST1Twov8h_POST:
-  case ARM64::ST1Twov4s_POST:
-  case ARM64::ST1Twov2d_POST:
-  case ARM64::ST2Twov16b_POST:
-  case ARM64::ST2Twov8h_POST:
-  case ARM64::ST2Twov4s_POST:
-  case ARM64::ST2Twov2d_POST:
-  case ARM64::LD1Twov16b_POST:
-  case ARM64::LD1Twov8h_POST:
-  case ARM64::LD1Twov4s_POST:
-  case ARM64::LD1Twov2d_POST:
-  case ARM64::LD2Twov16b_POST:
-  case ARM64::LD2Twov8h_POST:
-  case ARM64::LD2Twov4s_POST:
-  case ARM64::LD2Twov2d_POST:
-    DecodeQQRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Threev16b_POST:
-  case ARM64::ST1Threev8h_POST:
-  case ARM64::ST1Threev4s_POST:
-  case ARM64::ST1Threev2d_POST:
-  case ARM64::ST3Threev16b_POST:
-  case ARM64::ST3Threev8h_POST:
-  case ARM64::ST3Threev4s_POST:
-  case ARM64::ST3Threev2d_POST:
-  case ARM64::LD1Threev16b_POST:
-  case ARM64::LD1Threev8h_POST:
-  case ARM64::LD1Threev4s_POST:
-  case ARM64::LD1Threev2d_POST:
-  case ARM64::LD3Threev16b_POST:
-  case ARM64::LD3Threev8h_POST:
-  case ARM64::LD3Threev4s_POST:
-  case ARM64::LD3Threev2d_POST:
-    DecodeQQQRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  case ARM64::ST1Fourv16b_POST:
-  case ARM64::ST1Fourv8h_POST:
-  case ARM64::ST1Fourv4s_POST:
-  case ARM64::ST1Fourv2d_POST:
-  case ARM64::ST4Fourv16b_POST:
-  case ARM64::ST4Fourv8h_POST:
-  case ARM64::ST4Fourv4s_POST:
-  case ARM64::ST4Fourv2d_POST:
-  case ARM64::LD1Fourv16b_POST:
-  case ARM64::LD1Fourv8h_POST:
-  case ARM64::LD1Fourv4s_POST:
-  case ARM64::LD1Fourv2d_POST:
-  case ARM64::LD4Fourv16b_POST:
-  case ARM64::LD4Fourv8h_POST:
-  case ARM64::LD4Fourv4s_POST:
-  case ARM64::LD4Fourv2d_POST:
-    DecodeQQQQRegisterClass(Inst, Rd, Addr, Decoder);
-    break;
-  }
-
-  DecodeGPR64spRegisterClass(Inst, Rn, Addr, Decoder);
-  DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
-  return Success;
-}
-
-static DecodeStatus DecodeSIMDLdStSingle(llvm::MCInst &Inst, uint32_t insn,
-                                         uint64_t Addr, const void *Decoder) {
-  uint64_t Rt = fieldFromInstruction(insn, 0, 5);
-  uint64_t Rn = fieldFromInstruction(insn, 5, 5);
-  uint64_t Rm = fieldFromInstruction(insn, 16, 5);
-  uint64_t size = fieldFromInstruction(insn, 10, 2);
-  uint64_t S = fieldFromInstruction(insn, 12, 1);
-  uint64_t Q = fieldFromInstruction(insn, 30, 1);
-  uint64_t index = 0;
-
-  switch (Inst.getOpcode()) {
-  case ARM64::ST1i8:
-  case ARM64::ST1i8_POST:
-  case ARM64::ST2i8:
-  case ARM64::ST2i8_POST:
-  case ARM64::ST3i8_POST:
-  case ARM64::ST3i8:
-  case ARM64::ST4i8_POST:
-  case ARM64::ST4i8:
-    index = (Q << 3) | (S << 2) | size;
-    break;
-  case ARM64::ST1i16:
-  case ARM64::ST1i16_POST:
-  case ARM64::ST2i16:
-  case ARM64::ST2i16_POST:
-  case ARM64::ST3i16_POST:
-  case ARM64::ST3i16:
-  case ARM64::ST4i16_POST:
-  case ARM64::ST4i16:
-    index = (Q << 2) | (S << 1) | (size >> 1);
-    break;
-  case ARM64::ST1i32:
-  case ARM64::ST1i32_POST:
-  case ARM64::ST2i32:
-  case ARM64::ST2i32_POST:
-  case ARM64::ST3i32_POST:
-  case ARM64::ST3i32:
-  case ARM64::ST4i32_POST:
-  case ARM64::ST4i32:
-    index = (Q << 1) | S;
-    break;
-  case ARM64::ST1i64:
-  case ARM64::ST1i64_POST:
-  case ARM64::ST2i64:
-  case ARM64::ST2i64_POST:
-  case ARM64::ST3i64_POST:
-  case ARM64::ST3i64:
-  case ARM64::ST4i64_POST:
-  case ARM64::ST4i64:
-    index = Q;
-    break;
-  }
-
-  switch (Inst.getOpcode()) {
-  default:
-    return Fail;
-  case ARM64::LD1Rv8b:
-  case ARM64::LD1Rv8b_POST:
-  case ARM64::LD1Rv4h:
-  case ARM64::LD1Rv4h_POST:
-  case ARM64::LD1Rv2s:
-  case ARM64::LD1Rv2s_POST:
-  case ARM64::LD1Rv1d:
-  case ARM64::LD1Rv1d_POST:
-    DecodeFPR64RegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD1Rv16b:
-  case ARM64::LD1Rv16b_POST:
-  case ARM64::LD1Rv8h:
-  case ARM64::LD1Rv8h_POST:
-  case ARM64::LD1Rv4s:
-  case ARM64::LD1Rv4s_POST:
-  case ARM64::LD1Rv2d:
-  case ARM64::LD1Rv2d_POST:
-  case ARM64::ST1i8:
-  case ARM64::ST1i8_POST:
-  case ARM64::ST1i16:
-  case ARM64::ST1i16_POST:
-  case ARM64::ST1i32:
-  case ARM64::ST1i32_POST:
-  case ARM64::ST1i64:
-  case ARM64::ST1i64_POST:
-    DecodeFPR128RegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD2Rv16b:
-  case ARM64::LD2Rv16b_POST:
-  case ARM64::LD2Rv8h:
-  case ARM64::LD2Rv8h_POST:
-  case ARM64::LD2Rv4s:
-  case ARM64::LD2Rv4s_POST:
-  case ARM64::LD2Rv2d:
-  case ARM64::LD2Rv2d_POST:
-  case ARM64::ST2i8:
-  case ARM64::ST2i8_POST:
-  case ARM64::ST2i16:
-  case ARM64::ST2i16_POST:
-  case ARM64::ST2i32:
-  case ARM64::ST2i32_POST:
-  case ARM64::ST2i64:
-  case ARM64::ST2i64_POST:
-    DecodeQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD2Rv8b:
-  case ARM64::LD2Rv8b_POST:
-  case ARM64::LD2Rv4h:
-  case ARM64::LD2Rv4h_POST:
-  case ARM64::LD2Rv2s:
-  case ARM64::LD2Rv2s_POST:
-  case ARM64::LD2Rv1d:
-  case ARM64::LD2Rv1d_POST:
-    DecodeDDRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD3Rv8b:
-  case ARM64::LD3Rv8b_POST:
-  case ARM64::LD3Rv4h:
-  case ARM64::LD3Rv4h_POST:
-  case ARM64::LD3Rv2s:
-  case ARM64::LD3Rv2s_POST:
-  case ARM64::LD3Rv1d:
-  case ARM64::LD3Rv1d_POST:
-    DecodeDDDRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD3Rv16b:
-  case ARM64::LD3Rv16b_POST:
-  case ARM64::LD3Rv8h:
-  case ARM64::LD3Rv8h_POST:
-  case ARM64::LD3Rv4s:
-  case ARM64::LD3Rv4s_POST:
-  case ARM64::LD3Rv2d:
-  case ARM64::LD3Rv2d_POST:
-  case ARM64::ST3i8:
-  case ARM64::ST3i8_POST:
-  case ARM64::ST3i16:
-  case ARM64::ST3i16_POST:
-  case ARM64::ST3i32:
-  case ARM64::ST3i32_POST:
-  case ARM64::ST3i64:
-  case ARM64::ST3i64_POST:
-    DecodeQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD4Rv8b:
-  case ARM64::LD4Rv8b_POST:
-  case ARM64::LD4Rv4h:
-  case ARM64::LD4Rv4h_POST:
-  case ARM64::LD4Rv2s:
-  case ARM64::LD4Rv2s_POST:
-  case ARM64::LD4Rv1d:
-  case ARM64::LD4Rv1d_POST:
-    DecodeDDDDRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD4Rv16b:
-  case ARM64::LD4Rv16b_POST:
-  case ARM64::LD4Rv8h:
-  case ARM64::LD4Rv8h_POST:
-  case ARM64::LD4Rv4s:
-  case ARM64::LD4Rv4s_POST:
-  case ARM64::LD4Rv2d:
-  case ARM64::LD4Rv2d_POST:
-  case ARM64::ST4i8:
-  case ARM64::ST4i8_POST:
-  case ARM64::ST4i16:
-  case ARM64::ST4i16_POST:
-  case ARM64::ST4i32:
-  case ARM64::ST4i32_POST:
-  case ARM64::ST4i64:
-  case ARM64::ST4i64_POST:
-    DecodeQQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  }
-
-  switch (Inst.getOpcode()) {
-  case ARM64::LD1Rv8b:
-  case ARM64::LD1Rv8b_POST:
-  case ARM64::LD1Rv16b:
-  case ARM64::LD1Rv16b_POST:
-  case ARM64::LD1Rv4h:
-  case ARM64::LD1Rv4h_POST:
-  case ARM64::LD1Rv8h:
-  case ARM64::LD1Rv8h_POST:
-  case ARM64::LD1Rv4s:
-  case ARM64::LD1Rv4s_POST:
-  case ARM64::LD1Rv2s:
-  case ARM64::LD1Rv2s_POST:
-  case ARM64::LD1Rv1d:
-  case ARM64::LD1Rv1d_POST:
-  case ARM64::LD1Rv2d:
-  case ARM64::LD1Rv2d_POST:
-  case ARM64::LD2Rv8b:
-  case ARM64::LD2Rv8b_POST:
-  case ARM64::LD2Rv16b:
-  case ARM64::LD2Rv16b_POST:
-  case ARM64::LD2Rv4h:
-  case ARM64::LD2Rv4h_POST:
-  case ARM64::LD2Rv8h:
-  case ARM64::LD2Rv8h_POST:
-  case ARM64::LD2Rv2s:
-  case ARM64::LD2Rv2s_POST:
-  case ARM64::LD2Rv4s:
-  case ARM64::LD2Rv4s_POST:
-  case ARM64::LD2Rv2d:
-  case ARM64::LD2Rv2d_POST:
-  case ARM64::LD2Rv1d:
-  case ARM64::LD2Rv1d_POST:
-  case ARM64::LD3Rv8b:
-  case ARM64::LD3Rv8b_POST:
-  case ARM64::LD3Rv16b:
-  case ARM64::LD3Rv16b_POST:
-  case ARM64::LD3Rv4h:
-  case ARM64::LD3Rv4h_POST:
-  case ARM64::LD3Rv8h:
-  case ARM64::LD3Rv8h_POST:
-  case ARM64::LD3Rv2s:
-  case ARM64::LD3Rv2s_POST:
-  case ARM64::LD3Rv4s:
-  case ARM64::LD3Rv4s_POST:
-  case ARM64::LD3Rv2d:
-  case ARM64::LD3Rv2d_POST:
-  case ARM64::LD3Rv1d:
-  case ARM64::LD3Rv1d_POST:
-  case ARM64::LD4Rv8b:
-  case ARM64::LD4Rv8b_POST:
-  case ARM64::LD4Rv16b:
-  case ARM64::LD4Rv16b_POST:
-  case ARM64::LD4Rv4h:
-  case ARM64::LD4Rv4h_POST:
-  case ARM64::LD4Rv8h:
-  case ARM64::LD4Rv8h_POST:
-  case ARM64::LD4Rv2s:
-  case ARM64::LD4Rv2s_POST:
-  case ARM64::LD4Rv4s:
-  case ARM64::LD4Rv4s_POST:
-  case ARM64::LD4Rv2d:
-  case ARM64::LD4Rv2d_POST:
-  case ARM64::LD4Rv1d:
-  case ARM64::LD4Rv1d_POST:
-    break;
-  default:
-    Inst.addOperand(MCOperand::CreateImm(index));
-  }
-
-  DecodeGPR64RegisterClass(Inst, Rn, Addr, Decoder);
-
-  switch (Inst.getOpcode()) {
-  case ARM64::ST1i8_POST:
-  case ARM64::ST1i16_POST:
-  case ARM64::ST1i32_POST:
-  case ARM64::ST1i64_POST:
-  case ARM64::LD1Rv8b_POST:
-  case ARM64::LD1Rv16b_POST:
-  case ARM64::LD1Rv4h_POST:
-  case ARM64::LD1Rv8h_POST:
-  case ARM64::LD1Rv2s_POST:
-  case ARM64::LD1Rv4s_POST:
-  case ARM64::LD1Rv1d_POST:
-  case ARM64::LD1Rv2d_POST:
-  case ARM64::ST2i8_POST:
-  case ARM64::ST2i16_POST:
-  case ARM64::ST2i32_POST:
-  case ARM64::ST2i64_POST:
-  case ARM64::LD2Rv8b_POST:
-  case ARM64::LD2Rv16b_POST:
-  case ARM64::LD2Rv4h_POST:
-  case ARM64::LD2Rv8h_POST:
-  case ARM64::LD2Rv2s_POST:
-  case ARM64::LD2Rv4s_POST:
-  case ARM64::LD2Rv2d_POST:
-  case ARM64::LD2Rv1d_POST:
-  case ARM64::ST3i8_POST:
-  case ARM64::ST3i16_POST:
-  case ARM64::ST3i32_POST:
-  case ARM64::ST3i64_POST:
-  case ARM64::LD3Rv8b_POST:
-  case ARM64::LD3Rv16b_POST:
-  case ARM64::LD3Rv4h_POST:
-  case ARM64::LD3Rv8h_POST:
-  case ARM64::LD3Rv2s_POST:
-  case ARM64::LD3Rv4s_POST:
-  case ARM64::LD3Rv2d_POST:
-  case ARM64::LD3Rv1d_POST:
-  case ARM64::ST4i8_POST:
-  case ARM64::ST4i16_POST:
-  case ARM64::ST4i32_POST:
-  case ARM64::ST4i64_POST:
-  case ARM64::LD4Rv8b_POST:
-  case ARM64::LD4Rv16b_POST:
-  case ARM64::LD4Rv4h_POST:
-  case ARM64::LD4Rv8h_POST:
-  case ARM64::LD4Rv2s_POST:
-  case ARM64::LD4Rv4s_POST:
-  case ARM64::LD4Rv2d_POST:
-  case ARM64::LD4Rv1d_POST:
-    DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
-    break;
-  }
-  return Success;
-}
-
-static DecodeStatus DecodeSIMDLdStSingleTied(llvm::MCInst &Inst, uint32_t insn,
-                                             uint64_t Addr,
-                                             const void *Decoder) {
-  uint64_t Rt = fieldFromInstruction(insn, 0, 5);
-  uint64_t Rn = fieldFromInstruction(insn, 5, 5);
-  uint64_t Rm = fieldFromInstruction(insn, 16, 5);
-  uint64_t size = fieldFromInstruction(insn, 10, 2);
-  uint64_t S = fieldFromInstruction(insn, 12, 1);
-  uint64_t Q = fieldFromInstruction(insn, 30, 1);
-  uint64_t index = 0;
-
-  switch (Inst.getOpcode()) {
-  case ARM64::LD1i8:
-  case ARM64::LD1i8_POST:
-  case ARM64::LD2i8:
-  case ARM64::LD2i8_POST:
-  case ARM64::LD3i8_POST:
-  case ARM64::LD3i8:
-  case ARM64::LD4i8_POST:
-  case ARM64::LD4i8:
-    index = (Q << 3) | (S << 2) | size;
-    break;
-  case ARM64::LD1i16:
-  case ARM64::LD1i16_POST:
-  case ARM64::LD2i16:
-  case ARM64::LD2i16_POST:
-  case ARM64::LD3i16_POST:
-  case ARM64::LD3i16:
-  case ARM64::LD4i16_POST:
-  case ARM64::LD4i16:
-    index = (Q << 2) | (S << 1) | (size >> 1);
-    break;
-  case ARM64::LD1i32:
-  case ARM64::LD1i32_POST:
-  case ARM64::LD2i32:
-  case ARM64::LD2i32_POST:
-  case ARM64::LD3i32_POST:
-  case ARM64::LD3i32:
-  case ARM64::LD4i32_POST:
-  case ARM64::LD4i32:
-    index = (Q << 1) | S;
-    break;
-  case ARM64::LD1i64:
-  case ARM64::LD1i64_POST:
-  case ARM64::LD2i64:
-  case ARM64::LD2i64_POST:
-  case ARM64::LD3i64_POST:
-  case ARM64::LD3i64:
-  case ARM64::LD4i64_POST:
-  case ARM64::LD4i64:
-    index = Q;
-    break;
-  }
-
-  switch (Inst.getOpcode()) {
-  default:
-    return Fail;
-  case ARM64::LD1i8:
-  case ARM64::LD1i8_POST:
-  case ARM64::LD1i16:
-  case ARM64::LD1i16_POST:
-  case ARM64::LD1i32:
-  case ARM64::LD1i32_POST:
-  case ARM64::LD1i64:
-  case ARM64::LD1i64_POST:
-    DecodeFPR128RegisterClass(Inst, Rt, Addr, Decoder);
-    DecodeFPR128RegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD2i8:
-  case ARM64::LD2i8_POST:
-  case ARM64::LD2i16:
-  case ARM64::LD2i16_POST:
-  case ARM64::LD2i32:
-  case ARM64::LD2i32_POST:
-  case ARM64::LD2i64:
-  case ARM64::LD2i64_POST:
-    DecodeQQRegisterClass(Inst, Rt, Addr, Decoder);
-    DecodeQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD3i8:
-  case ARM64::LD3i8_POST:
-  case ARM64::LD3i16:
-  case ARM64::LD3i16_POST:
-  case ARM64::LD3i32:
-  case ARM64::LD3i32_POST:
-  case ARM64::LD3i64:
-  case ARM64::LD3i64_POST:
-    DecodeQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    DecodeQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  case ARM64::LD4i8:
-  case ARM64::LD4i8_POST:
-  case ARM64::LD4i16:
-  case ARM64::LD4i16_POST:
-  case ARM64::LD4i32:
-  case ARM64::LD4i32_POST:
-  case ARM64::LD4i64:
-  case ARM64::LD4i64_POST:
-    DecodeQQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    DecodeQQQQRegisterClass(Inst, Rt, Addr, Decoder);
-    break;
-  }
-
-  Inst.addOperand(MCOperand::CreateImm(index));
-  DecodeGPR64RegisterClass(Inst, Rn, Addr, Decoder);
-
-  switch (Inst.getOpcode()) {
-  case ARM64::LD1i8_POST:
-  case ARM64::LD1i16_POST:
-  case ARM64::LD1i32_POST:
-  case ARM64::LD1i64_POST:
-  case ARM64::LD2i8_POST:
-  case ARM64::LD2i16_POST:
-  case ARM64::LD2i32_POST:
-  case ARM64::LD2i64_POST:
-  case ARM64::LD3i8_POST:
-  case ARM64::LD3i16_POST:
-  case ARM64::LD3i32_POST:
-  case ARM64::LD3i64_POST:
-  case ARM64::LD4i8_POST:
-  case ARM64::LD4i16_POST:
-  case ARM64::LD4i32_POST:
-  case ARM64::LD4i64_POST:
-    DecodeGPR64RegisterClass(Inst, Rm, Addr, Decoder);
-    break;
-  }
   return Success;
 }

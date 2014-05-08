@@ -14,12 +14,18 @@
 let TargetPrefix = "arm64" in {
 
 def int_arm64_ldxr : Intrinsic<[llvm_i64_ty], [llvm_anyptr_ty]>;
+def int_arm64_ldaxr : Intrinsic<[llvm_i64_ty], [llvm_anyptr_ty]>;
 def int_arm64_stxr : Intrinsic<[llvm_i32_ty], [llvm_i64_ty, llvm_anyptr_ty]>;
-def int_arm64_clrex : Intrinsic<[]>;
+def int_arm64_stlxr : Intrinsic<[llvm_i32_ty], [llvm_i64_ty, llvm_anyptr_ty]>;
 
 def int_arm64_ldxp : Intrinsic<[llvm_i64_ty, llvm_i64_ty], [llvm_ptr_ty]>;
-def int_arm64_stxp : Intrinsic<[llvm_i32_ty], [llvm_i64_ty, llvm_i64_ty,
-    llvm_ptr_ty]>;
+def int_arm64_ldaxp : Intrinsic<[llvm_i64_ty, llvm_i64_ty], [llvm_ptr_ty]>;
+def int_arm64_stxp : Intrinsic<[llvm_i32_ty],
+                               [llvm_i64_ty, llvm_i64_ty, llvm_ptr_ty]>;
+def int_arm64_stlxp : Intrinsic<[llvm_i32_ty],
+                                [llvm_i64_ty, llvm_i64_ty, llvm_ptr_ty]>;
+
+def int_arm64_clrex : Intrinsic<[]>;
 
 def int_arm64_sdiv : Intrinsic<[llvm_anyint_ty], [LLVMMatchType<0>,
                                 LLVMMatchType<0>], [IntrNoMem]>;
@@ -74,8 +80,7 @@ let TargetPrefix = "arm64" in {  // All intrinsics start with "llvm.arm64.".
                 [IntrNoMem]>;
   class AdvSIMD_2VectorArg_Long_Intrinsic
     : Intrinsic<[llvm_anyvector_ty],
-                [LLVMTruncatedType<0>,
-                 LLVMTruncatedType<0>],
+                [LLVMTruncatedType<0>, LLVMTruncatedType<0>],
                 [IntrNoMem]>;
   class AdvSIMD_2VectorArg_Wide_Intrinsic
     : Intrinsic<[llvm_anyvector_ty],
@@ -178,8 +183,15 @@ let Properties = [IntrNoMem] in {
   def int_arm64_neon_umull : AdvSIMD_2VectorArg_Long_Intrinsic;
   def int_arm64_neon_pmull : AdvSIMD_2VectorArg_Long_Intrinsic;
 
+  // 64-bit polynomial multiply really returns an i128, which is not legal. Fake
+  // it with a v16i8.
+  def int_arm64_neon_pmull64 :
+        Intrinsic<[llvm_v16i8_ty], [llvm_i64_ty, llvm_i64_ty], [IntrNoMem]>;
+
   // Vector Extending Multiply
-  def int_arm64_neon_fmulx : AdvSIMD_2FloatArg_Intrinsic;
+  def int_arm64_neon_fmulx : AdvSIMD_2FloatArg_Intrinsic {
+    let Properties = [IntrNoMem, Commutative];
+  }
 
   // Vector Saturating Doubling Long Multiply
   def int_arm64_neon_sqdmull : AdvSIMD_2VectorArg_Long_Intrinsic;
@@ -268,6 +280,9 @@ let Properties = [IntrNoMem] in {
   def int_arm64_neon_frecps : AdvSIMD_2FloatArg_Intrinsic;
   def int_arm64_neon_frsqrts : AdvSIMD_2FloatArg_Intrinsic;
 
+  // Reciprocal Exponent
+  def int_arm64_neon_frecpx : AdvSIMD_1FloatArg_Intrinsic;
+
   // Vector Saturating Shift Left
   def int_arm64_neon_sqshl : AdvSIMD_2IntArg_Intrinsic;
   def int_arm64_neon_uqshl : AdvSIMD_2IntArg_Intrinsic;
@@ -326,7 +341,7 @@ let Properties = [IntrNoMem] in {
   def int_arm64_neon_sqxtun : AdvSIMD_1VectorArg_Narrow_Intrinsic;
 
   // Vector Absolute Value
-  def int_arm64_neon_abs : AdvSIMD_1VectorArg_Intrinsic;
+  def int_arm64_neon_abs : AdvSIMD_1IntArg_Intrinsic;
 
   // Vector Saturating Absolute Value
   def int_arm64_neon_sqabs : AdvSIMD_1IntArg_Intrinsic;
@@ -339,11 +354,11 @@ let Properties = [IntrNoMem] in {
 
   // Vector Reciprocal Estimate
   def int_arm64_neon_urecpe : AdvSIMD_1VectorArg_Intrinsic;
-  def int_arm64_neon_frecpe : AdvSIMD_1VectorArg_Intrinsic;
+  def int_arm64_neon_frecpe : AdvSIMD_1FloatArg_Intrinsic;
 
   // Vector Square Root Estimate
   def int_arm64_neon_ursqrte : AdvSIMD_1VectorArg_Intrinsic;
-  def int_arm64_neon_frsqrte : AdvSIMD_1VectorArg_Intrinsic;
+  def int_arm64_neon_frsqrte : AdvSIMD_1FloatArg_Intrinsic;
 
   // Vector Bitwise Reverse
   def int_arm64_neon_rbit : AdvSIMD_1VectorArg_Intrinsic;

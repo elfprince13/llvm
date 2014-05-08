@@ -83,6 +83,9 @@ namespace llvm {
       /// readcyclecounter
       RDTSC_DAG,
 
+      /// X86 Read Time-Stamp Counter and Processor ID.
+      RDTSCP_DAG,
+
       /// X86 compare and logical compare instructions.
       CMP, COMI, UCOMI,
 
@@ -291,7 +294,6 @@ namespace llvm {
       ADD, SUB, ADC, SBB, SMUL,
       INC, DEC, OR, XOR, AND,
 
-      BZHI,   // BZHI - Zero high bits
       BEXTR,  // BEXTR - Bit field extract
 
       UMUL, // LOW, HI, FLAGS = umul LHS, RHS
@@ -345,6 +347,8 @@ namespace llvm {
 
       // PMULUDQ - Vector multiply packed unsigned doubleword integers
       PMULUDQ,
+      // PMULUDQ - Vector multiply packed signed doubleword integers
+      PMULDQ,
 
       // FMA nodes
       FMADD,
@@ -521,7 +525,7 @@ namespace llvm {
 
   //===--------------------------------------------------------------------===//
   //  X86TargetLowering - X86 Implementation of the TargetLowering interface
-  class X86TargetLowering : public TargetLowering {
+  class X86TargetLowering final : public TargetLowering {
   public:
     explicit X86TargetLowering(X86TargetMachine &TM);
 
@@ -626,6 +630,7 @@ namespace llvm {
     // ComputeNumSignBitsForTargetNode - Determine the number of bits in the
     // operation that are sign bits.
     unsigned ComputeNumSignBitsForTargetNode(SDValue Op,
+                                             const SelectionDAG &DAG,
                                              unsigned Depth) const override;
 
     bool isGAPlusOffset(SDNode *N, const GlobalValue* &GA,
@@ -679,6 +684,12 @@ namespace llvm {
     /// the immediate into a register.
     bool isLegalAddImmediate(int64_t Imm) const override;
 
+    /// \brief Return the cost of the scaling factor used in the addressing
+    /// mode represented by AM for this target, for a load/store
+    /// of the specified type.
+    /// If the AM is supported, the return value must be >= 0.
+    /// If the AM is not supported, it returns a negative value.
+    int getScalingFactorCost(const AddrMode &AM, Type *Ty) const override;
 
     bool isVectorShiftByScalarCheap(Type *Ty) const override;
 
@@ -756,7 +767,7 @@ namespace llvm {
     /// isTargetFTOL - Return true if the target uses the MSVC _ftol2 routine
     /// for fptoui.
     bool isTargetFTOL() const {
-      return Subtarget->isTargetWindows() && !Subtarget->is64Bit();
+      return Subtarget->isTargetKnownWindowsMSVC() && !Subtarget->is64Bit();
     }
 
     /// isIntegerTypeFTOL - Return true if the MSVC _ftol2 routine should be
@@ -771,9 +782,11 @@ namespace llvm {
                                            Type *Ty) const override;
 
     /// Intel processors have a unified instruction and data cache
-    const char * getClearCacheBuiltinName() const {
-      return 0; // nothing to do, move along.
+    const char * getClearCacheBuiltinName() const override {
+      return nullptr; // nothing to do, move along.
     }
+
+    unsigned getRegisterByName(const char* RegName) const;
 
     /// createFastISel - This method returns a target specific FastISel object,
     /// or null if the target does not support "fast" ISel.
@@ -873,6 +886,8 @@ namespace llvm {
     SDValue LowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
     SDValue ExtractBitFromMaskVector(SDValue Op, SelectionDAG &DAG) const;
+    SDValue InsertBitToMaskVector(SDValue Op, SelectionDAG &DAG) const;
+
     SDValue LowerINSERT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
@@ -908,6 +923,7 @@ namespace llvm {
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSIGN_EXTEND_INREG(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerWin64_i128OP(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue
       LowerFormalArguments(SDValue Chain,
@@ -936,7 +952,7 @@ namespace llvm {
                         const SmallVectorImpl<ISD::OutputArg> &Outs,
                         LLVMContext &Context) const override;
 
-    const uint16_t *getScratchRegisters(CallingConv::ID CC) const override;
+    const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
 
     /// Utility function to emit atomic-load-arith operations (and, or, xor,
     /// nand, max, min, umax, umin). It takes the corresponding instruction to
@@ -987,11 +1003,12 @@ namespace llvm {
 
     /// Emit nodes that will be selected as "test Op0,Op0", or something
     /// equivalent, for use with the given x86 condition code.
-    SDValue EmitTest(SDValue Op0, unsigned X86CC, SelectionDAG &DAG) const;
+    SDValue EmitTest(SDValue Op0, unsigned X86CC, SDLoc dl,
+                     SelectionDAG &DAG) const;
 
     /// Emit nodes that will be selected as "cmp Op0,Op1", or something
     /// equivalent, for use with the given x86 condition code.
-    SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC,
+    SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC, SDLoc dl,
                     SelectionDAG &DAG) const;
 
     /// Convert a comparison if required by the subtarget.

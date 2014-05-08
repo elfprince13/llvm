@@ -33,8 +33,8 @@ class StringRef;
 class Target;
 class raw_ostream;
 
-extern Target TheARMleTarget, TheThumbleTarget;
-extern Target TheARMbeTarget, TheThumbbeTarget;
+extern Target TheARMLETarget, TheThumbLETarget;
+extern Target TheARMBETarget, TheThumbBETarget;
 
 namespace ARM_MC {
   std::string ParseARMTriple(StringRef TT, StringRef CPU);
@@ -47,17 +47,16 @@ namespace ARM_MC {
 }
 
 MCStreamer *createMCAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
-                                bool isVerboseAsm, bool useCFI,
-                                bool useDwarfDirectory,
+                                bool isVerboseAsm, bool useDwarfDirectory,
                                 MCInstPrinter *InstPrint, MCCodeEmitter *CE,
                                 MCAsmBackend *TAB, bool ShowInst);
 
-MCCodeEmitter *createARMleMCCodeEmitter(const MCInstrInfo &MCII,
+MCCodeEmitter *createARMLEMCCodeEmitter(const MCInstrInfo &MCII,
                                         const MCRegisterInfo &MRI,
                                         const MCSubtargetInfo &STI,
                                         MCContext &Ctx);
 
-MCCodeEmitter *createARMbeMCCodeEmitter(const MCInstrInfo &MCII,
+MCCodeEmitter *createARMBEMCCodeEmitter(const MCInstrInfo &MCII,
                                         const MCRegisterInfo &MRI,
                                         const MCSubtargetInfo &STI,
                                         MCContext &Ctx);
@@ -66,17 +65,22 @@ MCAsmBackend *createARMAsmBackend(const Target &T, const MCRegisterInfo &MRI,
                                   StringRef TT, StringRef CPU,
                                   bool IsLittleEndian);
 
-MCAsmBackend *createARMleAsmBackend(const Target &T, const MCRegisterInfo &MRI,
+MCAsmBackend *createARMLEAsmBackend(const Target &T, const MCRegisterInfo &MRI,
                                   StringRef TT, StringRef CPU);
 
-MCAsmBackend *createARMbeAsmBackend(const Target &T, const MCRegisterInfo &MRI,
+MCAsmBackend *createARMBEAsmBackend(const Target &T, const MCRegisterInfo &MRI,
                                   StringRef TT, StringRef CPU);
 
-MCAsmBackend *createThumbleAsmBackend(const Target &T, const MCRegisterInfo &MRI,
+MCAsmBackend *createThumbLEAsmBackend(const Target &T, const MCRegisterInfo &MRI,
                                       StringRef TT, StringRef CPU);
 
-MCAsmBackend *createThumbbeAsmBackend(const Target &T, const MCRegisterInfo &MRI,
+MCAsmBackend *createThumbBEAsmBackend(const Target &T, const MCRegisterInfo &MRI,
                                       StringRef TT, StringRef CPU);
+
+/// createARMWinCOFFStreamer - Construct a PE/COFF machine code streamer which
+/// will generate a PE/COFF object file.
+MCStreamer *createARMWinCOFFStreamer(MCContext &Context, MCAsmBackend &MAB,
+                                     MCCodeEmitter &Emitter, raw_ostream &OS);
 
 /// createARMELFObjectWriter - Construct an ELF Mach-O object writer.
 MCObjectWriter *createARMELFObjectWriter(raw_ostream &OS,
@@ -89,6 +93,8 @@ MCObjectWriter *createARMMachObjectWriter(raw_ostream &OS,
                                           uint32_t CPUType,
                                           uint32_t CPUSubtype);
 
+/// createARMWinCOFFObjectWriter - Construct an ARM PE/COFF object writer.
+MCObjectWriter *createARMWinCOFFObjectWriter(raw_ostream &OS, bool Is64Bit);
 
 /// createARMMachORelocationInfo - Construct ARM Mach-O relocation info.
 MCRelocationInfo *createARMMachORelocationInfo(MCContext &Ctx);

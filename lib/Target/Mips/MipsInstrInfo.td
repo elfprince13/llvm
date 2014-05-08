@@ -156,14 +156,22 @@ def HasCondMov  :     Predicate<"Subtarget.hasCondMov()">,
                       AssemblerPredicate<"FeatureCondMov">;
 def HasFPIdx    :     Predicate<"Subtarget.hasFPIdx()">,
                       AssemblerPredicate<"FeatureFPIdx">;
+def HasMips2     :    Predicate<"Subtarget.hasMips2()">,
+                      AssemblerPredicate<"FeatureMips2">;
 def HasMips32    :    Predicate<"Subtarget.hasMips32()">,
                       AssemblerPredicate<"FeatureMips32">;
 def HasMips32r2  :    Predicate<"Subtarget.hasMips32r2()">,
                       AssemblerPredicate<"FeatureMips32r2">;
+def IsGP64bit    :    Predicate<"Subtarget.isGP64bit()">,
+                      AssemblerPredicate<"FeatureGP64Bit">;
+def IsGP32bit    :    Predicate<"!Subtarget.isGP64bit()">,
+                      AssemblerPredicate<"!FeatureGP64Bit">;
 def HasMips64    :    Predicate<"Subtarget.hasMips64()">,
                       AssemblerPredicate<"FeatureMips64">;
-def NotMips64    :    Predicate<"!Subtarget.hasMips64()">,
-                      AssemblerPredicate<"!FeatureMips64">;
+def IsGP32       :    Predicate<"!Subtarget.isGP64()">,
+                      AssemblerPredicate<"!FeatureGP64Bit">;
+def IsGP64       :    Predicate<"Subtarget.isGP64()">,
+                      AssemblerPredicate<"FeatureGP64Bit">;
 def HasMips64r2  :    Predicate<"Subtarget.hasMips64r2()">,
                       AssemblerPredicate<"FeatureMips64r2">;
 def IsN64       :     Predicate<"Subtarget.isABI_N64()">,
@@ -176,8 +184,7 @@ def RelocStatic :     Predicate<"TM.getRelocationModel() == Reloc::Static">,
                       AssemblerPredicate<"FeatureMips32">;
 def RelocPIC    :     Predicate<"TM.getRelocationModel() == Reloc::PIC_">,
                       AssemblerPredicate<"FeatureMips32">;
-def NoNaNsFPMath :    Predicate<"TM.Options.NoNaNsFPMath">,
-                      AssemblerPredicate<"FeatureMips32">;
+def NoNaNsFPMath :    Predicate<"TM.Options.NoNaNsFPMath">;
 def HasStdEnc :       Predicate<"Subtarget.hasStandardEncoding()">,
                       AssemblerPredicate<"!FeatureMips16">;
 def NotDSP :          Predicate<"!Subtarget.hasDSP()">;
@@ -189,8 +196,29 @@ def IsLE           :  Predicate<"Subtarget.isLittle()">;
 def IsBE           :  Predicate<"!Subtarget.isLittle()">;
 def IsNotNaCl    :    Predicate<"!Subtarget.isTargetNaCl()">;
 
-class MipsPat<dag pattern, dag result> : Pat<pattern, result> {
-  let Predicates = [HasStdEnc];
+//===----------------------------------------------------------------------===//
+// Mips GPR size adjectives.
+// They are mutually exclusive.
+//===----------------------------------------------------------------------===//
+
+class GPR_64 { list<Predicate> GPRPredicates = [IsGP64bit]; }
+
+//===----------------------------------------------------------------------===//
+// Mips ISA/ASE membership and instruction group membership adjectives.
+// They are mutually exclusive.
+//===----------------------------------------------------------------------===//
+
+class ISA_MIPS2    { list<Predicate> InsnPredicates = [HasMips2]; }
+class ISA_MIPS32R2 { list<Predicate> InsnPredicates = [HasMips32r2]; }
+class ISA_MIPS64R2 { list<Predicate> InsnPredicates = [HasMips64r2]; }
+
+class INSN_SWAP { list<Predicate> InsnPredicates = [HasSwap]; }
+class INSN_SEINREG { list<Predicate> InsnPredicates = [HasSEInReg]; }
+
+//===----------------------------------------------------------------------===//
+
+class MipsPat<dag pattern, dag result> : Pat<pattern, result>, PredicateControl {
+  let EncodingPredicates = [HasStdEnc];
 }
 
 class IsCommutable {
@@ -236,17 +264,27 @@ include "MipsInstrFormats.td"
 // Mips Operand, Complex Patterns and Transformations Definitions.
 //===----------------------------------------------------------------------===//
 
+def MipsJumpTargetAsmOperand : AsmOperandClass {
+  let Name = "JumpTarget";
+  let ParserMethod = "ParseJumpTarget";
+  let PredicateMethod = "isImm";
+  let RenderMethod = "addImmOperands";
+}
+
 // Instruction operand types
 def jmptarget   : Operand<OtherVT> {
   let EncoderMethod = "getJumpTargetOpValue";
+  let ParserMatchClass = MipsJumpTargetAsmOperand;
 }
 def brtarget    : Operand<OtherVT> {
   let EncoderMethod = "getBranchTargetOpValue";
   let OperandType = "OPERAND_PCREL";
   let DecoderMethod = "DecodeBranchTarget";
+  let ParserMatchClass = MipsJumpTargetAsmOperand;
 }
 def calltarget  : Operand<iPTR> {
   let EncoderMethod = "getJumpTargetOpValue";
+  let ParserMatchClass = MipsJumpTargetAsmOperand;
 }
 
 def simm10 : Operand<i32>;
@@ -266,6 +304,11 @@ def uimm10      : Operand<i32> {
 
 def simm16_64   : Operand<i64> {
   let DecoderMethod = "DecodeSimm16";
+}
+
+// Zero
+def uimmz       : Operand<i32> {
+  let PrintMethod = "printUnsignedImm";
 }
 
 // Unsigned Operand
@@ -295,13 +338,11 @@ def MipsInvertedImmoperand : AsmOperandClass {
   let ParserMethod = "parseInvNum";
 }
 
-def PtrRegAsmOperand : AsmOperandClass {
-  let Name = "PtrReg";
-  let ParserMethod = "parsePtrReg";
+def InvertedImOperand : Operand<i32> {
+  let ParserMatchClass = MipsInvertedImmoperand;
 }
 
-
-def InvertedImOperand : Operand<i32> {
+def InvertedImOperand64 : Operand<i64> {
   let ParserMatchClass = MipsInvertedImmoperand;
 }
 
@@ -332,7 +373,7 @@ def mem_ea : Operand<iPTR> {
 def PtrRC : Operand<iPTR> {
   let MIOperandInfo = (ops ptr_rc);
   let DecoderMethod = "DecodePtrRegisterClass";
-  let ParserMatchClass = PtrRegAsmOperand;
+  let ParserMatchClass = GPR32AsmOperand;
 }
 
 // size operand of ext instruction
@@ -359,6 +400,9 @@ def HI16 : SDNodeXForm<imm, [{
 
 // Plus 1.
 def Plus1 : SDNodeXForm<imm, [{ return getImm(N, N->getSExtValue() + 1); }]>;
+
+// Node immediate is zero (e.g. insve.d)
+def immz : PatLeaf<(imm), [{ return N->getSExtValue() == 0; }]>;
 
 // Node immediate fits as 16-bit sign extended on target immediate.
 // e.g. addi, andi
@@ -466,7 +510,9 @@ class shift_rotate_imm<string opstr, Operand ImmOpnd,
                        SDPatternOperator PF = null_frag> :
   InstSE<(outs RO:$rd), (ins RO:$rt, ImmOpnd:$shamt),
          !strconcat(opstr, "\t$rd, $rt, $shamt"),
-         [(set RO:$rd, (OpNode RO:$rt, PF:$shamt))], itin, FrmR, opstr>;
+         [(set RO:$rd, (OpNode RO:$rt, PF:$shamt))], itin, FrmR, opstr> {
+  let TwoOperandAliasConstraint = "$rt = $rd";
+}
 
 class shift_rotate_reg<string opstr, RegisterOperand RO, InstrItinClass itin,
                        SDPatternOperator OpNode = null_frag>:
@@ -578,7 +624,7 @@ class UncondBranch<Instruction BEQInst> :
   let isTerminator = 1;
   let isBarrier = 1;
   let hasDelaySlot = 1;
-  let Predicates = [RelocPIC, HasStdEnc];
+  let AdditionalPredicates = [RelocPIC];
   let Defs = [AT];
 }
 
@@ -768,26 +814,24 @@ class EffectiveAddress<string opstr, RegisterOperand RO> :
 class CountLeading0<string opstr, RegisterOperand RO>:
   InstSE<(outs RO:$rd), (ins RO:$rs), !strconcat(opstr, "\t$rd, $rs"),
          [(set RO:$rd, (ctlz RO:$rs))], II_CLZ, FrmR, opstr>,
-  Requires<[HasBitCount, HasStdEnc]>;
+  AdditionalRequires<[HasBitCount]>;
 
 class CountLeading1<string opstr, RegisterOperand RO>:
   InstSE<(outs RO:$rd), (ins RO:$rs), !strconcat(opstr, "\t$rd, $rs"),
          [(set RO:$rd, (ctlz (not RO:$rs)))], II_CLO, FrmR, opstr>,
-  Requires<[HasBitCount, HasStdEnc]>;
+  AdditionalRequires<[HasBitCount]>;
 
 // Sign Extend in Register.
 class SignExtInReg<string opstr, ValueType vt, RegisterOperand RO,
                    InstrItinClass itin> :
   InstSE<(outs RO:$rd), (ins RO:$rt), !strconcat(opstr, "\t$rd, $rt"),
-         [(set RO:$rd, (sext_inreg RO:$rt, vt))], itin, FrmR, opstr> {
-  let Predicates = [HasSEInReg, HasStdEnc];
-}
+         [(set RO:$rd, (sext_inreg RO:$rt, vt))], itin, FrmR, opstr>,
+  INSN_SEINREG;
 
 // Subword Swap
 class SubwordSwap<string opstr, RegisterOperand RO>:
   InstSE<(outs RO:$rd), (ins RO:$rt), !strconcat(opstr, "\t$rd, $rt"), [],
-         NoItinerary, FrmR, opstr> {
-  let Predicates = [HasSwap, HasStdEnc];
+         NoItinerary, FrmR, opstr>, INSN_SWAP {
   let neverHasSideEffects = 1;
 }
 
@@ -802,17 +846,14 @@ class ExtBase<string opstr, RegisterOperand RO, Operand PosOpnd,
   InstSE<(outs RO:$rt), (ins RO:$rs, PosOpnd:$pos, size_ext:$size),
          !strconcat(opstr, " $rt, $rs, $pos, $size"),
          [(set RO:$rt, (Op RO:$rs, imm:$pos, imm:$size))], NoItinerary,
-         FrmR, opstr> {
-  let Predicates = [HasMips32r2, HasStdEnc];
-}
+         FrmR, opstr>, ISA_MIPS32R2;
 
 class InsBase<string opstr, RegisterOperand RO, Operand PosOpnd,
               SDPatternOperator Op = null_frag>:
   InstSE<(outs RO:$rt), (ins RO:$rs, PosOpnd:$pos, size_ins:$size, RO:$src),
          !strconcat(opstr, " $rt, $rs, $pos, $size"),
          [(set RO:$rt, (Op RO:$rs, imm:$pos, imm:$size, RO:$src))],
-         NoItinerary, FrmR, opstr> {
-  let Predicates = [HasMips32r2, HasStdEnc];
+         NoItinerary, FrmR, opstr>, ISA_MIPS32R2 {
   let Constraints = "$src = $rt";
 }
 
@@ -903,6 +944,18 @@ let isPseudo = 1, isCodeGenOnly = 1 in {
   def STORE_ACC64 : Store<"", ACC64>;
 }
 
+// We need these two pseudo instructions to avoid offset calculation for long
+// branches.  See the comment in file MipsLongBranch.cpp for detailed
+// explanation.
+
+// Expands to: lui $dst, %hi($tgt - $baltgt)
+def LONG_BRANCH_LUi : PseudoSE<(outs GPR32Opnd:$dst),
+  (ins brtarget:$tgt, brtarget:$baltgt), []>;
+
+// Expands to: addiu $dst, $src, %lo($tgt - $baltgt)
+def LONG_BRANCH_ADDiu : PseudoSE<(outs GPR32Opnd:$dst),
+  (ins GPR32Opnd:$src, brtarget:$tgt, brtarget:$baltgt), []>;
+
 //===----------------------------------------------------------------------===//
 // Instruction definition
 //===----------------------------------------------------------------------===//
@@ -965,12 +1018,11 @@ def SRAV : MMRel, shift_rotate_reg<"srav", GPR32Opnd, II_SRAV, sra>,
            SRLV_FM<7, 0>;
 
 // Rotate Instructions
-let Predicates = [HasMips32r2, HasStdEnc] in {
-  def ROTR  : MMRel, shift_rotate_imm<"rotr", uimm5, GPR32Opnd, II_ROTR, rotr,
-                                      immZExt5>, SRA_FM<2, 1>;
-  def ROTRV : MMRel, shift_rotate_reg<"rotrv", GPR32Opnd, II_ROTRV, rotr>,
-              SRLV_FM<6, 1>;
-}
+def ROTR  : MMRel, shift_rotate_imm<"rotr", uimm5, GPR32Opnd, II_ROTR, rotr,
+                                    immZExt5>,
+            SRA_FM<2, 1>, ISA_MIPS32R2;
+def ROTRV : MMRel, shift_rotate_reg<"rotrv", GPR32Opnd, II_ROTRV, rotr>,
+            SRLV_FM<6, 1>, ISA_MIPS32R2;
 
 /// Load and Store Instructions
 ///  aligned
@@ -987,7 +1039,8 @@ def SH  : Store<"sh", GPR32Opnd, truncstorei16, II_SH>, MMRel, LW_FM<0x29>;
 def SW  : Store<"sw", GPR32Opnd, store, II_SW>, MMRel, LW_FM<0x2b>;
 
 /// load/store left/right
-let Predicates = [NotInMicroMips] in {
+let EncodingPredicates = []<Predicate>, // FIXME: Lack of HasStdEnc is probably a bug
+    AdditionalPredicates = [NotInMicroMips] in {
 def LWL : LoadLeftRight<"lwl", MipsLWL, GPR32Opnd, II_LWL>, LW_FM<0x22>;
 def LWR : LoadLeftRight<"lwr", MipsLWR, GPR32Opnd, II_LWR>, LW_FM<0x26>;
 def SWL : StoreLeftRight<"swl", MipsSWL, GPR32Opnd, II_SWL>, LW_FM<0x2a>;
@@ -1002,12 +1055,12 @@ def TLT : MMRel, TEQ_FT<"tlt", GPR32Opnd>, TEQ_FM<0x32>;
 def TLTU : MMRel, TEQ_FT<"tltu", GPR32Opnd>, TEQ_FM<0x33>;
 def TNE : MMRel, TEQ_FT<"tne", GPR32Opnd>, TEQ_FM<0x36>;
 
-def TEQI : MMRel, TEQI_FT<"teqi", GPR32Opnd>, TEQI_FM<0xc>;
-def TGEI : MMRel, TEQI_FT<"tgei", GPR32Opnd>, TEQI_FM<0x8>;
-def TGEIU : MMRel, TEQI_FT<"tgeiu", GPR32Opnd>, TEQI_FM<0x9>;
-def TLTI : MMRel, TEQI_FT<"tlti", GPR32Opnd>, TEQI_FM<0xa>;
-def TTLTIU : MMRel, TEQI_FT<"tltiu", GPR32Opnd>, TEQI_FM<0xb>;
-def TNEI : MMRel, TEQI_FT<"tnei", GPR32Opnd>, TEQI_FM<0xe>;
+def TEQI : MMRel, TEQI_FT<"teqi", GPR32Opnd>, TEQI_FM<0xc>, ISA_MIPS2;
+def TGEI : MMRel, TEQI_FT<"tgei", GPR32Opnd>, TEQI_FM<0x8>, ISA_MIPS2;
+def TGEIU : MMRel, TEQI_FT<"tgeiu", GPR32Opnd>, TEQI_FM<0x9>, ISA_MIPS2;
+def TLTI : MMRel, TEQI_FT<"tlti", GPR32Opnd>, TEQI_FM<0xa>, ISA_MIPS2;
+def TTLTIU : MMRel, TEQI_FT<"tltiu", GPR32Opnd>, TEQI_FM<0xb>, ISA_MIPS2;
+def TNEI : MMRel, TEQI_FT<"tnei", GPR32Opnd>, TEQI_FM<0xe>, ISA_MIPS2;
 
 def BREAK : MMRel, BRK_FT<"break">, BRK_FM<0xd>;
 def SYSCALL : MMRel, SYS_FT<"syscall">, SYS_FM<0xc>;
@@ -1019,17 +1072,18 @@ def DERET : MMRel, ER_FT<"deret">, ER_FM<0x1f>;
 def EI : MMRel, DEI_FT<"ei", GPR32Opnd>, EI_FM<1>;
 def DI : MMRel, DEI_FT<"di", GPR32Opnd>, EI_FM<0>;
 
-let Predicates = [NotInMicroMips] in {
+let EncodingPredicates = []<Predicate>, // FIXME: Lack of HasStdEnc is probably a bug
+    AdditionalPredicates = [NotInMicroMips] in {
 def WAIT : WAIT_FT<"wait">, WAIT_FM;
 
 /// Load-linked, Store-conditional
-def LL : LLBase<"ll", GPR32Opnd>, LW_FM<0x30>;
-def SC : SCBase<"sc", GPR32Opnd>, LW_FM<0x38>;
+def LL : LLBase<"ll", GPR32Opnd>, LW_FM<0x30>, ISA_MIPS2;
+def SC : SCBase<"sc", GPR32Opnd>, LW_FM<0x38>, ISA_MIPS2;
 }
 
 /// Jump and Branch Instructions
 def J       : MMRel, JumpFJ<jmptarget, "j", br, bb, "j">, FJ<2>,
-              Requires<[RelocStatic, HasStdEnc]>, IsBranch;
+              AdditionalRequires<[RelocStatic]>, IsBranch;
 def JR      : MMRel, IndirectBranch<"jr", GPR32Opnd>, MTLO_FM<8>;
 def BEQ     : MMRel, CBranch<"beq", brtarget, seteq, GPR32Opnd>, BEQ_FM<4>;
 def BNE     : MMRel, CBranch<"bne", brtarget, setne, GPR32Opnd>, BEQ_FM<5>;
@@ -1044,11 +1098,11 @@ def BLTZ    : MMRel, CBranchZero<"bltz", brtarget, setlt, GPR32Opnd>,
 def B       : UncondBranch<BEQ>;
 
 def JAL  : MMRel, JumpLink<"jal", calltarget>, FJ<3>;
-let Predicates = [NotInMicroMips] in {
+let AdditionalPredicates = [NotInMicroMips] in {
 def JALR : JumpLinkReg<"jalr", GPR32Opnd>, JALR_FM;
+def JALRPseudo : JumpLinkRegPseudo<GPR32Opnd, JALR, RA>;
 }
 def JALX  : JumpLink<"jalx", calltarget>, FJ<0x1D>;
-def JALRPseudo : JumpLinkRegPseudo<GPR32Opnd, JALR, RA>;
 def BGEZAL : MMRel, BGEZAL_FT<"bgezal", brtarget, GPR32Opnd>, BGEZAL_FM<0x11>;
 def BLTZAL : MMRel, BGEZAL_FT<"bltzal", brtarget, GPR32Opnd>, BGEZAL_FM<0x10>;
 def BAL_BR : BAL_BR_Pseudo<BGEZAL>;
@@ -1090,8 +1144,11 @@ def UDIV  : MMRel, Div<"divu", II_DIVU, GPR32Opnd, [HI0, LO0]>,
 
 def MTHI : MMRel, MoveToLOHI<"mthi", GPR32Opnd, [HI0]>, MTLO_FM<0x11>;
 def MTLO : MMRel, MoveToLOHI<"mtlo", GPR32Opnd, [LO0]>, MTLO_FM<0x13>;
+let EncodingPredicates = []<Predicate>, // FIXME: Lack of HasStdEnc is probably a bug
+    AdditionalPredicates = [NotInMicroMips] in {
 def MFHI : MMRel, MoveFromLOHI<"mfhi", GPR32Opnd, AC0>, MFLO_FM<0x10>;
 def MFLO : MMRel, MoveFromLOHI<"mflo", GPR32Opnd, AC0>, MFLO_FM<0x12>;
+}
 
 /// Sign Ext In Register Instructions.
 def SEB : MMRel, SignExtInReg<"seb", i8, GPR32Opnd, II_SEB>, SEB_FM<0x10, 0x20>;
@@ -1119,7 +1176,7 @@ def MADDU : MMRel, MArithR<"maddu", II_MADDU, 1>, MULT_FM<0x1c, 1>;
 def MSUB  : MMRel, MArithR<"msub", II_MSUB>, MULT_FM<0x1c, 4>;
 def MSUBU : MMRel, MArithR<"msubu", II_MSUBU>, MULT_FM<0x1c, 5>;
 
-let Predicates = [HasStdEnc, NotDSP] in {
+let AdditionalPredicates = [NotDSP] in {
 def PseudoMULT  : MultDivPseudo<MULT, ACC64, GPR32Opnd, MipsMult, II_MULT>;
 def PseudoMULTu : MultDivPseudo<MULTu, ACC64, GPR32Opnd, MipsMultu, II_MULTU>;
 def PseudoMFHI : PseudoMFLOHI<GPR32, ACC64, MipsMFHI>;
@@ -1147,12 +1204,25 @@ def MTC0 : MFC3OP<"mtc0", GPR32Opnd>, MFC3OP_FM<0x10, 4>;
 def MFC2 : MFC3OP<"mfc2", GPR32Opnd>, MFC3OP_FM<0x12, 0>;
 def MTC2 : MFC3OP<"mtc2", GPR32Opnd>, MFC3OP_FM<0x12, 4>;
 
+class Barrier<string asmstr> : InstSE<(outs), (ins), asmstr, [], NoItinerary,
+                                      FrmOther>;
+def SSNOP : Barrier<"ssnop">, BARRIER_FM<1>;
+def EHB : Barrier<"ehb">, BARRIER_FM<3>;
+def PAUSE : Barrier<"pause">, BARRIER_FM<5>, ISA_MIPS32R2;
+
+class TLB<string asmstr> : InstSE<(outs), (ins), asmstr, [], NoItinerary,
+                                      FrmOther>;
+def TLBP : TLB<"tlbp">, COP0_TLB_FM<0x08>;
+def TLBR : TLB<"tlbr">, COP0_TLB_FM<0x01>;
+def TLBWI : TLB<"tlbwi">, COP0_TLB_FM<0x02>;
+def TLBWR : TLB<"tlbwr">, COP0_TLB_FM<0x06>;
+
 //===----------------------------------------------------------------------===//
 // Instruction aliases
 //===----------------------------------------------------------------------===//
 def : InstAlias<"move $dst, $src",
                 (ADDu GPR32Opnd:$dst, GPR32Opnd:$src,ZERO), 1>,
-      Requires<[NotMips64, NotInMicroMips]>;
+      Requires<[IsGP32, NotInMicroMips]>;
 def : InstAlias<"bal $offset", (BGEZAL ZERO, brtarget:$offset), 0>;
 def : InstAlias<"addu $rs, $rt, $imm",
                 (ADDiu GPR32Opnd:$rs, GPR32Opnd:$rt, simm16:$imm), 0>;
@@ -1170,10 +1240,14 @@ def : InstAlias<"not $rt, $rs",
                 (NOR GPR32Opnd:$rt, GPR32Opnd:$rs, ZERO), 0>;
 def : InstAlias<"neg $rt, $rs",
                 (SUB GPR32Opnd:$rt, ZERO, GPR32Opnd:$rs), 1>;
+def : InstAlias<"negu $rt",
+                (SUBu GPR32Opnd:$rt, ZERO, GPR32Opnd:$rt), 0>;
 def : InstAlias<"negu $rt, $rs",
                 (SUBu GPR32Opnd:$rt, ZERO, GPR32Opnd:$rs), 1>;
 def : InstAlias<"slt $rs, $rt, $imm",
                 (SLTi GPR32Opnd:$rs, GPR32Opnd:$rt, simm16:$imm), 0>;
+def : InstAlias<"sltu $rt, $rs, $imm",
+                (SLTiu GPR32Opnd:$rt, GPR32Opnd:$rs, simm16:$imm), 0>;
 def : InstAlias<"xor $rs, $rt, $imm",
                 (XORi GPR32Opnd:$rs, GPR32Opnd:$rt, uimm16:$imm), 0>;
 def : InstAlias<"or $rs, $rt, $imm",
@@ -1201,11 +1275,20 @@ def  : InstAlias<"tgeu $rs, $rt", (TGEU GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
 def  : InstAlias<"tlt $rs, $rt", (TLT GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
 def  : InstAlias<"tltu $rs, $rt", (TLTU GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
 def  : InstAlias<"tne $rs, $rt", (TNE GPR32Opnd:$rs, GPR32Opnd:$rt, 0), 1>;
+def  : InstAlias<"sll $rd, $rt, $rs",
+                 (SLLV GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
 def : InstAlias<"sub, $rd, $rs, $imm",
                 (ADDi GPR32Opnd:$rd, GPR32Opnd:$rs, InvertedImOperand:$imm)>;
+def : InstAlias<"sub $rs, $imm",
+                (ADDi GPR32Opnd:$rs, GPR32Opnd:$rs, InvertedImOperand:$imm),
+                0>;
 def : InstAlias<"subu, $rd, $rs, $imm",
                 (ADDiu GPR32Opnd:$rd, GPR32Opnd:$rs, InvertedImOperand:$imm)>;
-
+def : InstAlias<"subu $rs, $imm",
+                (ADDiu GPR32Opnd:$rs, GPR32Opnd:$rs, InvertedImOperand:$imm),
+                0>;
+def  : InstAlias<"srl $rd, $rt, $rs",
+                 (SRLV GPR32Opnd:$rd, GPR32Opnd:$rt, GPR32Opnd:$rs), 0>;
 //===----------------------------------------------------------------------===//
 // Assembler Pseudo Instructions
 //===----------------------------------------------------------------------===//
@@ -1251,7 +1334,7 @@ def : MipsPat<(i32 imm:$imm),
 // Carry MipsPatterns
 def : MipsPat<(subc GPR32:$lhs, GPR32:$rhs),
               (SUBu GPR32:$lhs, GPR32:$rhs)>;
-let Predicates = [HasStdEnc, NotDSP] in {
+let AdditionalPredicates = [NotDSP] in {
   def : MipsPat<(addc GPR32:$lhs, GPR32:$rhs),
                 (ADDu GPR32:$lhs, GPR32:$rhs)>;
   def : MipsPat<(addc  GPR32:$src, immSExt16:$imm),
@@ -1320,14 +1403,11 @@ def : MipsPat<(not GPR32:$in),
               (NOR GPR32Opnd:$in, ZERO)>;
 
 // extended loads
-let Predicates = [HasStdEnc] in {
-  def : MipsPat<(i32 (extloadi1  addr:$src)), (LBu addr:$src)>;
-  def : MipsPat<(i32 (extloadi8  addr:$src)), (LBu addr:$src)>;
-  def : MipsPat<(i32 (extloadi16 addr:$src)), (LHu addr:$src)>;
-}
+def : MipsPat<(i32 (extloadi1  addr:$src)), (LBu addr:$src)>;
+def : MipsPat<(i32 (extloadi8  addr:$src)), (LBu addr:$src)>;
+def : MipsPat<(i32 (extloadi16 addr:$src)), (LHu addr:$src)>;
 
 // peepholes
-let Predicates = [HasStdEnc] in
 def : MipsPat<(store (i32 0), addr:$dst), (SW ZERO, addr:$dst)>;
 
 // brcond patterns
@@ -1421,11 +1501,9 @@ def : MipsPat<(bswap GPR32:$rt), (ROTR (WSBH GPR32:$rt), 16)>;
 
 // Load halfword/word patterns.
 let AddedComplexity = 40 in {
-  let Predicates = [HasStdEnc] in {
-    def : LoadRegImmPat<LBu, i32, zextloadi8>;
-    def : LoadRegImmPat<LH, i32, sextloadi16>;
-    def : LoadRegImmPat<LW, i32, load>;
-  }
+  def : LoadRegImmPat<LBu, i32, zextloadi8>;
+  def : LoadRegImmPat<LH, i32, sextloadi16>;
+  def : LoadRegImmPat<LW, i32, load>;
 }
 
 //===----------------------------------------------------------------------===//

@@ -1,4 +1,4 @@
-; RUN: llvm-mc -triple arm64-apple-darwin -show-encoding < %s | FileCheck %s
+; RUN: llvm-mc -triple arm64-apple-darwin -mattr=neon -show-encoding < %s | FileCheck %s
 
 foo:
 ;==---------------------------------------------------------------------------==
@@ -47,11 +47,11 @@ foo:
   add x3, x4, #0, lsl #12
   add sp, sp, #32
 
-; CHECK: add w3, w4, #4194304        ; encoding: [0x83,0x00,0x50,0x11]
-; CHECK: add w3, w4, #4194304        ; encoding: [0x83,0x00,0x50,0x11]
+; CHECK: add w3, w4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0x11]
+; CHECK: add w3, w4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0x11]
 ; CHECK: add w3, w4, #0, lsl #12     ; encoding: [0x83,0x00,0x40,0x11]
-; CHECK: add x3, x4, #4194304        ; encoding: [0x83,0x00,0x50,0x91]
-; CHECK: add x3, x4, #4194304        ; encoding: [0x83,0x00,0x50,0x91]
+; CHECK: add x3, x4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0x91]
+; CHECK: add x3, x4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0x91]
 ; CHECK: add x3, x4, #0, lsl #12     ; encoding: [0x83,0x00,0x40,0x91]
 ; CHECK: add sp, sp, #32             ; encoding: [0xff,0x83,0x00,0x91]
 
@@ -64,10 +64,10 @@ foo:
 
 ; CHECK: adds w3, w4, #1024          ; encoding: [0x83,0x00,0x10,0x31]
 ; CHECK: adds w3, w4, #1024          ; encoding: [0x83,0x00,0x10,0x31]
-; CHECK: adds w3, w4, #4194304       ; encoding: [0x83,0x00,0x50,0x31]
+; CHECK: adds w3, w4, #1024, lsl #12 ; encoding: [0x83,0x00,0x50,0x31]
 ; CHECK: adds x3, x4, #1024          ; encoding: [0x83,0x00,0x10,0xb1]
 ; CHECK: adds x3, x4, #1024          ; encoding: [0x83,0x00,0x10,0xb1]
-; CHECK: adds x3, x4, #4194304       ; encoding: [0x83,0x00,0x50,0xb1]
+; CHECK: adds x3, x4, #1024, lsl #12 ; encoding: [0x83,0x00,0x50,0xb1]
 
   sub w3, w4, #1024
   sub w3, w4, #1024, lsl #0
@@ -79,10 +79,10 @@ foo:
 
 ; CHECK: sub w3, w4, #1024           ; encoding: [0x83,0x00,0x10,0x51]
 ; CHECK: sub w3, w4, #1024           ; encoding: [0x83,0x00,0x10,0x51]
-; CHECK: sub w3, w4, #4194304        ; encoding: [0x83,0x00,0x50,0x51]
+; CHECK: sub w3, w4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0x51]
 ; CHECK: sub x3, x4, #1024           ; encoding: [0x83,0x00,0x10,0xd1]
 ; CHECK: sub x3, x4, #1024           ; encoding: [0x83,0x00,0x10,0xd1]
-; CHECK: sub x3, x4, #4194304        ; encoding: [0x83,0x00,0x50,0xd1]
+; CHECK: sub x3, x4, #1024, lsl #12  ; encoding: [0x83,0x00,0x50,0xd1]
 ; CHECK: sub sp, sp, #32             ; encoding: [0xff,0x83,0x00,0xd1]
 
   subs w3, w4, #1024
@@ -94,10 +94,10 @@ foo:
 
 ; CHECK: subs w3, w4, #1024          ; encoding: [0x83,0x00,0x10,0x71]
 ; CHECK: subs w3, w4, #1024          ; encoding: [0x83,0x00,0x10,0x71]
-; CHECK: subs w3, w4, #4194304       ; encoding: [0x83,0x00,0x50,0x71]
+; CHECK: subs w3, w4, #1024, lsl #12 ; encoding: [0x83,0x00,0x50,0x71]
 ; CHECK: subs x3, x4, #1024          ; encoding: [0x83,0x00,0x10,0xf1]
 ; CHECK: subs x3, x4, #1024          ; encoding: [0x83,0x00,0x10,0xf1]
-; CHECK: subs x3, x4, #4194304       ; encoding: [0x83,0x00,0x50,0xf1]
+; CHECK: subs x3, x4, #1024, lsl #12 ; encoding: [0x83,0x00,0x50,0xf1]
 
 ;==---------------------------------------------------------------------------==
 ; Add/Subtract register with (optional) shift
@@ -223,7 +223,7 @@ foo:
 
 ; CHECK: add w1, wsp, w3             ; encoding: [0xe1,0x43,0x23,0x0b]
 ; CHECK: add w1, wsp, w3             ; encoding: [0xe1,0x43,0x23,0x0b]
-; CHECK: add w2, wsp, w3, lsl #1     ; encoding: [0xe2,0x67,0x23,0x0b]
+; CHECK: add w2, wsp, w3, lsl #1     ; encoding: [0xe2,0x47,0x23,0x0b]
 ; CHECK: add sp, x2, x3              ; encoding: [0x5f,0x60,0x23,0x8b]
 ; CHECK: add sp, x2, x3              ; encoding: [0x5f,0x60,0x23,0x8b]
 
@@ -313,7 +313,7 @@ foo:
 
 ; CHECK: adds w1, wsp, w3            ; encoding: [0xe1,0x43,0x23,0x2b]
 ; CHECK: adds w1, wsp, w3            ; encoding: [0xe1,0x43,0x23,0x2b]
-; CHECK: adds wzr, wsp, w3, lsl #4   ; encoding: [0xff,0x73,0x23,0x2b]
+; CHECK: adds wzr, wsp, w3, lsl #4   ; encoding: [0xff,0x53,0x23,0x2b]
 
   subs w1, w2, w3, uxtb
   subs w1, w2, w3, uxth
@@ -364,12 +364,12 @@ foo:
   cmp sp, w8, uxtw
   subs xzr, sp, w8, uxtw
 
-; CHECK: cmp wsp, w9                 ; encoding: [0xff,0x63,0x29,0x6b]
+; CHECK: cmp wsp, w9                 ; encoding: [0xff,0x43,0x29,0x6b]
 ; CHECK: subs x3, sp, x9, lsl #2     ; encoding: [0xe3,0x6b,0x29,0xeb]
 ; CHECK: cmp wsp, w8                 ; encoding: [0xff,0x43,0x28,0x6b]
 ; CHECK: cmp wsp, w8                 ; encoding: [0xff,0x43,0x28,0x6b]
-; CHECK: cmp sp, w8                  ; encoding: [0xff,0x43,0x28,0xeb]
-; CHECK: cmp sp, w8                  ; encoding: [0xff,0x43,0x28,0xeb]
+; CHECK: cmp sp, w8, uxtw            ; encoding: [0xff,0x43,0x28,0xeb]
+; CHECK: cmp sp, w8, uxtw            ; encoding: [0xff,0x43,0x28,0xeb]
 
   sub wsp, w9, w8, uxtw
   sub w1, wsp, w8, uxtw
@@ -383,11 +383,11 @@ foo:
 ; CHECK: sub wsp, w9, w8             ; encoding: [0x3f,0x41,0x28,0x4b]
 ; CHECK: sub w1, wsp, w8             ; encoding: [0xe1,0x43,0x28,0x4b]
 ; CHECK: sub wsp, wsp, w8            ; encoding: [0xff,0x43,0x28,0x4b]
-; CHECK: sub sp, x9, w8              ; encoding: [0x3f,0x41,0x28,0xcb]
-; CHECK: sub x1, sp, w8              ; encoding: [0xe1,0x43,0x28,0xcb]
-; CHECK: sub sp, sp, w8              ; encoding: [0xff,0x43,0x28,0xcb]
+; CHECK: sub sp, x9, w8, uxtw        ; encoding: [0x3f,0x41,0x28,0xcb]
+; CHECK: sub x1, sp, w8, uxtw        ; encoding: [0xe1,0x43,0x28,0xcb]
+; CHECK: sub sp, sp, w8, uxtw        ; encoding: [0xff,0x43,0x28,0xcb]
 ; CHECK: subs w1, wsp, w8            ; encoding: [0xe1,0x43,0x28,0x6b]
-; CHECK: subs x1, sp, w8             ; encoding: [0xe1,0x43,0x28,0xeb]
+; CHECK: subs x1, sp, w8, uxtw       ; encoding: [0xe1,0x43,0x28,0xeb]
 
 ;==---------------------------------------------------------------------------==
 ; Signed/Unsigned divide
@@ -510,30 +510,30 @@ foo:
   movz w0, #1, lsl #16
   movz x0, #1, lsl #16
 
-; CHECK: movz w0, #1                 ; encoding: [0x20,0x00,0x80,0x52]
-; CHECK: movz x0, #1                 ; encoding: [0x20,0x00,0x80,0xd2]
-; CHECK: movz w0, #1, lsl #16        ; encoding: [0x20,0x00,0xa0,0x52]
-; CHECK: movz x0, #1, lsl #16        ; encoding: [0x20,0x00,0xa0,0xd2]
+; CHECK: movz w0, #0x1                 ; encoding: [0x20,0x00,0x80,0x52]
+; CHECK: movz x0, #0x1                 ; encoding: [0x20,0x00,0x80,0xd2]
+; CHECK: movz w0, #0x1, lsl #16        ; encoding: [0x20,0x00,0xa0,0x52]
+; CHECK: movz x0, #0x1, lsl #16        ; encoding: [0x20,0x00,0xa0,0xd2]
 
   movn w0, #2
   movn x0, #2
   movn w0, #2, lsl #16
   movn x0, #2, lsl #16
 
-; CHECK: movn w0, #2                 ; encoding: [0x40,0x00,0x80,0x12]
-; CHECK: movn x0, #2                 ; encoding: [0x40,0x00,0x80,0x92]
-; CHECK: movn w0, #2, lsl #16        ; encoding: [0x40,0x00,0xa0,0x12]
-; CHECK: movn x0, #2, lsl #16        ; encoding: [0x40,0x00,0xa0,0x92]
+; CHECK: movn w0, #0x2                 ; encoding: [0x40,0x00,0x80,0x12]
+; CHECK: movn x0, #0x2                 ; encoding: [0x40,0x00,0x80,0x92]
+; CHECK: movn w0, #0x2, lsl #16        ; encoding: [0x40,0x00,0xa0,0x12]
+; CHECK: movn x0, #0x2, lsl #16        ; encoding: [0x40,0x00,0xa0,0x92]
 
   movk w0, #1
   movk x0, #1
   movk w0, #1, lsl #16
   movk x0, #1, lsl #16
 
-; CHECK: movk w0, #1                 ; encoding: [0x20,0x00,0x80,0x72]
-; CHECK: movk x0, #1                 ; encoding: [0x20,0x00,0x80,0xf2]
-; CHECK: movk w0, #1, lsl #16        ; encoding: [0x20,0x00,0xa0,0x72]
-; CHECK: movk x0, #1, lsl #16        ; encoding: [0x20,0x00,0xa0,0xf2]
+; CHECK: movk w0, #0x1                 ; encoding: [0x20,0x00,0x80,0x72]
+; CHECK: movk x0, #0x1                 ; encoding: [0x20,0x00,0x80,0xf2]
+; CHECK: movk w0, #0x1, lsl #16        ; encoding: [0x20,0x00,0xa0,0x72]
+; CHECK: movk x0, #0x1, lsl #16        ; encoding: [0x20,0x00,0xa0,0xf2]
 
 ;==---------------------------------------------------------------------------==
 ; Conditionally set flags instructions
@@ -602,10 +602,10 @@ foo:
 
 ; CHECK: csel	w16, w7, w27, eq        ; encoding: [0xf0,0x00,0x9b,0x1a]
 ; CHECK: csel	w15, w6, w26, ne        ; encoding: [0xcf,0x10,0x9a,0x1a]
-; CHECK: csel	w14, w5, w25, cs        ; encoding: [0xae,0x20,0x99,0x1a]
-; CHECK: csel	w13, w4, w24, cs        ; encoding: [0x8d,0x20,0x98,0x1a]
-; CHECK: csel	w12, w3, w23, cc        ; encoding: [0x6c,0x30,0x97,0x1a]
-; CHECK: csel	w11, w2, w22, cc        ; encoding: [0x4b,0x30,0x96,0x1a]
+; CHECK: csel	w14, w5, w25, hs        ; encoding: [0xae,0x20,0x99,0x1a]
+; CHECK: csel	w13, w4, w24, hs        ; encoding: [0x8d,0x20,0x98,0x1a]
+; CHECK: csel	w12, w3, w23, lo        ; encoding: [0x6c,0x30,0x97,0x1a]
+; CHECK: csel	w11, w2, w22, lo        ; encoding: [0x4b,0x30,0x96,0x1a]
 ; CHECK: csel	w10, w1, w21, mi        ; encoding: [0x2a,0x40,0x95,0x1a]
 ; CHECK: csel	x9, x9, x1, pl          ; encoding: [0x29,0x51,0x81,0x9a]
 ; CHECK: csel	x8, x8, x2, vs          ; encoding: [0x08,0x61,0x82,0x9a]

@@ -1598,6 +1598,32 @@ entry:
   ret <2 x i32> %add
 }
 
+define <8 x i16> @not_really_vmlaq_laneq_s16_test(<8 x i16> %a, <8 x i16> %b, <8 x i16> %c) nounwind readnone ssp {
+entry:
+; CHECK: not_really_vmlaq_laneq_s16_test
+; CHECK-NOT: ext
+; CHECK: mla.8h v0, v1, v2[5]
+; CHECK-NEXT: ret
+  %shuffle1 = shufflevector <8 x i16> %c, <8 x i16> undef, <4 x i32> <i32 4, i32 5, i32 6, i32 7>
+  %shuffle2 = shufflevector <4 x i16> %shuffle1, <4 x i16> undef, <8 x i32> <i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1, i32 1>
+  %mul = mul <8 x i16> %shuffle2, %b
+  %add = add <8 x i16> %mul, %a
+  ret <8 x i16> %add
+}
+
+define <4 x i32> @not_really_vmlaq_laneq_s32_test(<4 x i32> %a, <4 x i32> %b, <4 x i32> %c) nounwind readnone ssp {
+entry:
+; CHECK: not_really_vmlaq_laneq_s32_test
+; CHECK-NOT: ext
+; CHECK: mla.4s v0, v1, v2[3]
+; CHECK-NEXT: ret
+  %shuffle1 = shufflevector <4 x i32> %c, <4 x i32> undef, <2 x i32> <i32 2, i32 3>
+  %shuffle2 = shufflevector <2 x i32> %shuffle1, <2 x i32> undef, <4 x i32> <i32 1, i32 1, i32 1, i32 1>
+  %mul = mul <4 x i32> %shuffle2, %b
+  %add = add <4 x i32> %mul, %a
+  ret <4 x i32> %add
+}
+
 define <4 x i32> @vmull_laneq_s16_test(<4 x i16> %a, <8 x i16> %b) nounwind readnone ssp {
 entry:
 ; CHECK: vmull_laneq_s16_test
@@ -1966,4 +1992,45 @@ define <1 x double> @test_fdiv_v1f64(<1 x double> %L, <1 x double> %R) nounwind 
 ; CHECK-LABEL: fdiv
   %prod = fdiv <1 x double> %L, %R
   ret <1 x double> %prod
+}
+
+define i64 @sqdmlal_d(i32 %A, i32 %B, i64 %C) nounwind {
+;CHECK-LABEL: sqdmlal_d:
+;CHECK: sqdmlal
+  %tmp4 = call i64 @llvm.arm64.neon.sqdmulls.scalar(i32 %A, i32 %B)
+  %tmp5 = call i64 @llvm.arm64.neon.sqadd.i64(i64 %C, i64 %tmp4)
+  ret i64 %tmp5
+}
+
+define i64 @sqdmlsl_d(i32 %A, i32 %B, i64 %C) nounwind {
+;CHECK-LABEL: sqdmlsl_d:
+;CHECK: sqdmlsl
+  %tmp4 = call i64 @llvm.arm64.neon.sqdmulls.scalar(i32 %A, i32 %B)
+  %tmp5 = call i64 @llvm.arm64.neon.sqsub.i64(i64 %C, i64 %tmp4)
+  ret i64 %tmp5
+}
+
+define <16 x i8> @test_pmull_64(i64 %l, i64 %r) nounwind {
+; CHECK-LABEL: test_pmull_64:
+; CHECK: pmull.1q
+  %val = call <16 x i8> @llvm.arm64.neon.pmull64(i64 %l, i64 %r)
+  ret <16 x i8> %val
+}
+
+define <16 x i8> @test_pmull_high_64(<2 x i64> %l, <2 x i64> %r) nounwind {
+; CHECK-LABEL: test_pmull_high_64:
+; CHECK: pmull2.1q
+  %l_hi = extractelement <2 x i64> %l, i32 1
+  %r_hi = extractelement <2 x i64> %r, i32 1
+  %val = call <16 x i8> @llvm.arm64.neon.pmull64(i64 %l_hi, i64 %r_hi)
+  ret <16 x i8> %val
+}
+
+declare <16 x i8> @llvm.arm64.neon.pmull64(i64, i64)
+
+define <1 x i64> @test_mul_v1i64(<1 x i64> %lhs, <1 x i64> %rhs) nounwind {
+; CHECK-LABEL: test_mul_v1i64:
+; CHECK: mul
+  %prod = mul <1 x i64> %lhs, %rhs
+  ret <1 x i64> %prod
 }

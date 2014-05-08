@@ -31,7 +31,7 @@ class TargetOptions;
 class ARMSubtarget : public ARMGenSubtargetInfo {
 protected:
   enum ARMProcFamilyEnum {
-    Others, CortexA5, CortexA7, CortexA8, CortexA9, CortexA12, CortexA15, 
+    Others, CortexA5, CortexA7, CortexA8, CortexA9, CortexA12, CortexA15,
     CortexR5, Swift, CortexA53, CortexA57, Krait
   };
   enum ARMProcClassEnum {
@@ -177,6 +177,10 @@ protected:
   /// HasCRC - if true, processor supports CRC instructions
   bool HasCRC;
 
+  /// If true, the instructions "vmov.i32 d0, #0" and "vmov.i32 q0, #0" are
+  /// particularly effective at zeroing a VFP register.
+  bool HasZeroCycleZeroing;
+
   /// AllowsUnalignedMem - If true, the subtarget allows unaligned memory
   /// accesses for some types.  For details, see
   /// ARMTargetLowering::allowsUnalignedMemoryAccesses().
@@ -261,6 +265,7 @@ public:
   bool hasV8Ops()   const { return HasV8Ops;  }
 
   bool isCortexA5() const { return ARMProcFamily == CortexA5; }
+  bool isCortexA7() const { return ARMProcFamily == CortexA7; }
   bool isCortexA8() const { return ARMProcFamily == CortexA8; }
   bool isCortexA9() const { return ARMProcFamily == CortexA9; }
   bool isCortexA15() const { return ARMProcFamily == CortexA15; }
@@ -298,6 +303,7 @@ public:
   bool isFPOnlySP() const { return FPOnlySP; }
   bool hasPerfMon() const { return HasPerfMon; }
   bool hasTrustZone() const { return HasTrustZone; }
+  bool hasZeroCycleZeroing() const { return HasZeroCycleZeroing; }
   bool prefers32BitThumb() const { return Pref32BitThumb; }
   bool avoidCPSRPartialUpdate() const { return AvoidCPSRPartialUpdate; }
   bool avoidMOVsShifterOperand() const { return AvoidMOVsShifterOperand; }
@@ -311,14 +317,14 @@ public:
 
   const Triple &getTargetTriple() const { return TargetTriple; }
 
-  bool isTargetIOS() const { return TargetTriple.isiOS(); }
   bool isTargetDarwin() const { return TargetTriple.isOSDarwin(); }
-  bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }
+  bool isTargetIOS() const { return TargetTriple.isiOS(); }
   bool isTargetLinux() const { return TargetTriple.isOSLinux(); }
-  bool isTargetNetBSD() const {
-    return TargetTriple.getOS() == Triple::NetBSD;
-  }
+  bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }
+  bool isTargetNetBSD() const { return TargetTriple.getOS() == Triple::NetBSD; }
+  bool isTargetWindows() const { return TargetTriple.isOSWindows(); }
 
+  bool isTargetCOFF() const { return TargetTriple.isOSBinFormatCOFF(); }
   bool isTargetELF() const { return TargetTriple.isOSBinFormatELF(); }
   bool isTargetMachO() const { return TargetTriple.isOSBinFormatMachO(); }
 
@@ -332,7 +338,7 @@ public:
   bool isTargetAEABI() const {
     return (TargetTriple.getEnvironment() == Triple::EABI ||
             TargetTriple.getEnvironment() == Triple::EABIHF) &&
-           !isTargetDarwin();
+           !isTargetDarwin() && !isTargetWindows();
   }
 
   // ARM Targets that support EHABI exception handling standard
@@ -343,12 +349,17 @@ public:
             TargetTriple.getEnvironment() == Triple::EABIHF ||
             TargetTriple.getEnvironment() == Triple::GNUEABIHF ||
             TargetTriple.getEnvironment() == Triple::Android) &&
-           !isTargetDarwin();
+           !isTargetDarwin() && !isTargetWindows();
   }
 
   bool isTargetHardFloat() const {
+    // FIXME: this is invalid for WindowsCE
     return TargetTriple.getEnvironment() == Triple::GNUEABIHF ||
-           TargetTriple.getEnvironment() == Triple::EABIHF;
+           TargetTriple.getEnvironment() == Triple::EABIHF ||
+           isTargetWindows();
+  }
+  bool isTargetAndroid() const {
+    return TargetTriple.getEnvironment() == Triple::Android;
   }
 
   bool isAPCS_ABI() const {
@@ -382,7 +393,7 @@ public:
   bool isLittle() const { return IsLittle; }
 
   unsigned getMispredictionPenalty() const;
-  
+
   /// This function returns true if the target has sincos() routine in its
   /// compiler runtime or math libraries.
   bool hasSinCos() const;

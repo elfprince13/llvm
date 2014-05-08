@@ -27,6 +27,7 @@ class JITCodeEmitter;
 class MachineInstr;
 class MCInst;
 class TargetLowering;
+class TargetMachine;
 
 FunctionPass *createARMISelDag(ARMBaseTargetMachine &TM,
                                CodeGenOpt::Level OptLevel);
@@ -42,6 +43,7 @@ FunctionPass *createARMGlobalMergePass(const TargetLowering* tli);
 FunctionPass *createARMConstantIslandPass();
 FunctionPass *createMLxExpansionPass();
 FunctionPass *createThumb2ITBlockPass();
+FunctionPass *createARMOptimizeBarriersPass();
 FunctionPass *createThumb2SizeReductionPass();
 
 /// \brief Creates an ARM-specific Target Transformation Info pass.

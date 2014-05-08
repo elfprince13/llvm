@@ -29,7 +29,6 @@
 // FIXME: This pass may be useful for other targets too.
 // ===---------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "arm64-type-promotion"
 #include "ARM64.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -45,6 +44,8 @@
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
+
+#define DEBUG_TYPE "arm64-type-promotion"
 
 static cl::opt<bool>
 EnableAddressTypePromotion("arm64-type-promotion", cl::Hidden,
@@ -70,17 +71,17 @@ class ARM64AddressTypePromotion : public FunctionPass {
 public:
   static char ID;
   ARM64AddressTypePromotion()
-      : FunctionPass(ID), Func(NULL), ConsideredSExtType(NULL) {
+      : FunctionPass(ID), Func(nullptr), ConsideredSExtType(nullptr) {
     initializeARM64AddressTypePromotionPass(*PassRegistry::getPassRegistry());
   }
 
-  virtual const char *getPassName() const {
+  const char *getPassName() const override {
     return "ARM64 Address Type Promotion";
   }
 
   /// Iterate over the functions and promote the computation of interesting
   // sext instructions.
-  bool runOnFunction(Function &F);
+  bool runOnFunction(Function &F) override;
 
 private:
   /// The current function.
@@ -90,7 +91,7 @@ private:
   Type *ConsideredSExtType;
 
   // This transformation requires dominator info.
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
@@ -214,10 +215,8 @@ ARM64AddressTypePromotion::shouldConsiderSExt(const Instruction *SExt) const {
   if (SExt->getType() != ConsideredSExtType)
     return false;
 
-  for (Value::const_use_iterator UseIt = SExt->use_begin(),
-                                 EndUseIt = SExt->use_end();
-       UseIt != EndUseIt; ++UseIt) {
-    if (isa<GetElementPtrInst>(*UseIt))
+  for (const Use &U : SExt->uses()) {
+    if (isa<GetElementPtrInst>(*U))
       return true;
   }
 
@@ -345,7 +344,7 @@ ARM64AddressTypePromotion::propagateSignExtension(Instructions &SExtInsts) {
         SExtForOpnd->moveBefore(Inst);
         Inst->setOperand(OpIdx, SExtForOpnd);
         // If more sext are required, new instructions will have to be created.
-        SExtForOpnd = NULL;
+        SExtForOpnd = nullptr;
       }
       if (SExtForOpnd == SExt) {
         DEBUG(dbgs() << "Sign extension is useless now\n");
@@ -371,10 +370,8 @@ ARM64AddressTypePromotion::propagateSignExtension(Instructions &SExtInsts) {
     mergeSExts(ValToSExtendedUses, ToRemove);
 
   // Remove all instructions marked as ToRemove.
-  for (SetOfInstructions::iterator ToRemoveIt = ToRemove.begin(),
-                                   EndToRemoveIt = ToRemove.end();
-       ToRemoveIt != EndToRemoveIt; ++ToRemoveIt)
-    (*ToRemoveIt)->eraseFromParent();
+  for (Instruction *I: ToRemove)
+    I->eraseFromParent();
   return LocalChange;
 }
 
@@ -382,42 +379,37 @@ void ARM64AddressTypePromotion::mergeSExts(ValueToInsts &ValToSExtendedUses,
                                            SetOfInstructions &ToRemove) {
   DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
 
-  for (ValueToInsts::iterator It = ValToSExtendedUses.begin(),
-                              EndIt = ValToSExtendedUses.end();
-       It != EndIt; ++It) {
-    Instructions &Insts = It->second;
+  for (auto &Entry : ValToSExtendedUses) {
+    Instructions &Insts = Entry.second;
     Instructions CurPts;
-    for (Instructions::iterator IIt = Insts.begin(), EndIIt = Insts.end();
-         IIt != EndIIt; ++IIt) {
-      if (ToRemove.count(*IIt))
+    for (Instruction *Inst : Insts) {
+      if (ToRemove.count(Inst))
         continue;
       bool inserted = false;
-      for (Instructions::iterator CurPtsIt = CurPts.begin(),
-                                  EndCurPtsIt = CurPts.end();
-           CurPtsIt != EndCurPtsIt; ++CurPtsIt) {
-        if (DT.dominates(*IIt, *CurPtsIt)) {
-          DEBUG(dbgs() << "Replace all uses of:\n" << **CurPtsIt << "\nwith:\n"
-                       << **IIt << '\n');
-          (*CurPtsIt)->replaceAllUsesWith(*IIt);
-          ToRemove.insert(*CurPtsIt);
-          *CurPtsIt = *IIt;
+      for (auto Pt : CurPts) {
+        if (DT.dominates(Inst, Pt)) {
+          DEBUG(dbgs() << "Replace all uses of:\n" << *Pt << "\nwith:\n"
+                       << *Inst << '\n');
+          (Pt)->replaceAllUsesWith(Inst);
+          ToRemove.insert(Pt);
+          Pt = Inst;
           inserted = true;
           break;
         }
-        if (!DT.dominates(*CurPtsIt, *IIt))
+        if (!DT.dominates(Pt, Inst))
           // Give up if we need to merge in a common dominator as the
           // expermients show it is not profitable.
           continue;
 
-        DEBUG(dbgs() << "Replace all uses of:\n" << **IIt << "\nwith:\n"
-                     << **CurPtsIt << '\n');
-        (*IIt)->replaceAllUsesWith(*CurPtsIt);
-        ToRemove.insert(*IIt);
+        DEBUG(dbgs() << "Replace all uses of:\n" << *Inst << "\nwith:\n"
+                     << *Pt << '\n');
+        Inst->replaceAllUsesWith(Pt);
+        ToRemove.insert(Inst);
         inserted = true;
         break;
       }
       if (!inserted)
-        CurPts.push_back(*IIt);
+        CurPts.push_back(Inst);
     }
   }
 }
@@ -427,17 +419,15 @@ void ARM64AddressTypePromotion::analyzeSExtension(Instructions &SExtInsts) {
 
   DenseMap<Value *, Instruction *> SeenChains;
 
-  for (Function::iterator IBB = Func->begin(), IEndBB = Func->end();
-       IBB != IEndBB; ++IBB) {
-    for (BasicBlock::iterator II = IBB->begin(), IEndI = IBB->end();
-         II != IEndI; ++II) {
+  for (auto &BB : *Func) {
+    for (auto &II : BB) {
+      Instruction *SExt = &II;
 
       // Collect all sext operation per type.
-      if (!isa<SExtInst>(II) || !shouldConsiderSExt(II))
+      if (!isa<SExtInst>(SExt) || !shouldConsiderSExt(SExt))
         continue;
-      Instruction *SExt = II;
 
-      DEBUG(dbgs() << "Found:\n" << (*II) << '\n');
+      DEBUG(dbgs() << "Found:\n" << (*SExt) << '\n');
 
       // Cases where we actually perform the optimization:
       // 1. SExt is used in a getelementptr with more than 2 operand =>
@@ -447,10 +437,8 @@ void ARM64AddressTypePromotion::analyzeSExtension(Instructions &SExtInsts) {
 
       bool insert = false;
       // #1.
-      for (Value::use_iterator UseIt = SExt->use_begin(),
-                               EndUseIt = SExt->use_end();
-           UseIt != EndUseIt; ++UseIt) {
-        const Instruction *Inst = dyn_cast<GetElementPtrInst>(*UseIt);
+      for (const Use &U : SExt->uses()) {
+        const Instruction *Inst = dyn_cast<GetElementPtrInst>(U);
         if (Inst && Inst->getNumOperands() > 2) {
           DEBUG(dbgs() << "Interesting use in GetElementPtrInst\n" << *Inst
                        << '\n');
@@ -477,11 +465,11 @@ void ARM64AddressTypePromotion::analyzeSExtension(Instructions &SExtInsts) {
           SeenChains.find(Last);
       if (insert || AlreadySeen != SeenChains.end()) {
         DEBUG(dbgs() << "Insert\n");
-        SExtInsts.push_back(II);
-        if (AlreadySeen != SeenChains.end() && AlreadySeen->second != NULL) {
+        SExtInsts.push_back(SExt);
+        if (AlreadySeen != SeenChains.end() && AlreadySeen->second != nullptr) {
           DEBUG(dbgs() << "Insert chain member\n");
           SExtInsts.push_back(AlreadySeen->second);
-          SeenChains[Last] = NULL;
+          SeenChains[Last] = nullptr;
         }
       } else {
         DEBUG(dbgs() << "Record its chain membership\n");

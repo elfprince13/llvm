@@ -29,9 +29,9 @@ public:
 
   const ARM64InstrInfo *TII;
 
-  virtual bool runOnMachineFunction(MachineFunction &Fn);
+  bool runOnMachineFunction(MachineFunction &Fn) override;
 
-  virtual const char *getPassName() const {
+  const char *getPassName() const override {
     return "ARM64 pseudo instruction expansion pass";
   }
 
@@ -580,6 +580,10 @@ bool ARM64ExpandPseudo::expandMI(MachineBasicBlock &MBB,
   case ARM64::ANDXrr:
   case ARM64::BICWrr:
   case ARM64::BICXrr:
+  case ARM64::ANDSWrr:
+  case ARM64::ANDSXrr:
+  case ARM64::BICSWrr:
+  case ARM64::BICSXrr:
   case ARM64::EONWrr:
   case ARM64::EONXrr:
   case ARM64::EORWrr:
@@ -604,6 +608,10 @@ bool ARM64ExpandPseudo::expandMI(MachineBasicBlock &MBB,
     case ARM64::ANDXrr:      Opcode = ARM64::ANDXrs; break;
     case ARM64::BICWrr:      Opcode = ARM64::BICWrs; break;
     case ARM64::BICXrr:      Opcode = ARM64::BICXrs; break;
+    case ARM64::ANDSWrr:     Opcode = ARM64::ANDSWrs; break;
+    case ARM64::ANDSXrr:     Opcode = ARM64::ANDSXrs; break;
+    case ARM64::BICSWrr:     Opcode = ARM64::BICSWrs; break;
+    case ARM64::BICSXrr:     Opcode = ARM64::BICSXrs; break;
     case ARM64::EONWrr:      Opcode = ARM64::EONWrs; break;
     case ARM64::EONXrr:      Opcode = ARM64::EONXrs; break;
     case ARM64::EORWrr:      Opcode = ARM64::EORWrs; break;
@@ -624,6 +632,18 @@ bool ARM64ExpandPseudo::expandMI(MachineBasicBlock &MBB,
     return true;
   }
 
+  case ARM64::FCVTSHpseudo: {
+    MachineOperand Src = MI.getOperand(1);
+    Src.setImplicit();
+    unsigned SrcH = TII->getRegisterInfo().getSubReg(Src.getReg(), ARM64::hsub);
+    auto MIB = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM64::FCVTSHr))
+                   .addOperand(MI.getOperand(0))
+                   .addReg(SrcH, RegState::Undef)
+                   .addOperand(Src);
+    transferImpOps(MI, MIB, MIB);
+    MI.eraseFromParent();
+    return true;
+  }
   case ARM64::LOADgot: {
     // Expand into ADRP + LDR.
     unsigned DstReg = MI.getOperand(0).getReg();
@@ -714,9 +734,8 @@ bool ARM64ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
   TII = static_cast<const ARM64InstrInfo *>(MF.getTarget().getInstrInfo());
 
   bool Modified = false;
-  for (MachineFunction::iterator MFI = MF.begin(), E = MF.end(); MFI != E;
-       ++MFI)
-    Modified |= expandMBB(*MFI);
+  for (auto &MBB : MF)
+    Modified |= expandMBB(MBB);
   return Modified;
 }
 

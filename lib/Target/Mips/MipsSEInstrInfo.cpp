@@ -96,11 +96,13 @@ void MipsSEInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       Opc = Mips::CFC1;
     else if (Mips::FGR32RegClass.contains(SrcReg))
       Opc = Mips::MFC1;
-    else if (Mips::HI32RegClass.contains(SrcReg))
-      Opc = Mips::MFHI, SrcReg = 0;
-    else if (Mips::LO32RegClass.contains(SrcReg))
-      Opc = Mips::MFLO, SrcReg = 0;
-    else if (Mips::HI32DSPRegClass.contains(SrcReg))
+    else if (Mips::HI32RegClass.contains(SrcReg)) {
+      Opc = isMicroMips ? Mips::MFHI16_MM : Mips::MFHI;
+      SrcReg = 0;
+    } else if (Mips::LO32RegClass.contains(SrcReg)) {
+      Opc = isMicroMips ? Mips::MFLO16_MM : Mips::MFLO;
+      SrcReg = 0;
+    } else if (Mips::HI32DSPRegClass.contains(SrcReg))
       Opc = Mips::MFHI_DSP;
     else if (Mips::LO32DSPRegClass.contains(SrcReg))
       Opc = Mips::MFLO_DSP;
@@ -263,6 +265,8 @@ loadRegFromStack(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
 
 bool MipsSEInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   MachineBasicBlock &MBB = *MI->getParent();
+  bool isMicroMips = TM.getSubtarget<MipsSubtarget>().inMicroMipsMode();
+  unsigned Opc;
 
   switch(MI->getDesc().getOpcode()) {
   default:
@@ -271,10 +275,12 @@ bool MipsSEInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
     expandRetRA(MBB, MI, Mips::RET);
     break;
   case Mips::PseudoMFHI:
-    expandPseudoMFHiLo(MBB, MI, Mips::MFHI);
+    Opc = isMicroMips ? Mips::MFHI16_MM : Mips::MFHI;
+    expandPseudoMFHiLo(MBB, MI, Opc);
     break;
   case Mips::PseudoMFLO:
-    expandPseudoMFHiLo(MBB, MI, Mips::MFLO);
+    Opc = isMicroMips ? Mips::MFLO16_MM : Mips::MFLO;
+    expandPseudoMFHiLo(MBB, MI, Opc);
     break;
   case Mips::PseudoMFHI64:
     expandPseudoMFHiLo(MBB, MI, Mips::MFHI64);
@@ -362,7 +368,7 @@ void MipsSEInstrInfo::adjustStackPtr(unsigned SP, int64_t Amount,
   if (isInt<16>(Amount))// addi sp, sp, amount
     BuildMI(MBB, I, DL, get(ADDiu), SP).addReg(SP).addImm(Amount);
   else { // Expand immediate that doesn't fit in 16-bit.
-    unsigned Reg = loadImmediate(Amount, MBB, I, DL, 0);
+    unsigned Reg = loadImmediate(Amount, MBB, I, DL, nullptr);
     BuildMI(MBB, I, DL, get(ADDu), SP).addReg(SP).addReg(Reg, RegState::Kill);
   }
 }

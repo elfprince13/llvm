@@ -48,7 +48,7 @@ static inline const char *getShiftName(ARM64_AM::ShiftType ST) {
   case ARM64_AM::ROR: return "ror";
   case ARM64_AM::MSL: return "msl";
   }
-  return 0;
+  return nullptr;
 }
 
 /// getShiftType - Extract the shift type.
@@ -104,7 +104,7 @@ static inline const char *getExtendName(ARM64_AM::ExtendType ET) {
   case ARM64_AM::SXTW: return "sxtw";
   case ARM64_AM::SXTX: return "sxtx";
   }
-  return 0;
+  return nullptr;
 }
 
 /// getArithShiftValue - get the arithmetic shift value.
@@ -149,7 +149,7 @@ static inline ARM64_AM::ExtendType getMemExtendType(unsigned Imm) {
 }
 
 /// getExtendImm - Encode the extend type and amount for a load/store inst:
-///   imm:     3-bit extend amount
+///   doshift:     should the offset be scaled by the access size
 ///   shifter: 000 ==> uxtb
 ///            001 ==> uxth
 ///            010 ==> uxtw
@@ -159,68 +159,9 @@ static inline ARM64_AM::ExtendType getMemExtendType(unsigned Imm) {
 ///            110 ==> sxtw
 ///            111 ==> sxtx
 ///   {3-1}  = shifter
-///   {0}  = imm3
-static inline unsigned getMemExtendImm(ARM64_AM::ExtendType ET, bool Imm) {
-  assert((Imm & 0x7) == Imm && "Illegal shifted immedate value!");
-  return (unsigned(ET) << 1) | (Imm & 0x7);
-}
-
-//===----------------------------------------------------------------------===//
-// Prefetch
-//
-
-/// Pre-fetch operator names.
-/// The enum values match the encoding values:
-///   prfop<4:3> 00=preload data, 10=prepare for store
-///   prfop<2:1> 00=target L1 cache, 01=target L2 cache, 10=target L3 cache,
-///   prfop<0> 0=non-streaming (temporal), 1=streaming (non-temporal)
-enum PrefetchOp {
-  InvalidPrefetchOp = -1,
-  PLDL1KEEP = 0x00,
-  PLDL1STRM = 0x01,
-  PLDL2KEEP = 0x02,
-  PLDL2STRM = 0x03,
-  PLDL3KEEP = 0x04,
-  PLDL3STRM = 0x05,
-  PSTL1KEEP = 0x10,
-  PSTL1STRM = 0x11,
-  PSTL2KEEP = 0x12,
-  PSTL2STRM = 0x13,
-  PSTL3KEEP = 0x14,
-  PSTL3STRM = 0x15
-};
-
-/// isNamedPrefetchOp - Check if the prefetch-op 5-bit value has a name.
-static inline bool isNamedPrefetchOp(unsigned prfop) {
-  switch (prfop) {
-  default: return false;
-  case ARM64_AM::PLDL1KEEP: case ARM64_AM::PLDL1STRM: case ARM64_AM::PLDL2KEEP:
-  case ARM64_AM::PLDL2STRM: case ARM64_AM::PLDL3KEEP: case ARM64_AM::PLDL3STRM:
-  case ARM64_AM::PSTL1KEEP: case ARM64_AM::PSTL1STRM: case ARM64_AM::PSTL2KEEP:
-  case ARM64_AM::PSTL2STRM: case ARM64_AM::PSTL3KEEP: case ARM64_AM::PSTL3STRM:
-    return true;
-  }
-}
-
-
-/// getPrefetchOpName - Get the string encoding for the prefetch operator.
-static inline const char *getPrefetchOpName(ARM64_AM::PrefetchOp prfop) {
-  switch (prfop) {
-  default: assert(false && "unhandled prefetch-op type!");
-  case ARM64_AM::PLDL1KEEP: return "pldl1keep";
-  case ARM64_AM::PLDL1STRM: return "pldl1strm";
-  case ARM64_AM::PLDL2KEEP: return "pldl2keep";
-  case ARM64_AM::PLDL2STRM: return "pldl2strm";
-  case ARM64_AM::PLDL3KEEP: return "pldl3keep";
-  case ARM64_AM::PLDL3STRM: return "pldl3strm";
-  case ARM64_AM::PSTL1KEEP: return "pstl1keep";
-  case ARM64_AM::PSTL1STRM: return "pstl1strm";
-  case ARM64_AM::PSTL2KEEP: return "pstl2keep";
-  case ARM64_AM::PSTL2STRM: return "pstl2strm";
-  case ARM64_AM::PSTL3KEEP: return "pstl3keep";
-  case ARM64_AM::PSTL3STRM: return "pstl3strm";
-  }
-  return 0;
+///   {0}  = doshift
+static inline unsigned getMemExtendImm(ARM64_AM::ExtendType ET, bool DoShift) {
+  return (unsigned(ET) << 1) | unsigned(DoShift);
 }
 
 static inline uint64_t ror(uint64_t elt, unsigned size) {
@@ -613,16 +554,16 @@ static inline bool isAdvSIMDModImmType10(uint64_t Imm) {
 }
 
 static inline uint8_t encodeAdvSIMDModImmType10(uint64_t Imm) {
-  bool BitA = Imm & 0xff00000000000000ULL;
-  bool BitB = Imm & 0x00ff000000000000ULL;
-  bool BitC = Imm & 0x0000ff0000000000ULL;
-  bool BitD = Imm & 0x000000ff00000000ULL;
-  bool BitE = Imm & 0x00000000ff000000ULL;
-  bool BitF = Imm & 0x0000000000ff0000ULL;
-  bool BitG = Imm & 0x000000000000ff00ULL;
-  bool BitH = Imm & 0x00000000000000ffULL;
+  uint8_t BitA = (Imm & 0xff00000000000000ULL) != 0;
+  uint8_t BitB = (Imm & 0x00ff000000000000ULL) != 0;
+  uint8_t BitC = (Imm & 0x0000ff0000000000ULL) != 0;
+  uint8_t BitD = (Imm & 0x000000ff00000000ULL) != 0;
+  uint8_t BitE = (Imm & 0x00000000ff000000ULL) != 0;
+  uint8_t BitF = (Imm & 0x0000000000ff0000ULL) != 0;
+  uint8_t BitG = (Imm & 0x000000000000ff00ULL) != 0;
+  uint8_t BitH = (Imm & 0x00000000000000ffULL) != 0;
 
-  unsigned EncVal = BitA;
+  uint8_t EncVal = BitA;
   EncVal <<= 1;
   EncVal |= BitB;
   EncVal <<= 1;
@@ -662,16 +603,16 @@ static inline bool isAdvSIMDModImmType11(uint64_t Imm) {
 }
 
 static inline uint8_t encodeAdvSIMDModImmType11(uint64_t Imm) {
-  bool BitA = (Imm & 0x80000000ULL);
-  bool BitB = (Imm & 0x20000000ULL);
-  bool BitC = (Imm & 0x01000000ULL);
-  bool BitD = (Imm & 0x00800000ULL);
-  bool BitE = (Imm & 0x00400000ULL);
-  bool BitF = (Imm & 0x00200000ULL);
-  bool BitG = (Imm & 0x00100000ULL);
-  bool BitH = (Imm & 0x00080000ULL);
+  uint8_t BitA = (Imm & 0x80000000ULL) != 0;
+  uint8_t BitB = (Imm & 0x20000000ULL) != 0;
+  uint8_t BitC = (Imm & 0x01000000ULL) != 0;
+  uint8_t BitD = (Imm & 0x00800000ULL) != 0;
+  uint8_t BitE = (Imm & 0x00400000ULL) != 0;
+  uint8_t BitF = (Imm & 0x00200000ULL) != 0;
+  uint8_t BitG = (Imm & 0x00100000ULL) != 0;
+  uint8_t BitH = (Imm & 0x00080000ULL) != 0;
 
-  unsigned EncVal = BitA;
+  uint8_t EncVal = BitA;
   EncVal <<= 1;
   EncVal |= BitB;
   EncVal <<= 1;
@@ -711,16 +652,16 @@ static inline bool isAdvSIMDModImmType12(uint64_t Imm) {
 }
 
 static inline uint8_t encodeAdvSIMDModImmType12(uint64_t Imm) {
-  bool BitA = (Imm & 0x8000000000000000ULL);
-  bool BitB = (Imm & 0x0040000000000000ULL);
-  bool BitC = (Imm & 0x0020000000000000ULL);
-  bool BitD = (Imm & 0x0010000000000000ULL);
-  bool BitE = (Imm & 0x0008000000000000ULL);
-  bool BitF = (Imm & 0x0004000000000000ULL);
-  bool BitG = (Imm & 0x0002000000000000ULL);
-  bool BitH = (Imm & 0x0001000000000000ULL);
+  uint8_t BitA = (Imm & 0x8000000000000000ULL) != 0;
+  uint8_t BitB = (Imm & 0x0040000000000000ULL) != 0;
+  uint8_t BitC = (Imm & 0x0020000000000000ULL) != 0;
+  uint8_t BitD = (Imm & 0x0010000000000000ULL) != 0;
+  uint8_t BitE = (Imm & 0x0008000000000000ULL) != 0;
+  uint8_t BitF = (Imm & 0x0004000000000000ULL) != 0;
+  uint8_t BitG = (Imm & 0x0002000000000000ULL) != 0;
+  uint8_t BitH = (Imm & 0x0001000000000000ULL) != 0;
 
-  unsigned EncVal = BitA;
+  uint8_t EncVal = BitA;
   EncVal <<= 1;
   EncVal |= BitB;
   EncVal <<= 1;

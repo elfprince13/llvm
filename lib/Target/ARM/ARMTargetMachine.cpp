@@ -30,10 +30,10 @@ DisableA15SDOptimization("disable-a15-sd-optimization", cl::Hidden,
 
 extern "C" void LLVMInitializeARMTarget() {
   // Register the target.
-  RegisterTargetMachine<ARMleTargetMachine> X(TheARMleTarget);
-  RegisterTargetMachine<ARMbeTargetMachine> Y(TheARMbeTarget);
-  RegisterTargetMachine<ThumbleTargetMachine> A(TheThumbleTarget);
-  RegisterTargetMachine<ThumbbeTargetMachine> B(TheThumbbeTarget);
+  RegisterTargetMachine<ARMLETargetMachine> X(TheARMLETarget);
+  RegisterTargetMachine<ARMBETargetMachine> Y(TheARMBETarget);
+  RegisterTargetMachine<ThumbLETargetMachine> A(TheThumbLETarget);
+  RegisterTargetMachine<ThumbBETargetMachine> B(TheThumbBETarget);
 }
 
 
@@ -87,7 +87,7 @@ static std::string computeDataLayout(ARMSubtarget &ST) {
   if (ST.isThumb())
     Ret += "-i1:8:32-i8:8:32-i16:16:32";
 
-  // ABIs other than APC have 64 bit integers with natural alignment.
+  // ABIs other than APCS have 64 bit integers with natural alignment.
   if (!ST.isAPCS_ABI())
     Ret += "-i64:64";
 
@@ -141,19 +141,19 @@ ARMTargetMachine::ARMTargetMachine(const Target &T, StringRef TT,
                        "support ARM mode execution!");
 }
 
-void ARMleTargetMachine::anchor() { }
+void ARMLETargetMachine::anchor() { }
 
-ARMleTargetMachine::
-ARMleTargetMachine(const Target &T, StringRef TT,
+ARMLETargetMachine::
+ARMLETargetMachine(const Target &T, StringRef TT,
                        StringRef CPU, StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL)
   : ARMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
 
-void ARMbeTargetMachine::anchor() { }
+void ARMBETargetMachine::anchor() { }
 
-ARMbeTargetMachine::
-ARMbeTargetMachine(const Target &T, StringRef TT,
+ARMBETargetMachine::
+ARMBETargetMachine(const Target &T, StringRef TT,
                        StringRef CPU, StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL)
@@ -180,19 +180,19 @@ ThumbTargetMachine::ThumbTargetMachine(const Target &T, StringRef TT,
   initAsmInfo();
 }
 
-void ThumbleTargetMachine::anchor() { }
+void ThumbLETargetMachine::anchor() { }
 
-ThumbleTargetMachine::
-ThumbleTargetMachine(const Target &T, StringRef TT,
+ThumbLETargetMachine::
+ThumbLETargetMachine(const Target &T, StringRef TT,
                        StringRef CPU, StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL)
   : ThumbTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, true) {}
 
-void ThumbbeTargetMachine::anchor() { }
+void ThumbBETargetMachine::anchor() { }
 
-ThumbbeTargetMachine::
-ThumbbeTargetMachine(const Target &T, StringRef TT,
+ThumbBETargetMachine::
+ThumbBETargetMachine(const Target &T, StringRef TT,
                        StringRef CPU, StringRef FS, const TargetOptions &Options,
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL)
@@ -226,6 +226,10 @@ TargetPassConfig *ARMBaseTargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 bool ARMPassConfig::addPreISel() {
+  const ARMSubtarget *Subtarget = &getARMSubtarget();
+  if (Subtarget->hasAnyDataBarrier() && !Subtarget->isThumb1Only())
+    addPass(createAtomicExpandLoadLinkedPass(TM));
+
   if (TM->getOptLevel() != CodeGenOpt::None)
     addPass(createGlobalMergePass(TM));
 
@@ -296,6 +300,7 @@ bool ARMPassConfig::addPreEmitPass() {
     addPass(&UnpackMachineBundlesID);
   }
 
+  addPass(createARMOptimizeBarriersPass());
   addPass(createARMConstantIslandPass());
 
   return true;
