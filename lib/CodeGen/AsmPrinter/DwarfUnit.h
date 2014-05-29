@@ -61,8 +61,6 @@ public:
   void addRange(RangeSpan Range) { Ranges.push_back(Range); }
 };
 
-enum AbstractOrInlined { AOI_None, AOI_Inlined, AOI_Abstract };
-
 //===----------------------------------------------------------------------===//
 /// Unit - This dwarf writer support class manages information associated
 /// with a source file.
@@ -348,8 +346,10 @@ public:
 
   /// addConstantValue - Add constant value entry in variable DIE.
   void addConstantValue(DIE &Die, const MachineOperand &MO, DIType Ty);
-  void addConstantValue(DIE &Die, const ConstantInt *CI, bool Unsigned);
+  void addConstantValue(DIE &Die, const ConstantInt *CI, DIType Ty);
+  void addConstantValue(DIE &Die, const APInt &Val, DIType Ty);
   void addConstantValue(DIE &Die, const APInt &Val, bool Unsigned);
+  void addConstantValue(DIE &Die, bool Unsigned, uint64_t Val);
 
   /// addConstantFPValue - Add constant value entry in variable DIE.
   void addConstantFPValue(DIE &Die, const MachineOperand &MO);
@@ -399,6 +399,8 @@ public:
   /// getOrCreateSubprogramDIE - Create new DIE using SP.
   DIE *getOrCreateSubprogramDIE(DISubprogram SP);
 
+  void applySubprogramAttributes(DISubprogram SP, DIE &SPDie);
+
   /// getOrCreateTypeDIE - Find existing DIE or create new DIE for the
   /// given DIType.
   DIE *getOrCreateTypeDIE(const MDNode *N);
@@ -415,7 +417,7 @@ public:
 
   /// constructVariableDIE - Construct a DIE for the given DbgVariable.
   std::unique_ptr<DIE> constructVariableDIE(DbgVariable &DV,
-                                            AbstractOrInlined AbsIn = AOI_None);
+                                            bool Abstract = false);
 
   /// constructSubprogramArguments - Construct function argument DIEs.
   void constructSubprogramArguments(DIE &Buffer, DIArray Args);
@@ -453,7 +455,7 @@ private:
   /// \brief Construct a DIE for the given DbgVariable without initializing the
   /// DbgVariable's DIE reference.
   std::unique_ptr<DIE> constructVariableDIEImpl(const DbgVariable &DV,
-                                                AbstractOrInlined AbsIn);
+                                                bool Abstract);
 
   /// constructTypeDIE - Construct basic type die from DIBasicType.
   void constructTypeDIE(DIE &Buffer, DIBasicType BTy);

@@ -59,11 +59,12 @@ public:
   };
 
 protected:
-  GlobalValue(Type *ty, ValueTy vty, Use *Ops, unsigned NumOps,
-              LinkageTypes linkage, const Twine &Name)
-    : Constant(ty, vty, Ops, NumOps), Linkage(linkage),
-      Visibility(DefaultVisibility), Alignment(0), UnnamedAddr(0),
-      DllStorageClass(DefaultStorageClass), Parent(nullptr) {
+  GlobalValue(Type *Ty, ValueTy VTy, Use *Ops, unsigned NumOps,
+              LinkageTypes Linkage, const Twine &Name)
+      : Constant(Ty, VTy, Ops, NumOps), Linkage(Linkage),
+        Visibility(DefaultVisibility), UnnamedAddr(0),
+        DllStorageClass(DefaultStorageClass),
+        ThreadLocal(NotThreadLocal), Parent(nullptr) {
     setName(Name);
   }
 
@@ -71,18 +72,40 @@ protected:
   // Linkage and Visibility from turning into negative values.
   LinkageTypes Linkage : 5;   // The linkage of this global
   unsigned Visibility : 2;    // The visibility style of this global
-  unsigned Alignment : 16;    // Alignment of this symbol, must be power of two
   unsigned UnnamedAddr : 1;   // This value's address is not significant
   unsigned DllStorageClass : 2; // DLL storage class
+
+  unsigned ThreadLocal : 3; // Is this symbol "Thread Local", if so, what is
+                            // the desired model?
+
+private:
+  // Give subclasses access to what otherwise would be wasted padding.
+  // (19 + 3 + 2 + 1 + 2 + 5) == 32.
+  unsigned SubClassData : 19;
+protected:
+  unsigned getGlobalValueSubClassData() const {
+    return SubClassData;
+  }
+  void setGlobalValueSubClassData(unsigned V) {
+    assert(V < (1 << 19) && "It will not fit");
+    SubClassData = V;
+  }
+
   Module *Parent;             // The containing module.
-  std::string Section;        // Section to emit this into, empty mean default
 public:
+  enum ThreadLocalMode {
+    NotThreadLocal = 0,
+    GeneralDynamicTLSModel,
+    LocalDynamicTLSModel,
+    InitialExecTLSModel,
+    LocalExecTLSModel
+  };
+
   ~GlobalValue() {
     removeDeadConstantUsers();   // remove any dead constants using this.
   }
 
   unsigned getAlignment() const;
-  void setAlignment(unsigned Align);
 
   bool hasUnnamedAddr() const { return UnnamedAddr; }
   void setUnnamedAddr(bool Val) { UnnamedAddr = Val; }
@@ -99,6 +122,19 @@ public:
     Visibility = V;
   }
 
+  /// If the value is "Thread Local", its value isn't shared by the threads.
+  bool isThreadLocal() const { return getThreadLocalMode() != NotThreadLocal; }
+  void setThreadLocal(bool Val) {
+    setThreadLocalMode(Val ? GeneralDynamicTLSModel : NotThreadLocal);
+  }
+  void setThreadLocalMode(ThreadLocalMode Val) {
+    assert(Val == NotThreadLocal || getValueID() != Value::FunctionVal);
+    ThreadLocal = Val;
+  }
+  ThreadLocalMode getThreadLocalMode() const {
+    return static_cast<ThreadLocalMode>(ThreadLocal);
+  }
+
   DLLStorageClassTypes getDLLStorageClass() const {
     return DLLStorageClassTypes(DllStorageClass);
   }
@@ -112,7 +148,6 @@ public:
 
   bool hasSection() const { return !getSection().empty(); }
   const std::string &getSection() const;
-  void setSection(StringRef S);
 
   /// Global values are always pointers.
   inline PointerType *getType() const {
@@ -135,8 +170,14 @@ public:
   static bool isLinkOnceLinkage(LinkageTypes Linkage) {
     return Linkage == LinkOnceAnyLinkage || Linkage == LinkOnceODRLinkage;
   }
+  static bool isWeakAnyLinkage(LinkageTypes Linkage) {
+    return Linkage == WeakAnyLinkage;
+  }
+  static bool isWeakODRLinkage(LinkageTypes Linkage) {
+    return Linkage == WeakODRLinkage;
+  }
   static bool isWeakLinkage(LinkageTypes Linkage) {
-    return Linkage == WeakAnyLinkage || Linkage == WeakODRLinkage;
+    return isWeakAnyLinkage(Linkage) || isWeakODRLinkage(Linkage);
   }
   static bool isAppendingLinkage(LinkageTypes Linkage) {
     return Linkage == AppendingLinkage;
@@ -192,6 +233,12 @@ public:
   bool hasWeakLinkage() const {
     return isWeakLinkage(Linkage);
   }
+  bool hasWeakAnyLinkage() const {
+    return isWeakAnyLinkage(Linkage);
+  }
+  bool hasWeakODRLinkage() const {
+    return isWeakODRLinkage(Linkage);
+  }
   bool hasAppendingLinkage() const { return isAppendingLinkage(Linkage); }
   bool hasInternalLinkage() const { return isInternalLinkage(Linkage); }
   bool hasPrivateLinkage() const { return isPrivateLinkage(Linkage); }
@@ -200,8 +247,8 @@ public:
   bool hasCommonLinkage() const { return isCommonLinkage(Linkage); }
 
   void setLinkage(LinkageTypes LT) {
-    assert((!isLocalLinkage(LT) || hasDefaultVisibility()) &&
-           "local linkage requires default visibility");
+    if (isLocalLinkage(LT))
+      Visibility = DefaultVisibility;
     Linkage = LT;
   }
   LinkageTypes getLinkage() const { return Linkage; }

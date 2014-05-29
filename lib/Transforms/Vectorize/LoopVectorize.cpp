@@ -67,6 +67,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -477,18 +478,17 @@ static void setDebugLocFromInst(IRBuilder<> &B, const Value *Ptr) {
 }
 
 #ifndef NDEBUG
-/// \return string containing a file name and a line # for the given
-/// instruction.
-static std::string getDebugLocString(const Instruction *I) {
+/// \return string containing a file name and a line # for the given loop.
+static std::string getDebugLocString(const Loop *L) {
   std::string Result;
-  if (I) {
+  if (L) {
     raw_string_ostream OS(Result);
-    const DebugLoc &InstrDebugLoc = I->getDebugLoc();
-    if (!InstrDebugLoc.isUnknown())
-      InstrDebugLoc.print(I->getContext(), OS);
+    const DebugLoc LoopDbgLoc = L->getStartLoc();
+    if (!LoopDbgLoc.isUnknown())
+      LoopDbgLoc.print(L->getHeader()->getContext(), OS);
     else
       // Just print the module name.
-      OS << I->getParent()->getParent()->getParent()->getModuleIdentifier();
+      OS << L->getHeader()->getParent()->getParent()->getModuleIdentifier();
     OS.flush();
   }
   return Result;
@@ -1107,8 +1107,7 @@ struct LoopVectorize : public FunctionPass {
     assert(L->empty() && "Only process inner loops.");
 
 #ifndef NDEBUG
-    const std::string DebugLocStr =
-        getDebugLocString(L->getHeader()->getFirstNonPHIOrDbgOrLifetime());
+    const std::string DebugLocStr = getDebugLocString(L);
 #endif /* NDEBUG */
 
     DEBUG(dbgs() << "\nLV: Checking a loop in \""
@@ -1215,10 +1214,10 @@ struct LoopVectorize : public FunctionPass {
       DEBUG(dbgs() << "LV: Trying to at least unroll the loops.\n");
 
       // Report the unrolling decision.
-      F->getContext().emitOptimizationRemark(
-          DEBUG_TYPE, *F, L->getStartLoc(),
-          Twine("unrolled with interleaving factor " + Twine(UF) +
-                " (vectorization not beneficial)"));
+      emitOptimizationRemark(F->getContext(), DEBUG_TYPE, *F, L->getStartLoc(),
+                             Twine("unrolled with interleaving factor " +
+                                   Twine(UF) +
+                                   " (vectorization not beneficial)"));
 
       // We decided not to vectorize, but we may want to unroll.
       InnerLoopUnroller Unroller(L, SE, LI, DT, DL, TLI, UF);
@@ -1230,8 +1229,8 @@ struct LoopVectorize : public FunctionPass {
       ++LoopsVectorized;
 
       // Report the vectorization decision.
-      F->getContext().emitOptimizationRemark(
-          DEBUG_TYPE, *F, L->getStartLoc(),
+      emitOptimizationRemark(
+          F->getContext(), DEBUG_TYPE, *F, L->getStartLoc(),
           Twine("vectorized loop (vectorization factor: ") + Twine(VF.Width) +
               ", unrolling interleave factor: " + Twine(UF) + ")");
     }

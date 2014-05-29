@@ -5288,14 +5288,13 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
       return nullptr;
     }
     TargetLowering::ArgListTy Args;
-    TargetLowering::
-    CallLoweringInfo CLI(getRoot(), I.getType(),
-                 false, false, false, false, 0, CallingConv::C,
-                 /*isTailCall=*/false,
-                 /*doesNotRet=*/false, /*isReturnValueUsed=*/true,
-                 DAG.getExternalSymbol(TrapFuncName.data(),
-                                       TLI->getPointerTy()),
-                 Args, DAG, sdl);
+
+    TargetLowering::CallLoweringInfo CLI(DAG);
+    CLI.setDebugLoc(sdl).setChain(getRoot())
+      .setCallee(CallingConv::C, I.getType(),
+                 DAG.getExternalSymbol(TrapFuncName.data(), TLI->getPointerTy()),
+                 &Args, 0);
+
     std::pair<SDValue, SDValue> Result = TLI->LowerCallTo(CLI);
     DAG.setRoot(Result.second);
     return nullptr;
@@ -5503,9 +5502,10 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
   if (isTailCall && !isInTailCallPosition(CS, *TLI))
     isTailCall = false;
 
-  TargetLowering::
-  CallLoweringInfo CLI(getRoot(), RetTy, FTy, isTailCall, Callee, Args, DAG,
-                       getCurSDLoc(), CS);
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(getCurSDLoc()).setChain(getRoot())
+    .setCallee(RetTy, FTy, Callee, &Args, CS).setTailCall(isTailCall);
+
   std::pair<SDValue,SDValue> Result = TLI->LowerCallTo(CLI);
   assert((isTailCall || Result.second.getNode()) &&
          "Non-null chain expected with non-tail call!");
@@ -6843,10 +6843,10 @@ SelectionDAGBuilder::LowerCallOperands(const CallInst &CI, unsigned ArgIdx,
   }
 
   Type *retTy = useVoidTy ? Type::getVoidTy(*DAG.getContext()) : CI.getType();
-  TargetLowering::CallLoweringInfo CLI(getRoot(), retTy, /*retSExt*/ false,
-    /*retZExt*/ false, /*isVarArg*/ false, /*isInReg*/ false, NumArgs,
-    CI.getCallingConv(), /*isTailCall*/ false, /*doesNotReturn*/ false,
-    /*isReturnValueUsed*/ CI.use_empty(), Callee, Args, DAG, getCurSDLoc());
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(getCurSDLoc()).setChain(getRoot())
+    .setCallee(CI.getCallingConv(), retTy, Callee, &Args, NumArgs)
+    .setDiscardResult(!CI.use_empty());
 
   const TargetLowering *TLI = TM.getTargetLowering();
   return TLI->LowerCallTo(CLI);
@@ -7124,12 +7124,17 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
   // Handle all of the outgoing arguments.
   CLI.Outs.clear();
   CLI.OutVals.clear();
-  ArgListTy &Args = CLI.Args;
+  ArgListTy &Args = CLI.getArgs();
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
     SmallVector<EVT, 4> ValueVTs;
     ComputeValueVTs(*this, Args[i].Ty, ValueVTs);
-    for (unsigned Value = 0, NumValues = ValueVTs.size();
-         Value != NumValues; ++Value) {
+    Type *FinalType = Args[i].Ty;
+    if (Args[i].isByVal)
+      FinalType = cast<PointerType>(Args[i].Ty)->getElementType();
+    bool NeedsRegBlock = functionArgumentNeedsConsecutiveRegisters(
+        FinalType, CLI.CallConv, CLI.IsVarArg);
+    for (unsigned Value = 0, NumValues = ValueVTs.size(); Value != NumValues;
+         ++Value) {
       EVT VT = ValueVTs[Value];
       Type *ArgTy = VT.getTypeForEVT(CLI.RetTy->getContext());
       SDValue Op = SDValue(Args[i].Node.getNode(),
@@ -7171,6 +7176,8 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
       }
       if (Args[i].isNest)
         Flags.setNest();
+      if (NeedsRegBlock)
+        Flags.setInConsecutiveRegs();
       Flags.setOrigAlign(OriginalAlignment);
 
       MVT PartVT = getRegisterType(CLI.RetTy->getContext(), VT);
@@ -7215,6 +7222,10 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
           MyFlags.Flags.setSplit();
         else if (j != 0)
           MyFlags.Flags.setOrigAlign(1);
+
+        // Only mark the end at the last register of the last value.
+        if (NeedsRegBlock && Value == NumValues - 1 && j == NumParts - 1)
+          MyFlags.Flags.setInConsecutiveRegsLast();
 
         CLI.Outs.push_back(MyFlags);
         CLI.OutVals.push_back(Parts[j]);
@@ -7356,6 +7367,11 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
     ComputeValueVTs(*TLI, I->getType(), ValueVTs);
     bool isArgValueUsed = !I->use_empty();
     unsigned PartBase = 0;
+    Type *FinalType = I->getType();
+    if (F.getAttributes().hasAttribute(Idx, Attribute::ByVal))
+      FinalType = cast<PointerType>(FinalType)->getElementType();
+    bool NeedsRegBlock = TLI->functionArgumentNeedsConsecutiveRegisters(
+        FinalType, F.getCallingConv(), F.isVarArg());
     for (unsigned Value = 0, NumValues = ValueVTs.size();
          Value != NumValues; ++Value) {
       EVT VT = ValueVTs[Value];
@@ -7397,6 +7413,8 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
       }
       if (F.getAttributes().hasAttribute(Idx, Attribute::Nest))
         Flags.setNest();
+      if (NeedsRegBlock)
+        Flags.setInConsecutiveRegs();
       Flags.setOrigAlign(OriginalAlignment);
 
       MVT RegisterVT = TLI->getRegisterType(*CurDAG->getContext(), VT);
@@ -7409,6 +7427,11 @@ void SelectionDAGISel::LowerArguments(const Function &F) {
         // if it isn't first piece, alignment must be 1
         else if (i > 0)
           MyFlags.Flags.setOrigAlign(1);
+
+        // Only mark the end at the last register of the last value.
+        if (NeedsRegBlock && Value == NumValues - 1 && i == NumRegs - 1)
+          MyFlags.Flags.setInConsecutiveRegsLast();
+
         Ins.push_back(MyFlags);
       }
       PartBase += VT.getStoreSize();

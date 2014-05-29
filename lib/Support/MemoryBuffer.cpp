@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/Errno.h"
@@ -27,19 +26,11 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
-#include <sys/stat.h>
 #include <sys/types.h>
 #if !defined(_MSC_VER) && !defined(__MINGW32__)
 #include <unistd.h>
 #else
 #include <io.h>
-// Simplistic definitinos of these macros for use in getOpenFile.
-#ifndef S_ISREG
-#define S_ISREG(x) (1)
-#endif
-#ifndef S_ISBLK
-#define S_ISBLK(x) (0)
-#endif
 #endif
 using namespace llvm;
 
@@ -173,15 +164,6 @@ error_code MemoryBuffer::getFileOrSTDIN(StringRef Filename,
   return getFile(Filename, Result, FileSize);
 }
 
-error_code MemoryBuffer::getFileOrSTDIN(StringRef Filename,
-                                        OwningPtr<MemoryBuffer> &Result,
-                                        int64_t FileSize) {
-  std::unique_ptr<MemoryBuffer> MB;
-  error_code ec = getFileOrSTDIN(Filename, MB, FileSize);
-  Result = std::move(MB);
-  return ec;
-}
-
 
 //===----------------------------------------------------------------------===//
 // MemoryBuffer::getFile implementation.
@@ -267,18 +249,6 @@ error_code MemoryBuffer::getFile(Twine Filename,
                     RequiresNullTerminator, IsVolatileSize);
 }
 
-error_code MemoryBuffer::getFile(Twine Filename,
-                                 OwningPtr<MemoryBuffer> &Result,
-                                 int64_t FileSize,
-                                 bool RequiresNullTerminator,
-                                 bool IsVolatileSize) {
-  std::unique_ptr<MemoryBuffer> MB;
-  error_code ec = getFile(Filename, MB, FileSize, RequiresNullTerminator,
-                          IsVolatileSize);
-  Result = std::move(MB);
-  return ec;
-}
-
 static error_code getOpenFileImpl(int FD, const char *Filename,
                                   std::unique_ptr<MemoryBuffer> &Result,
                                   uint64_t FileSize, uint64_t MapSize,
@@ -328,9 +298,8 @@ static bool shouldUseMmap(int FD,
   // RequiresNullTerminator = false and MapSize != -1.
   if (FileSize == size_t(-1)) {
     sys::fs::file_status Status;
-    error_code EC = sys::fs::status(FD, Status);
-    if (EC)
-      return EC;
+    if (sys::fs::status(FD, Status))
+      return false;
     FileSize = Status.getSize();
   }
 
@@ -340,15 +309,6 @@ static bool shouldUseMmap(int FD,
   assert(End <= FileSize);
   if (End != FileSize)
     return false;
-
-#if defined(_WIN32) || defined(__CYGWIN__)
-  // Don't peek the next page if file is multiple of *physical* pagesize(4k)
-  // but is not multiple of AllocationGranularity(64k),
-  // when a null terminator is required.
-  // FIXME: It's not good to hardcode 4096 here. dwPageSize shows 4096.
-  if ((FileSize & (4096 - 1)) == 0)
-    return false;
-#endif
 
   // Don't try to map files that are exactly a multiple of the system page size
   // if we need a null terminator.
@@ -446,35 +406,12 @@ error_code MemoryBuffer::getOpenFile(int FD, const char *Filename,
                          RequiresNullTerminator, IsVolatileSize);
 }
 
-error_code MemoryBuffer::getOpenFile(int FD, const char *Filename,
-                                     OwningPtr<MemoryBuffer> &Result,
-                                     uint64_t FileSize,
-                                     bool RequiresNullTerminator,
-                                     bool IsVolatileSize) {
-  std::unique_ptr<MemoryBuffer> MB;
-  error_code ec = getOpenFileImpl(FD, Filename, MB, FileSize, FileSize, 0,
-                                  RequiresNullTerminator, IsVolatileSize);
-  Result = std::move(MB);
-  return ec;
-}
-
 error_code MemoryBuffer::getOpenFileSlice(int FD, const char *Filename,
                                           std::unique_ptr<MemoryBuffer> &Result,
                                           uint64_t MapSize, int64_t Offset,
                                           bool IsVolatileSize) {
   return getOpenFileImpl(FD, Filename, Result, -1, MapSize, Offset, false,
                          IsVolatileSize);
-}
-
-error_code MemoryBuffer::getOpenFileSlice(int FD, const char *Filename,
-                                          OwningPtr<MemoryBuffer> &Result,
-                                          uint64_t MapSize, int64_t Offset,
-                                          bool IsVolatileSize) {
-  std::unique_ptr<MemoryBuffer> MB;
-  error_code ec = getOpenFileImpl(FD, Filename, MB, -1, MapSize, Offset, false,
-                                  IsVolatileSize);
-  Result = std::move(MB);
-  return ec;
 }
 
 //===----------------------------------------------------------------------===//
@@ -489,11 +426,4 @@ error_code MemoryBuffer::getSTDIN(std::unique_ptr<MemoryBuffer> &Result) {
   sys::ChangeStdinToBinary();
 
   return getMemoryBufferForStream(0, "<stdin>", Result);
-}
-
-error_code MemoryBuffer::getSTDIN(OwningPtr<MemoryBuffer> &Result) {
-  std::unique_ptr<MemoryBuffer> MB;
-  error_code ec = getSTDIN(MB);
-  Result = std::move(MB);
-  return ec;
 }

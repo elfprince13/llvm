@@ -199,7 +199,7 @@ class DwarfDebug : public AsmPrinterHandler {
   ScopeVariablesMap ScopeVariables;
 
   // Collection of abstract variables.
-  DenseMap<const MDNode *, DbgVariable *> AbstractVariables;
+  DenseMap<const MDNode *, std::unique_ptr<DbgVariable>> AbstractVariables;
 
   // Collection of DebugLocEntry. Stored in a linked list so that DIELocLists
   // can refer to them in spite of insertions into this list.
@@ -335,6 +335,7 @@ class DwarfDebug : public AsmPrinterHandler {
 
   /// \brief Find abstract variable associated with Var.
   DbgVariable *findAbstractVariable(DIVariable &Var, DebugLoc Loc);
+  DbgVariable *findAbstractVariable(DIVariable &Var, const MDNode *Scope);
 
   /// \brief Find DIE for the given subprogram and attach appropriate
   /// DW_AT_low_pc and DW_AT_high_pc attributes. If there are global
@@ -385,11 +386,10 @@ class DwarfDebug : public AsmPrinterHandler {
   /// \brief Compute the size and offset of all the DIEs.
   void computeSizeAndOffsets();
 
-  /// \brief Attach DW_AT_inline attribute with inlined subprogram DIEs.
-  void computeInlinedDIEs();
-
   /// \brief Collect info for variables that were optimized out.
   void collectDeadVariables();
+
+  void finishSubprogramDefinitions();
 
   /// \brief Finish off debug information after all functions have been
   /// processed.
@@ -491,9 +491,6 @@ class DwarfDebug : public AsmPrinterHandler {
   /// DW_TAG_compile_unit.
   DwarfCompileUnit &constructDwarfCompileUnit(DICompileUnit DIUnit);
 
-  /// \brief Construct subprogram DIE.
-  void constructSubprogramDIE(DwarfCompileUnit &TheCU, const MDNode *N);
-
   /// \brief Construct imported_module or imported_declaration DIE.
   void constructImportedEntityDIE(DwarfCompileUnit &TheCU, const MDNode *N);
 
@@ -542,6 +539,8 @@ class DwarfDebug : public AsmPrinterHandler {
   /// \brief Return Label immediately following the instruction.
   MCSymbol *getLabelAfterInsn(const MachineInstr *MI);
 
+  void attachRangesOrLowHighPC(DwarfCompileUnit &Unit, DIE &D,
+                               const SmallVectorImpl<InsnRange> &Ranges);
   void attachLowHighPC(DwarfCompileUnit &Unit, DIE &D, MCSymbol *Begin,
                        MCSymbol *End);
 
