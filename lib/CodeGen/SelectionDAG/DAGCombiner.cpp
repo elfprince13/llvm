@@ -1325,9 +1325,16 @@ SDValue DAGCombiner::combine(SDNode *N) {
 
     // Constant operands are canonicalized to RHS.
     if (isa<ConstantSDNode>(N0) || !isa<ConstantSDNode>(N1)) {
-      SDValue Ops[] = { N1, N0 };
-      SDNode *CSENode = DAG.getNodeIfExists(N->getOpcode(), N->getVTList(),
-                                            Ops);
+      SDValue Ops[] = {N1, N0};
+      SDNode *CSENode;
+      if (const BinaryWithFlagsSDNode *BinNode =
+              dyn_cast<BinaryWithFlagsSDNode>(N)) {
+        CSENode = DAG.getNodeIfExists(
+            N->getOpcode(), N->getVTList(), Ops, BinNode->hasNoUnsignedWrap(),
+            BinNode->hasNoSignedWrap(), BinNode->isExact());
+      } else {
+        CSENode = DAG.getNodeIfExists(N->getOpcode(), N->getVTList(), Ops);
+      }
       if (CSENode)
         return SDValue(CSENode, 0);
     }
@@ -4560,12 +4567,9 @@ SDValue DAGCombiner::visitSELECT(SDNode *N) {
 
   // fold selects based on a setcc into other things, such as min/max/abs
   if (N0.getOpcode() == ISD::SETCC) {
-    // FIXME:
-    // Check against MVT::Other for SELECT_CC, which is a workaround for targets
-    // having to say they don't support SELECT_CC on every type the DAG knows
-    // about, since there is no way to mark an opcode illegal at all value types
-    if (TLI.isOperationLegalOrCustom(ISD::SELECT_CC, MVT::Other) &&
-        TLI.isOperationLegalOrCustom(ISD::SELECT_CC, VT))
+    if ((!LegalOperations &&
+         TLI.isOperationLegalOrCustom(ISD::SELECT_CC, VT)) ||
+	TLI.isOperationLegal(ISD::SELECT_CC, VT))
       return DAG.getNode(ISD::SELECT_CC, SDLoc(N), VT,
                          N0.getOperand(0), N0.getOperand(1),
                          N1, N2, N0.getOperand(2));
@@ -4590,6 +4594,56 @@ std::pair<SDValue, SDValue> SplitVSETCC(const SDNode *N, SelectionDAG &DAG) {
   Hi = DAG.getNode(N->getOpcode(), DL, HiVT, LH, RH, N->getOperand(2));
 
   return std::make_pair(Lo, Hi);
+}
+
+// This function assumes all the vselect's arguments are CONCAT_VECTOR
+// nodes and that the condition is a BV of ConstantSDNodes (or undefs).
+static SDValue ConvertSelectToConcatVector(SDNode *N, SelectionDAG &DAG) {
+  SDLoc dl(N);
+  SDValue Cond = N->getOperand(0);
+  SDValue LHS = N->getOperand(1);
+  SDValue RHS = N->getOperand(2);
+  MVT VT = N->getSimpleValueType(0);
+  int NumElems = VT.getVectorNumElements();
+  assert(LHS.getOpcode() == ISD::CONCAT_VECTORS &&
+         RHS.getOpcode() == ISD::CONCAT_VECTORS &&
+         Cond.getOpcode() == ISD::BUILD_VECTOR);
+
+  // We're sure we have an even number of elements due to the
+  // concat_vectors we have as arguments to vselect.
+  // Skip BV elements until we find one that's not an UNDEF
+  // After we find an UNDEF element, keep looping until we get to half the
+  // length of the BV and see if all the non-undef nodes are the same.
+  ConstantSDNode *BottomHalf = nullptr;
+  for (int i = 0; i < NumElems / 2; ++i) {
+    if (Cond->getOperand(i)->getOpcode() == ISD::UNDEF)
+      continue;
+
+    if (BottomHalf == nullptr)
+      BottomHalf = cast<ConstantSDNode>(Cond.getOperand(i));
+    else if (Cond->getOperand(i).getNode() != BottomHalf)
+      return SDValue();
+  }
+
+  // Do the same for the second half of the BuildVector
+  ConstantSDNode *TopHalf = nullptr;
+  for (int i = NumElems / 2; i < NumElems; ++i) {
+    if (Cond->getOperand(i)->getOpcode() == ISD::UNDEF)
+      continue;
+
+    if (TopHalf == nullptr)
+      TopHalf = cast<ConstantSDNode>(Cond.getOperand(i));
+    else if (Cond->getOperand(i).getNode() != TopHalf)
+      return SDValue();
+  }
+
+  assert(TopHalf && BottomHalf &&
+         "One half of the selector was all UNDEFs and the other was all the "
+         "same value. This should have been addressed before this function.");
+  return DAG.getNode(
+      ISD::CONCAT_VECTORS, dl, VT,
+      BottomHalf->isNullValue() ? RHS->getOperand(0) : LHS->getOperand(0),
+      TopHalf->isNullValue() ? RHS->getOperand(1) : LHS->getOperand(1));
 }
 
 SDValue DAGCombiner::visitVSELECT(SDNode *N) {
@@ -4663,6 +4717,17 @@ SDValue DAGCombiner::visitVSELECT(SDNode *N) {
   // Fold (vselect (build_vector all_zeros), N1, N2) -> N2
   if (ISD::isBuildVectorAllZeros(N0.getNode()))
     return N2;
+
+  // The ConvertSelectToConcatVector function is assuming both the above
+  // checks for (vselect (build_vector all{ones,zeros) ...) have been made
+  // and addressed.
+  if (N1.getOpcode() == ISD::CONCAT_VECTORS &&
+      N2.getOpcode() == ISD::CONCAT_VECTORS &&
+      ISD::isBuildVectorOfConstantSDNodes(N0.getNode())) {
+    SDValue CV = ConvertSelectToConcatVector(N, DAG);
+    if (CV.getNode())
+      return CV;
+  }
 
   return SDValue();
 }
@@ -6960,11 +7025,7 @@ SDValue DAGCombiner::visitSINT_TO_FP(SDNode *N) {
   }
 
   // The next optimizations are desirable only if SELECT_CC can be lowered.
-  // Check against MVT::Other for SELECT_CC, which is a workaround for targets
-  // having to say they don't support SELECT_CC on every type the DAG knows
-  // about, since there is no way to mark an opcode illegal at all value types
-  // (See also visitSELECT)
-  if (TLI.isOperationLegalOrCustom(ISD::SELECT_CC, MVT::Other)) {
+  if (TLI.isOperationLegalOrCustom(ISD::SELECT_CC, VT) || !LegalOperations) {
     // fold (sint_to_fp (setcc x, y, cc)) -> (select_cc x, y, -1.0, 0.0,, cc)
     if (N0.getOpcode() == ISD::SETCC && N0.getValueType() == MVT::i1 &&
         !VT.isVector() &&
@@ -7017,11 +7078,7 @@ SDValue DAGCombiner::visitUINT_TO_FP(SDNode *N) {
   }
 
   // The next optimizations are desirable only if SELECT_CC can be lowered.
-  // Check against MVT::Other for SELECT_CC, which is a workaround for targets
-  // having to say they don't support SELECT_CC on every type the DAG knows
-  // about, since there is no way to mark an opcode illegal at all value types
-  // (See also visitSELECT)
-  if (TLI.isOperationLegalOrCustom(ISD::SELECT_CC, MVT::Other)) {
+  if (TLI.isOperationLegalOrCustom(ISD::SELECT_CC, VT) || !LegalOperations) {
     // fold (uint_to_fp (setcc x, y, cc)) -> (select_cc x, y, -1.0, 0.0,, cc)
 
     if (N0.getOpcode() == ISD::SETCC && !VT.isVector() &&
@@ -9653,6 +9710,27 @@ SDValue DAGCombiner::visitINSERT_VECTOR_ELT(SDNode *N) {
     return SDValue();
   unsigned Elt = cast<ConstantSDNode>(EltNo)->getZExtValue();
 
+  // Canonicalize insert_vector_elt dag nodes.
+  // Example:
+  // (insert_vector_elt (insert_vector_elt A, Idx0), Idx1)
+  // -> (insert_vector_elt (insert_vector_elt A, Idx1), Idx0)
+  //
+  // Do this only if the child insert_vector node has one use; also
+  // do this only if indices are both constants and Idx1 < Idx0.
+  if (InVec.getOpcode() == ISD::INSERT_VECTOR_ELT && InVec.hasOneUse()
+      && isa<ConstantSDNode>(InVec.getOperand(2))) {
+    unsigned OtherElt =
+      cast<ConstantSDNode>(InVec.getOperand(2))->getZExtValue();
+    if (Elt < OtherElt) {
+      // Swap nodes.
+      SDValue NewOp = DAG.getNode(ISD::INSERT_VECTOR_ELT, SDLoc(N), VT,
+                                  InVec.getOperand(0), InVal, EltNo);
+      AddToWorkList(NewOp.getNode());
+      return DAG.getNode(ISD::INSERT_VECTOR_ELT, SDLoc(InVec.getNode()),
+                         VT, NewOp, InVec.getOperand(1), InVec.getOperand(2));
+    }
+  }
+
   // Check that the operand is a BUILD_VECTOR (or UNDEF, which can essentially
   // be converted to a BUILD_VECTOR).  Fill in the Ops vector with the
   // vector elements.
@@ -10738,6 +10816,27 @@ SDValue DAGCombiner::SimplifyVBinOp(SDNode *N) {
 
     if (Ops.size() == LHS.getNumOperands())
       return DAG.getNode(ISD::BUILD_VECTOR, SDLoc(N), LHS.getValueType(), Ops);
+  }
+
+  // Type legalization might introduce new shuffles in the DAG.
+  // Fold (VBinOp (shuffle (A, Undef, Mask)), (shuffle (B, Undef, Mask)))
+  //   -> (shuffle (VBinOp (A, B)), Undef, Mask).
+  if (LegalTypes && isa<ShuffleVectorSDNode>(LHS) &&
+      isa<ShuffleVectorSDNode>(RHS) && LHS.hasOneUse() && RHS.hasOneUse() &&
+      LHS.getOperand(1).getOpcode() == ISD::UNDEF &&
+      RHS.getOperand(1).getOpcode() == ISD::UNDEF) {
+    ShuffleVectorSDNode *SVN0 = cast<ShuffleVectorSDNode>(LHS);
+    ShuffleVectorSDNode *SVN1 = cast<ShuffleVectorSDNode>(RHS);
+
+    if (SVN0->getMask().equals(SVN1->getMask())) {
+      EVT VT = N->getValueType(0);
+      SDValue UndefVector = LHS.getOperand(1);
+      SDValue NewBinOp = DAG.getNode(N->getOpcode(), SDLoc(N), VT,
+                                     LHS.getOperand(0), RHS.getOperand(0));
+      AddUsersToWorkList(N);
+      return DAG.getVectorShuffle(VT, SDLoc(N), NewBinOp, UndefVector,
+                                  &SVN0->getMask()[0]);
+    }
   }
 
   return SDValue();

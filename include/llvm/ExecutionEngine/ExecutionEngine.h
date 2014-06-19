@@ -22,10 +22,10 @@
 #include "llvm/IR/ValueMap.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/Mutex.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -42,7 +42,6 @@ class JITEventListener;
 class JITMemoryManager;
 class MachineCodeInfo;
 class Module;
-class MutexGuard;
 class ObjectCache;
 class RTDyldMemoryManager;
 class Triple;
@@ -54,12 +53,12 @@ namespace object {
 }
 
 /// \brief Helper class for helping synchronize access to the global address map
-/// table.
+/// table.  Access to this class should be serialized under a mutex.
 class ExecutionEngineState {
 public:
   struct AddressMapConfig : public ValueMapConfig<const GlobalValue*> {
     typedef ExecutionEngineState *ExtraData;
-    static sys::Mutex *getMutex(ExecutionEngineState *EES);
+    static std::recursive_mutex *getMutex(ExecutionEngineState *EES);
     static void onDelete(ExecutionEngineState *EES, const GlobalValue *Old);
     static void onRAUW(ExecutionEngineState *, const GlobalValue *,
                        const GlobalValue *);
@@ -84,19 +83,19 @@ private:
 public:
   ExecutionEngineState(ExecutionEngine &EE);
 
-  GlobalAddressMapTy &getGlobalAddressMap(const MutexGuard &) {
+  GlobalAddressMapTy &getGlobalAddressMap() {
     return GlobalAddressMap;
   }
 
   std::map<void*, AssertingVH<const GlobalValue> > &
-  getGlobalAddressReverseMap(const MutexGuard &) {
+  getGlobalAddressReverseMap() {
     return GlobalAddressReverseMap;
   }
 
   /// \brief Erase an entry from the mapping table.
   ///
   /// \returns The address that \p ToUnmap was happed to.
-  void *RemoveMapping(const MutexGuard &, const GlobalValue *ToUnmap);
+  void *RemoveMapping(const GlobalValue *ToUnmap);
 };
 
 /// \brief Abstract interface for implementation execution of LLVM modules,
@@ -164,7 +163,7 @@ public:
   /// lock - This lock protects the ExecutionEngine, MCJIT, JIT, JITResolver and
   /// JITEmitter classes.  It must be held while changing the internal state of
   /// any of those classes.
-  sys::Mutex lock;
+  std::recursive_mutex lock;
 
   //===--------------------------------------------------------------------===//
   //  ExecutionEngine Startup
@@ -586,26 +585,7 @@ private:
   bool VerifyModules;
 
   /// InitEngine - Does the common initialization of default options.
-  void InitEngine() {
-    WhichEngine = EngineKind::Either;
-    ErrorStr = nullptr;
-    OptLevel = CodeGenOpt::Default;
-    MCJMM = nullptr;
-    JMM = nullptr;
-    Options = TargetOptions();
-    AllocateGVsWithCode = false;
-    RelocModel = Reloc::Default;
-    CMModel = CodeModel::JITDefault;
-    UseMCJIT = false;
-
-  // IR module verification is enabled by default in debug builds, and disabled
-  // by default in release builds.
-#ifndef NDEBUG
-  VerifyModules = true;
-#else
-  VerifyModules = false;
-#endif
-  }
+  void InitEngine();
 
 public:
   /// EngineBuilder - Constructor for EngineBuilder.  If create() is called and

@@ -463,11 +463,18 @@ bool AArch64FastISel::SimplifyAddress(Address &Addr, MVT VT,
     break;
   }
 
-  // FIXME: If this is a stack pointer and the offset needs to be simplified
-  // then put the alloca address into a register, set the base type back to
-  // register and continue. This should almost never happen.
+  //If this is a stack pointer and the offset needs to be simplified then put
+  // the alloca address into a register, set the base type back to register and
+  // continue. This should almost never happen.
   if (needsLowering && Addr.getKind() == Address::FrameIndexBase) {
-    return false;
+    unsigned ResultReg = createResultReg(&AArch64::GPR64RegClass);
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(AArch64::ADDXri),
+            ResultReg)
+        .addFrameIndex(Addr.getFI())
+        .addImm(0)
+        .addImm(0);
+    Addr.setKind(Address::RegBase);
+    Addr.setReg(ResultReg);
   }
 
   // Since the offset is too large for the load/store instruction get the
@@ -1218,7 +1225,6 @@ bool AArch64FastISel::ProcessCallArgs(
       Arg = EmitIntExt(SrcVT, Arg, DestVT, /*isZExt*/ false);
       if (Arg == 0)
         return false;
-      ArgVT = DestVT;
       break;
     }
     case CCValAssign::AExt:
@@ -1229,7 +1235,6 @@ bool AArch64FastISel::ProcessCallArgs(
       Arg = EmitIntExt(SrcVT, Arg, DestVT, /*isZExt*/ true);
       if (Arg == 0)
         return false;
-      ArgVT = DestVT;
       break;
     }
     default:
@@ -1248,7 +1253,7 @@ bool AArch64FastISel::ProcessCallArgs(
       assert(VA.isMemLoc() && "Assuming store on stack.");
 
       // Need to store on the stack.
-      unsigned ArgSize = VA.getLocVT().getSizeInBits() / 8;
+      unsigned ArgSize = (ArgVT.getSizeInBits() + 7) / 8;
 
       unsigned BEAlign = 0;
       if (ArgSize < 8 && !Subtarget->isLittleEndian())
@@ -1462,10 +1467,12 @@ bool AArch64FastISel::TryEmitSmallMemCpy(Address Dest, Address Src,
     bool RV;
     unsigned ResultReg;
     RV = EmitLoad(VT, ResultReg, Src);
-    assert(RV == true && "Should be able to handle this load.");
+    if (!RV)
+      return false;
+
     RV = EmitStore(VT, ResultReg, Dest);
-    assert(RV == true && "Should be able to handle this store.");
-    (void)RV;
+    if (!RV)
+      return false;
 
     int64_t Size = VT.getSizeInBits() / 8;
     Len -= Size;
