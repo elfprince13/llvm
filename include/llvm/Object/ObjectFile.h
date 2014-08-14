@@ -27,6 +27,8 @@ namespace llvm {
 namespace object {
 
 class ObjectFile;
+class COFFObjectFile;
+class MachOObjectFile;
 
 class SymbolRef;
 class symbol_iterator;
@@ -149,6 +151,7 @@ public:
   std::error_code getAlignment(uint32_t &Result) const;
   std::error_code getSize(uint64_t &Result) const;
   std::error_code getType(SymbolRef::Type &Result) const;
+  std::error_code getOther(uint8_t &Result) const;
 
   /// @brief Get section this symbol is defined in reference to. Result is
   /// end_sections() if it is undefined or is an absolute symbol.
@@ -175,30 +178,6 @@ public:
   }
 };
 
-/// LibraryRef - This is a value type class that represents a single library in
-/// the list of libraries needed by a shared or dynamic object.
-class LibraryRef {
-  friend class SectionRef;
-  DataRefImpl LibraryPimpl;
-  const ObjectFile *OwningObject;
-
-public:
-  LibraryRef() : OwningObject(nullptr) { }
-
-  LibraryRef(DataRefImpl LibraryP, const ObjectFile *Owner);
-
-  bool operator==(const LibraryRef &Other) const;
-  bool operator<(const LibraryRef &Other) const;
-
-  std::error_code getNext(LibraryRef &Result) const;
-
-  // Get the path to this library, as stored in the object file.
-  std::error_code getPath(StringRef &Result) const;
-
-  DataRefImpl getRawDataRefImpl() const;
-};
-typedef content_iterator<LibraryRef> library_iterator;
-
 /// ObjectFile - This class is the base class for all object file types.
 /// Concrete instances of this object are created by createObjectFile, which
 /// figures out which type to create.
@@ -208,7 +187,7 @@ class ObjectFile : public SymbolicFile {
   ObjectFile(const ObjectFile &other) LLVM_DELETED_FUNCTION;
 
 protected:
-  ObjectFile(unsigned int Type, MemoryBuffer *Source, bool BufferOwned = true);
+  ObjectFile(unsigned int Type, std::unique_ptr<MemoryBuffer> Source);
 
   const uint8_t *base() const {
     return reinterpret_cast<const uint8_t *>(Data->getBufferStart());
@@ -237,6 +216,10 @@ protected:
                                         SymbolRef::Type &Res) const = 0;
   virtual std::error_code getSymbolSection(DataRefImpl Symb,
                                            section_iterator &Res) const = 0;
+  virtual std::error_code getSymbolOther(DataRefImpl Symb,
+                                         uint8_t &Res) const {
+    return object_error::invalid_file_type;
+  }
 
   // Same as above for SectionRef.
   friend class SectionRef;
@@ -292,13 +275,6 @@ protected:
     return object_error::success;
   }
 
-  // Same for LibraryRef
-  friend class LibraryRef;
-  virtual std::error_code getLibraryNext(DataRefImpl Lib,
-                                         LibraryRef &Res) const = 0;
-  virtual std::error_code getLibraryPath(DataRefImpl Lib,
-                                         StringRef &Res) const = 0;
-
 public:
   typedef iterator_range<symbol_iterator> symbol_iterator_range;
   symbol_iterator_range symbols() const {
@@ -313,9 +289,6 @@ public:
     return section_iterator_range(section_begin(), section_end());
   }
 
-  virtual library_iterator needed_library_begin() const = 0;
-  virtual library_iterator needed_library_end() const = 0;
-
   /// @brief The number of bytes used to represent an address in this object
   ///        file format.
   virtual uint8_t getBytesInAddress() const = 0;
@@ -323,21 +296,25 @@ public:
   virtual StringRef getFileFormatName() const = 0;
   virtual /* Triple::ArchType */ unsigned getArch() const = 0;
 
-  /// For shared objects, returns the name which this object should be
-  /// loaded from at runtime. This corresponds to DT_SONAME on ELF and
-  /// LC_ID_DYLIB (install name) on MachO.
-  virtual StringRef getLoadName() const = 0;
+  /// Returns platform-specific object flags, if any.
+  virtual std::error_code getPlatformFlags(unsigned &Result) const {
+    Result = 0;
+    return object_error::invalid_file_type;
+  }
 
   /// @returns Pointer to ObjectFile subclass to handle this type of object.
   /// @param ObjectPath The path to the object file. ObjectPath.isObject must
   ///        return true.
   /// @brief Create ObjectFile from path.
-  static ErrorOr<ObjectFile *> createObjectFile(StringRef ObjectPath);
-  static ErrorOr<ObjectFile *> createObjectFile(MemoryBuffer *Object,
-                                                bool BufferOwned,
-                                                sys::fs::file_magic Type);
-  static ErrorOr<ObjectFile *> createObjectFile(MemoryBuffer *Object) {
-    return createObjectFile(Object, true, sys::fs::file_magic::unknown);
+  static ErrorOr<std::unique_ptr<ObjectFile>>
+  createObjectFile(StringRef ObjectPath);
+
+  static ErrorOr<std::unique_ptr<ObjectFile>>
+  createObjectFile(std::unique_ptr<MemoryBuffer> &Object,
+                   sys::fs::file_magic Type);
+  static ErrorOr<std::unique_ptr<ObjectFile>>
+  createObjectFile(std::unique_ptr<MemoryBuffer> &Object) {
+    return createObjectFile(Object, sys::fs::file_magic::unknown);
   }
 
 
@@ -346,12 +323,14 @@ public:
   }
 
 public:
-  static ErrorOr<ObjectFile *> createCOFFObjectFile(MemoryBuffer *Object,
-                                                    bool BufferOwned = true);
-  static ErrorOr<ObjectFile *> createELFObjectFile(MemoryBuffer *Object,
-                                                   bool BufferOwned = true);
-  static ErrorOr<ObjectFile *> createMachOObjectFile(MemoryBuffer *Object,
-                                                     bool BufferOwned = true);
+  static ErrorOr<std::unique_ptr<COFFObjectFile>>
+  createCOFFObjectFile(std::unique_ptr<MemoryBuffer> Object);
+
+  static ErrorOr<std::unique_ptr<ObjectFile>>
+  createELFObjectFile(std::unique_ptr<MemoryBuffer> &Object);
+
+  static ErrorOr<std::unique_ptr<MachOObjectFile>>
+  createMachOObjectFile(std::unique_ptr<MemoryBuffer> &Object);
 };
 
 // Inline function definitions.
@@ -380,6 +359,10 @@ inline std::error_code SymbolRef::getSection(section_iterator &Result) const {
 
 inline std::error_code SymbolRef::getType(SymbolRef::Type &Result) const {
   return getObject()->getSymbolType(getRawDataRefImpl(), Result);
+}
+
+inline std::error_code SymbolRef::getOther(uint8_t &Result) const {
+  return getObject()->getSymbolOther(getRawDataRefImpl(), Result);
 }
 
 inline const ObjectFile *SymbolRef::getObject() const {
@@ -532,26 +515,6 @@ inline const ObjectFile *RelocationRef::getObjectFile() const {
   return OwningObject;
 }
 
-// Inline function definitions.
-inline LibraryRef::LibraryRef(DataRefImpl LibraryP, const ObjectFile *Owner)
-  : LibraryPimpl(LibraryP)
-  , OwningObject(Owner) {}
-
-inline bool LibraryRef::operator==(const LibraryRef &Other) const {
-  return LibraryPimpl == Other.LibraryPimpl;
-}
-
-inline bool LibraryRef::operator<(const LibraryRef &Other) const {
-  return LibraryPimpl < Other.LibraryPimpl;
-}
-
-inline std::error_code LibraryRef::getNext(LibraryRef &Result) const {
-  return OwningObject->getLibraryNext(LibraryPimpl, Result);
-}
-
-inline std::error_code LibraryRef::getPath(StringRef &Result) const {
-  return OwningObject->getLibraryPath(LibraryPimpl, Result);
-}
 
 } // end namespace object
 } // end namespace llvm

@@ -7,7 +7,7 @@ declare <8 x i64> @llvm.ctpop.v8i64(<8 x i64>) nounwind readnone
 declare <16 x i64> @llvm.ctpop.v16i64(<16 x i64>) nounwind readnone
 
 ; FUNC-LABEL: @s_ctpop_i64:
-; SI: S_LOAD_DWORDX2 [[SVAL:s\[[0-9]+:[0-9]+\]]],
+; SI: S_LOAD_DWORDX2 [[SVAL:s\[[0-9]+:[0-9]+\]]], s{{\[[0-9]+:[0-9]+\]}}, 0xb
 ; SI: S_BCNT1_I32_B64 [[SRESULT:s[0-9]+]], [[SVAL]]
 ; SI: V_MOV_B32_e32 [[VRESULT:v[0-9]+]], [[SRESULT]]
 ; SI: BUFFER_STORE_DWORD [[VRESULT]],
@@ -87,5 +87,36 @@ define void @v_ctpop_v4i64(<4 x i32> addrspace(1)* noalias %out, <4 x i64> addrs
   %ctpop = call <4 x i64> @llvm.ctpop.v4i64(<4 x i64> %val) nounwind readnone
   %truncctpop = trunc <4 x i64> %ctpop to <4 x i32>
   store <4 x i32> %truncctpop, <4 x i32> addrspace(1)* %out, align 16
+  ret void
+}
+
+; FIXME: We currently disallow SALU instructions in all branches,
+; but there are some cases when the should be allowed.
+
+; FUNC-LABEL: @ctpop_i64_in_br
+; SI: V_BCNT_U32_B32_e64 [[BCNT_LO:v[0-9]+]], v{{[0-9]+}}, 0
+; SI: V_BCNT_U32_B32_e32 v[[BCNT:[0-9]+]], v{{[0-9]+}}, [[BCNT_LO]]
+; SI: V_MOV_B32_e32 v[[ZERO:[0-9]+]], 0
+; SI: BUFFER_STORE_DWORDX2 v[
+; SI: [[BCNT]]:[[ZERO]]]
+; SI: S_ENDPGM
+define void @ctpop_i64_in_br(i64 addrspace(1)* %out, i64 addrspace(1)* %in, i32 %cond) {
+entry:
+  %0 = icmp eq i32 %cond, 0
+  br i1 %0, label %if, label %else
+
+if:
+  %1 = load i64 addrspace(1)* %in
+  %2 = call i64 @llvm.ctpop.i64(i64 %1)
+  br label %endif
+
+else:
+  %3 = getelementptr i64 addrspace(1)* %in, i32 1
+  %4 = load i64 addrspace(1)* %3
+  br label %endif
+
+endif:
+  %5 = phi i64 [%2, %if], [%4, %else]
+  store i64 %5, i64 addrspace(1)* %out
   ret void
 }

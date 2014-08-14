@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef JIT_H
-#define JIT_H
+#ifndef LLVM_LIB_EXECUTIONENGINE_JIT_JIT_H
+#define LLVM_LIB_EXECUTIONENGINE_JIT_JIT_H
 
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/IR/ValueHandle.h"
@@ -90,21 +90,6 @@ public:
   /// getJITInfo - Return the target JIT information structure.
   ///
   TargetJITInfo &getJITInfo() const { return TJI; }
-
-  /// create - Create an return a new JIT compiler if there is one available
-  /// for the current target.  Otherwise, return null.
-  ///
-  static ExecutionEngine *create(Module *M,
-                                 std::string *Err,
-                                 JITMemoryManager *JMM,
-                                 CodeGenOpt::Level OptLevel =
-                                   CodeGenOpt::Default,
-                                 bool GVsWithCode = true,
-                                 Reloc::Model RM = Reloc::Default,
-                                 CodeModel::Model CMM = CodeModel::JITDefault) {
-    return ExecutionEngine::createJIT(M, Err, JMM, OptLevel, GVsWithCode,
-                                      RM, CMM);
-  }
 
   void addModule(Module *M) override;
 

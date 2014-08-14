@@ -216,7 +216,7 @@ class R600_REDUCTION <bits<11> inst, dag ins, string asm, list<dag> pattern,
 def TEX_SHADOW : PatLeaf<
   (imm),
   [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return (TType >= 6 && TType <= 8) || (TType >= 11 && TType <= 13);
+    return (TType >= 6 && TType <= 8) || TType == 13;
   }]
 >;
 
@@ -721,13 +721,10 @@ def SETNE_DX10 : R600_2OP <
 >;
 
 def FRACT : R600_1OP_Helper <0x10, "FRACT", AMDGPUfract>;
-def TRUNC : R600_1OP_Helper <0x11, "TRUNC", int_AMDGPU_trunc>;
+def TRUNC : R600_1OP_Helper <0x11, "TRUNC", ftrunc>;
 def CEIL : R600_1OP_Helper <0x12, "CEIL", fceil>;
 def RNDNE : R600_1OP_Helper <0x13, "RNDNE", frint>;
 def FLOOR : R600_1OP_Helper <0x14, "FLOOR", ffloor>;
-
-// Add also ftrunc intrinsic pattern
-def : Pat<(ftrunc f32:$src0), (TRUNC $src0)>;
 
 def MOV : R600_1OP <0x19, "MOV", []>;
 
@@ -918,6 +915,11 @@ class MULADD_IEEE_Common <bits<5> inst> : R600_3OP <
   [(set f32:$dst, (fadd (fmul f32:$src0, f32:$src1), f32:$src2))]
 >;
 
+class FMA_Common <bits<5> inst> : R600_3OP <
+  inst, "FMA",
+  [(set f32:$dst, (fma f32:$src0, f32:$src1, f32:$src2))]
+>;
+
 class CNDE_Common <bits<5> inst> : R600_3OP <
   inst, "CNDE",
   [(set f32:$dst, (selectcc f32:$src0, FP_ZERO, f32:$src1, f32:$src2, COND_OEQ))]
@@ -1071,7 +1073,7 @@ class RECIP_CLAMPED_Common <bits<11> inst> : R600_1OP <
 }
 
 class RECIP_IEEE_Common <bits<11> inst> : R600_1OP <
-  inst, "RECIP_IEEE", [(set f32:$dst, (fdiv FP_ONE, f32:$src0))]
+  inst, "RECIP_IEEE", [(set f32:$dst, (AMDGPUrcp f32:$src0))]
 > {
   let Itinerary = TransALU;
 }
@@ -1082,17 +1084,20 @@ class RECIP_UINT_Common <bits<11> inst> : R600_1OP_Helper <
   let Itinerary = TransALU;
 }
 
+// Clamped to maximum.
 class RECIPSQRT_CLAMPED_Common <bits<11> inst> : R600_1OP_Helper <
-  inst, "RECIPSQRT_CLAMPED", AMDGPUrsq
+  inst, "RECIPSQRT_CLAMPED", AMDGPUrsq_clamped
 > {
   let Itinerary = TransALU;
 }
 
-class RECIPSQRT_IEEE_Common <bits<11> inst> : R600_1OP <
-  inst, "RECIPSQRT_IEEE", []
+class RECIPSQRT_IEEE_Common <bits<11> inst> : R600_1OP_Helper <
+  inst, "RECIPSQRT_IEEE", AMDGPUrsq_legacy
 > {
   let Itinerary = TransALU;
 }
+
+// TODO: There is also RECIPSQRT_FF which clamps to zero.
 
 class SIN_Common <bits<11> inst> : R600_1OP <
   inst, "SIN", [(set f32:$dst, (SIN_HW f32:$src0))]>{
@@ -1114,6 +1119,7 @@ def FNEG_R600 : FNEG<R600_Reg32>;
 // Helper patterns for complex intrinsics
 //===----------------------------------------------------------------------===//
 
+// FIXME: Should be predicated on unsafe fp math.
 multiclass DIV_Common <InstR600 recip_ieee> {
 def : Pat<
   (int_AMDGPU_div f32:$src0, f32:$src1),
@@ -1124,6 +1130,8 @@ def : Pat<
   (fdiv f32:$src0, f32:$src1),
   (MUL_IEEE $src0, (recip_ieee $src1))
 >;
+
+def : RcpPat<recip_ieee, f32>;
 }
 
 class TGSI_LIT_Z_Common <InstR600 mul_lit, InstR600 log_clamped, InstR600 exp_ieee>
@@ -1180,6 +1188,8 @@ let Predicates = [isR600] in {
   def TGSI_LIT_Z_r600 : TGSI_LIT_Z_Common<MUL_LIT_r600, LOG_CLAMPED_r600, EXP_IEEE_r600>;
 
   def : Pat<(fsqrt f32:$src), (MUL $src, (RECIPSQRT_CLAMPED_r600 $src))>;
+  defm : RsqPat<RECIPSQRT_IEEE_r600, f32>;
+
   def : FROUNDPat <CNDGE_r600>;
 
   def R600_ExportSwz : ExportSwzInst {

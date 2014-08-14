@@ -477,18 +477,19 @@ public:
   }
 
   bool runOnMachineFunction(MachineFunction &MF) override {
-    TII=static_cast<const R600InstrInfo *>(MF.getTarget().getInstrInfo());
-    TRI=static_cast<const R600RegisterInfo *>(MF.getTarget().getRegisterInfo());
+    TII = static_cast<const R600InstrInfo *>(MF.getSubtarget().getInstrInfo());
+    TRI = static_cast<const R600RegisterInfo *>(
+        MF.getSubtarget().getRegisterInfo());
     R600MachineFunctionInfo *MFI = MF.getInfo<R600MachineFunctionInfo>();
 
-    CFStack CFStack(ST, MFI->ShaderType);
+    CFStack CFStack(ST, MFI->getShaderType());
     for (MachineFunction::iterator MB = MF.begin(), ME = MF.end(); MB != ME;
         ++MB) {
       MachineBasicBlock &MBB = *MB;
       unsigned CfCount = 0;
       std::vector<std::pair<unsigned, std::set<MachineInstr *> > > LoopStack;
       std::vector<MachineInstr * > IfThenElseStack;
-      if (MFI->ShaderType == 1) {
+      if (MFI->getShaderType() == ShaderType::VERTEX) {
         BuildMI(MBB, MBB.begin(), MBB.findDebugLoc(MBB.begin()),
             getHWInstrDesc(CF_CALL_FS));
         CfCount++;

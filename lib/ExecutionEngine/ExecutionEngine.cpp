@@ -24,6 +24,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueHandle.h"
+#include "llvm/Object/Archive.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DynamicLibrary.h"
@@ -57,7 +58,6 @@ ExecutionEngine *(*ExecutionEngine::MCJITCtor)(
   Module *M,
   std::string *ErrorStr,
   RTDyldMemoryManager *MCJMM,
-  bool GVsWithCode,
   TargetMachine *TM) = nullptr;
 ExecutionEngine *(*ExecutionEngine::InterpCtor)(Module *M,
                                                 std::string *ErrorStr) =nullptr;
@@ -126,6 +126,10 @@ void ExecutionEngine::addObjectFile(std::unique_ptr<object::ObjectFile> O) {
   llvm_unreachable("ExecutionEngine subclass doesn't implement addObjectFile.");
 }
 
+void ExecutionEngine::addArchive(std::unique_ptr<object::Archive> A) {
+  llvm_unreachable("ExecutionEngine subclass doesn't implement addArchive.");
+}
+
 bool ExecutionEngine::removeModule(Module *M) {
   for(SmallVectorImpl<Module *>::iterator I = Modules.begin(),
         E = Modules.end(); I != E; ++I) {
@@ -166,7 +170,7 @@ void *ExecutionEngineState::RemoveMapping(const GlobalValue *ToUnmap) {
 }
 
 void ExecutionEngine::addGlobalMapping(const GlobalValue *GV, void *Addr) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   DEBUG(dbgs() << "JIT: Map \'" << GV->getName()
         << "\' to [" << Addr << "]\n";);
@@ -184,14 +188,14 @@ void ExecutionEngine::addGlobalMapping(const GlobalValue *GV, void *Addr) {
 }
 
 void ExecutionEngine::clearAllGlobalMappings() {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   EEState.getGlobalAddressMap().clear();
   EEState.getGlobalAddressReverseMap().clear();
 }
 
 void ExecutionEngine::clearGlobalMappingsFromModule(Module *M) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   for (Module::iterator FI = M->begin(), FE = M->end(); FI != FE; ++FI)
     EEState.RemoveMapping(FI);
@@ -201,7 +205,7 @@ void ExecutionEngine::clearGlobalMappingsFromModule(Module *M) {
 }
 
 void *ExecutionEngine::updateGlobalMapping(const GlobalValue *GV, void *Addr) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   ExecutionEngineState::GlobalAddressMapTy &Map =
     EEState.getGlobalAddressMap();
@@ -228,7 +232,7 @@ void *ExecutionEngine::updateGlobalMapping(const GlobalValue *GV, void *Addr) {
 }
 
 void *ExecutionEngine::getPointerToGlobalIfAvailable(const GlobalValue *GV) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   ExecutionEngineState::GlobalAddressMapTy::iterator I =
     EEState.getGlobalAddressMap().find(GV);
@@ -236,7 +240,7 @@ void *ExecutionEngine::getPointerToGlobalIfAvailable(const GlobalValue *GV) {
 }
 
 const GlobalValue *ExecutionEngine::getGlobalValueAtAddress(void *Addr) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // If we haven't computed the reverse mapping yet, do so first.
   if (EEState.getGlobalAddressReverseMap().empty()) {
@@ -406,56 +410,6 @@ int ExecutionEngine::runFunctionAsMain(Function *Fn,
   return runFunction(Fn, GVArgs).IntVal.getZExtValue();
 }
 
-ExecutionEngine *ExecutionEngine::create(Module *M,
-                                         bool ForceInterpreter,
-                                         std::string *ErrorStr,
-                                         CodeGenOpt::Level OptLevel,
-                                         bool GVsWithCode) {
-  EngineBuilder EB =  EngineBuilder(M)
-      .setEngineKind(ForceInterpreter
-                     ? EngineKind::Interpreter
-                     : EngineKind::JIT)
-      .setErrorStr(ErrorStr)
-      .setOptLevel(OptLevel)
-      .setAllocateGVsWithCode(GVsWithCode);
-
-  return EB.create();
-}
-
-/// createJIT - This is the factory method for creating a JIT for the current
-/// machine, it does not fall back to the interpreter.  This takes ownership
-/// of the module.
-ExecutionEngine *ExecutionEngine::createJIT(Module *M,
-                                            std::string *ErrorStr,
-                                            JITMemoryManager *JMM,
-                                            CodeGenOpt::Level OL,
-                                            bool GVsWithCode,
-                                            Reloc::Model RM,
-                                            CodeModel::Model CMM) {
-  if (!ExecutionEngine::JITCtor) {
-    if (ErrorStr)
-      *ErrorStr = "JIT has not been linked in.";
-    return nullptr;
-  }
-
-  // Use the defaults for extra parameters.  Users can use EngineBuilder to
-  // set them.
-  EngineBuilder EB(M);
-  EB.setEngineKind(EngineKind::JIT);
-  EB.setErrorStr(ErrorStr);
-  EB.setRelocationModel(RM);
-  EB.setCodeModel(CMM);
-  EB.setAllocateGVsWithCode(GVsWithCode);
-  EB.setOptLevel(OL);
-  EB.setJITMemoryManager(JMM);
-
-  // TODO: permit custom TargetOptions here
-  TargetMachine *TM = EB.selectTarget();
-  if (!TM || (ErrorStr && ErrorStr->length() > 0)) return nullptr;
-
-  return ExecutionEngine::JITCtor(M, ErrorStr, JMM, GVsWithCode, TM);
-}
-
 void EngineBuilder::InitEngine() {
   WhichEngine = EngineKind::Either;
   ErrorStr = nullptr;
@@ -521,7 +475,7 @@ ExecutionEngine *EngineBuilder::create(TargetMachine *TM) {
     ExecutionEngine *EE = nullptr;
     if (UseMCJIT && ExecutionEngine::MCJITCtor)
       EE = ExecutionEngine::MCJITCtor(M, ErrorStr, MCJMM ? MCJMM : JMM,
-                                      AllocateGVsWithCode, TheTM.release());
+                                      TheTM.release());
     else if (ExecutionEngine::JITCtor)
       EE = ExecutionEngine::JITCtor(M, ErrorStr, JMM,
                                     AllocateGVsWithCode, TheTM.release());
@@ -555,7 +509,7 @@ void *ExecutionEngine::getPointerToGlobal(const GlobalValue *GV) {
   if (Function *F = const_cast<Function*>(dyn_cast<Function>(GV)))
     return getPointerToFunction(F);
 
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   if (void *P = EEState.getGlobalAddressMap()[GV])
     return P;
 
@@ -1346,7 +1300,7 @@ ExecutionEngineState::ExecutionEngineState(ExecutionEngine &EE)
   : EE(EE), GlobalAddressMap(this) {
 }
 
-std::recursive_mutex *
+sys::Mutex *
 ExecutionEngineState::AddressMapConfig::getMutex(ExecutionEngineState *EES) {
   return &EES->EE.lock;
 }

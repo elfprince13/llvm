@@ -1,9 +1,9 @@
-; RUN: llc %s -o - -dwarf-version 2 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF2
-; RUN: llc %s -o - -dwarf-version 3 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF34
-; RUN: llc %s -o - -dwarf-version 4 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF34
+; RUN: %llc_dwarf %s -o - -dwarf-version 2 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF2
+; RUN: %llc_dwarf %s -o - -dwarf-version 3 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF34
+; RUN: %llc_dwarf %s -o - -dwarf-version 4 -filetype=obj | llvm-dwarfdump - | FileCheck %s --check-prefix=DWARF34
 
-target datalayout = "e-m:e-p:32:32-i64:64-v128:64:128-n32-S64"
-target triple = "armv8-arm-none-eabi"
+; .debug_frame is not emitted for targeting Windows x64.
+; REQUIRES: debug_frame
 
 ; Function Attrs: nounwind
 define i32 @foo() #0 {
@@ -37,11 +37,9 @@ attributes #1 = { "less-precise-fpmad"="false" "no-frame-pointer-elim"="true" "n
 !12 = metadata !{i32 2, i32 0, metadata !4, null}
 
 ; DWARF2:      .debug_frame contents:
-; DWARF2: 00000000 0000000c ffffffff CIE
-; DWARF2-NEXT:   Version:               1
+; DWARF2:        Version:               1
 ; DWARF2-NEXT:   Augmentation:
 
 ; DWARF34:      .debug_frame contents:
-; DWARF34: 00000000 0000000c ffffffff CIE
-; DWARF34-NEXT:   Version:               3
+; DWARF34:        Version:               3
 ; DWARF34-NEXT:   Augmentation:

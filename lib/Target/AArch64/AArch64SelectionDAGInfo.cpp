@@ -36,8 +36,7 @@ SDValue AArch64SelectionDAGInfo::EmitTargetCodeForMemset(
   // instead of memset.
   if (bzeroEntry && (!SizeValue || SizeValue->getZExtValue() > 256)) {
     const AArch64TargetLowering &TLI =
-        *static_cast<const AArch64TargetLowering *>(
-            DAG.getTarget().getTargetLowering());
+        *DAG.getTarget().getSubtarget<AArch64Subtarget>().getTargetLowering();
 
     EVT IntPtr = TLI.getPointerTy();
     Type *IntPtrTy = getDataLayout()->getIntPtrType(*DAG.getContext());
@@ -51,7 +50,7 @@ SDValue AArch64SelectionDAGInfo::EmitTargetCodeForMemset(
     TargetLowering::CallLoweringInfo CLI(DAG);
     CLI.setDebugLoc(dl).setChain(Chain)
       .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
-                 DAG.getExternalSymbol(bzeroEntry, IntPtr), &Args, 0)
+                 DAG.getExternalSymbol(bzeroEntry, IntPtr), std::move(Args), 0)
       .setDiscardResult();
     std::pair<SDValue, SDValue> CallResult = TLI.LowerCallTo(CLI);
     return CallResult.second;

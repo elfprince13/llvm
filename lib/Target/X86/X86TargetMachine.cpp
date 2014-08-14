@@ -37,26 +37,6 @@ X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
                                    CodeGenOpt::Level OL)
     : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
       Subtarget(TT, CPU, FS, *this, Options.StackAlignmentOverride) {
-  // Determine the PICStyle based on the target selected.
-  if (getRelocationModel() == Reloc::Static) {
-    // Unless we're in PIC or DynamicNoPIC mode, set the PIC style to None.
-    Subtarget.setPICStyle(PICStyles::None);
-  } else if (Subtarget.is64Bit()) {
-    // PIC in 64 bit mode is always rip-rel.
-    Subtarget.setPICStyle(PICStyles::RIPRel);
-  } else if (Subtarget.isTargetCOFF()) {
-    Subtarget.setPICStyle(PICStyles::None);
-  } else if (Subtarget.isTargetDarwin()) {
-    if (getRelocationModel() == Reloc::PIC_)
-      Subtarget.setPICStyle(PICStyles::StubPIC);
-    else {
-      assert(getRelocationModel() == Reloc::DynamicNoPIC);
-      Subtarget.setPICStyle(PICStyles::StubDynamicNoPIC);
-    }
-  } else if (Subtarget.isTargetELF()) {
-    Subtarget.setPICStyle(PICStyles::GOT);
-  }
-
   // default to hard float ABI
   if (Options.FloatABIType == FloatABI::Default)
     this->Options.FloatABIType = FloatABI::Hard;
@@ -111,6 +91,7 @@ public:
     return *getX86TargetMachine().getSubtargetImpl();
   }
 
+  void addIRPasses() override;
   bool addInstSelector() override;
   bool addILPOpts() override;
   bool addPreRegAlloc() override;
@@ -121,6 +102,12 @@ public:
 
 TargetPassConfig *X86TargetMachine::createPassConfig(PassManagerBase &PM) {
   return new X86PassConfig(this, PM);
+}
+
+void X86PassConfig::addIRPasses() {
+  addPass(createX86AtomicExpandPass(&getX86TargetMachine()));
+
+  TargetPassConfig::addIRPasses();
 }
 
 bool X86PassConfig::addInstSelector() {

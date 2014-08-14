@@ -727,10 +727,6 @@ ifeq ($(HOST_OS),SunOS)
 CPP.BaseFlags += -include llvm/Support/Solaris.h
 endif
 
-ifeq ($(HOST_OS),AuroraUX)
-CPP.BaseFlags += -include llvm/Support/Solaris.h
-endif # !HOST_OS - AuroraUX.
-
 # On Windows, SharedLibDir != LibDir. The order is important.
 ifeq ($(HOST_OS), $(filter $(HOST_OS), Cygwin MingW))
   LD.Flags    += -L$(SharedLibDir) -L$(LibDir) -L$(LLVMToolDir) -L$(LLVMLibDir)
@@ -1725,7 +1721,7 @@ $(ObjDir)/%GenDFAPacketizer.inc.tmp : %.td $(ObjDir)/.dir $(LLVM_TBLGEN)
 
 # Dump all the records to <target>.td.expanded.  This is useful for debugging.
 $(TARGET:%=%.td.expanded): \
-%.td.expanded : %.td $(LLVM_TBLGEN)
+%.td.expanded : %.td $(LLVM_TBLGEN) $(TDFiles)
 	$(Echo) "Building a fully expanded version of $(<F)"
 	$(Verb) $(LLVMTableGen) -o $(call SYSPATH, $@) $<
 

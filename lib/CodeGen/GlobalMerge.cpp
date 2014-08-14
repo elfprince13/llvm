@@ -68,6 +68,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "global-merge"
@@ -142,7 +143,7 @@ INITIALIZE_TM_PASS(GlobalMerge, "global-merge", "Merge global variables",
 
 bool GlobalMerge::doMerge(SmallVectorImpl<GlobalVariable*> &Globals,
                           Module &M, bool isConst, unsigned AddrSpace) const {
-  const TargetLowering *TLI = TM->getTargetLowering();
+  const TargetLowering *TLI = TM->getSubtargetImpl()->getTargetLowering();
   const DataLayout *DL = TLI->getDataLayout();
 
   // FIXME: Infer the maximum possible offset depending on the actual users
@@ -199,19 +200,17 @@ bool GlobalMerge::doMerge(SmallVectorImpl<GlobalVariable*> &Globals,
                                             ? GlobalValue::ExternalLinkage
                                             : GlobalValue::InternalLinkage;
 
-    // If merged variables have external linkage, we use symbol name of the
-    // first variable merged as the suffix of global symbol name. This would
-    // be able to avoid the link-time naming conflict for globalm symbols.
-    Twine MergedGVName = HasExternal
-                             ? "_MergedGlobals_" + TheFirstExternal->getName()
-                             : "_MergedGlobals";
-
     StructType *MergedTy = StructType::get(M.getContext(), Tys);
     Constant *MergedInit = ConstantStruct::get(MergedTy, Inits);
 
+    // If merged variables have external linkage, we use symbol name of the
+    // first variable merged as the suffix of global symbol name. This would
+    // be able to avoid the link-time naming conflict for globalm symbols.
     GlobalVariable *MergedGV = new GlobalVariable(
-        M, MergedTy, isConst, Linkage, MergedInit, MergedGVName, nullptr,
-        GlobalVariable::NotThreadLocal, AddrSpace);
+        M, MergedTy, isConst, Linkage, MergedInit,
+        HasExternal ? "_MergedGlobals_" + TheFirstExternal->getName()
+                    : "_MergedGlobals",
+        nullptr, GlobalVariable::NotThreadLocal, AddrSpace);
 
     for (size_t k = i; k < j; ++k) {
       GlobalValue::LinkageTypes Linkage = Globals[k]->getLinkage();
@@ -283,7 +282,7 @@ bool GlobalMerge::doInitialization(Module &M) {
 
   DenseMap<unsigned, SmallVector<GlobalVariable*, 16> > Globals, ConstGlobals,
                                                         BSSGlobals;
-  const TargetLowering *TLI = TM->getTargetLowering();
+  const TargetLowering *TLI = TM->getSubtargetImpl()->getTargetLowering();
   const DataLayout *DL = TLI->getDataLayout();
   unsigned MaxOffset = TLI->getMaximalGlobalOffset();
   bool Changed = false;

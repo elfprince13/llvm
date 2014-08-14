@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_MC_TARGETPARSER_H
-#define LLVM_MC_TARGETPARSER_H
+#ifndef LLVM_MC_MCTARGETASMPARSER_H
+#define LLVM_MC_MCTARGETASMPARSER_H
 
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
@@ -163,6 +163,9 @@ public:
                                        OperandVector &Operands, MCStreamer &Out,
                                        unsigned &ErrorInfo,
                                        bool MatchingInlineAsm) = 0;
+
+  /// Allows targets to let registers opt out of clobber lists.
+  virtual bool OmitRegisterFromClobberLists(unsigned RegNo) { return false; }
 
   /// Allow a target to add special case operand matching for things that
   /// tblgen doesn't/can't handle effectively. For example, literal

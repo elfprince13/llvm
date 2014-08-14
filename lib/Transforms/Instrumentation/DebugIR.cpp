@@ -352,10 +352,12 @@ private:
   }
 
   std::string getTypeName(Type *T) {
-    assert(T != nullptr && "Expecting non-null Type");
     std::string TypeName;
     raw_string_ostream TypeStream(TypeName);
-    T->print(TypeStream);
+    if (T)
+      T->print(TypeStream);
+    else
+      TypeStream << "Printing <null> Type";
     TypeStream.flush();
     return TypeName;
   }
@@ -394,7 +396,7 @@ private:
         Elements.push_back(getOrCreateType(T->getStructElementType(i)));
 
       // set struct elements
-      StructDescriptor.setTypeArray(Builder.getOrCreateArray(Elements));
+      StructDescriptor.setArrays(Builder.getOrCreateArray(Elements));
     } else if (T->isPointerTy()) {
       Type *PointeeTy = T->getPointerElementType();
       if (!(N = getType(PointeeTy)))
@@ -438,7 +440,7 @@ private:
       Params.push_back(getOrCreateType(T));
     }
 
-    DIArray ParamArray = Builder.getOrCreateArray(Params);
+    DITypeArray ParamArray = Builder.getOrCreateTypeArray(Params);
     return Builder.createSubroutineType(DIFile(FileNode), ParamArray);
   }
 

@@ -34,6 +34,9 @@ def AMDGPUDivScaleOp : SDTypeProfile<2, 3,
 // This argument to this node is a dword address.
 def AMDGPUdwordaddr : SDNode<"AMDGPUISD::DWORDADDR", SDTIntUnaryOp>;
 
+def AMDGPUcos : SDNode<"AMDGPUISD::COS_HW", SDTFPUnaryOp>;
+def AMDGPUsin : SDNode<"AMDGPUISD::SIN_HW", SDTFPUnaryOp>;
+
 // out = a - floor(a)
 def AMDGPUfract : SDNode<"AMDGPUISD::FRACT", SDTFPUnaryOp>;
 
@@ -42,6 +45,12 @@ def AMDGPUrcp : SDNode<"AMDGPUISD::RCP", SDTFPUnaryOp>;
 
 // out = 1.0 / sqrt(a)
 def AMDGPUrsq : SDNode<"AMDGPUISD::RSQ", SDTFPUnaryOp>;
+
+// out = 1.0 / sqrt(a)
+def AMDGPUrsq_legacy : SDNode<"AMDGPUISD::RSQ_LEGACY", SDTFPUnaryOp>;
+
+// out = 1.0 / sqrt(a) result clamped to +/- max_float.
+def AMDGPUrsq_clamped : SDNode<"AMDGPUISD::RSQ_CLAMPED", SDTFPUnaryOp>;
 
 // out = max(a, b) a and b are floats
 def AMDGPUfmax : SDNode<"AMDGPUISD::FMAX", SDTFPBinOp,

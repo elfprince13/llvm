@@ -26,7 +26,9 @@
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/MutexGuard.h"
 #include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 
 using namespace llvm;
 
@@ -44,28 +46,25 @@ extern "C" void LLVMLinkInMCJIT() {
 ExecutionEngine *MCJIT::createJIT(Module *M,
                                   std::string *ErrorStr,
                                   RTDyldMemoryManager *MemMgr,
-                                  bool GVsWithCode,
                                   TargetMachine *TM) {
   // Try to register the program as a source of symbols to resolve against.
   //
   // FIXME: Don't do this here.
   sys::DynamicLibrary::LoadLibraryPermanently(nullptr, nullptr);
 
-  return new MCJIT(M, TM, MemMgr ? MemMgr : new SectionMemoryManager(),
-                   GVsWithCode);
+  return new MCJIT(M, TM, MemMgr ? MemMgr : new SectionMemoryManager());
 }
 
-MCJIT::MCJIT(Module *m, TargetMachine *tm, RTDyldMemoryManager *MM,
-             bool AllocateGVsWithCode)
+MCJIT::MCJIT(Module *m, TargetMachine *tm, RTDyldMemoryManager *MM)
   : ExecutionEngine(m), TM(tm), Ctx(nullptr), MemMgr(this, MM), Dyld(&MemMgr),
     ObjCache(nullptr) {
 
   OwnedModules.addModule(m);
-  setDataLayout(TM->getDataLayout());
+  setDataLayout(TM->getSubtargetImpl()->getDataLayout());
 }
 
 MCJIT::~MCJIT() {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   // FIXME: We are managing our modules, so we do not want the base class
   // ExecutionEngine to manage them as well. To avoid double destruction
   // of the first (and only) module added in ExecutionEngine constructor
@@ -89,24 +88,18 @@ MCJIT::~MCJIT() {
   }
   LoadedObjects.clear();
 
-
-  SmallVector<object::Archive *, 2>::iterator ArIt, ArEnd;
-  for (ArIt = Archives.begin(), ArEnd = Archives.end(); ArIt != ArEnd; ++ArIt) {
-    object::Archive *A = *ArIt;
-    delete A;
-  }
   Archives.clear();
 
   delete TM;
 }
 
 void MCJIT::addModule(Module *M) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   OwnedModules.addModule(M);
 }
 
 bool MCJIT::removeModule(Module *M) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   return OwnedModules.removeModule(M);
 }
 
@@ -122,18 +115,18 @@ void MCJIT::addObjectFile(std::unique_ptr<object::ObjectFile> Obj) {
   NotifyObjectEmitted(*LoadedObject);
 }
 
-void MCJIT::addArchive(object::Archive *A) {
-  Archives.push_back(A);
+void MCJIT::addArchive(std::unique_ptr<object::Archive> A) {
+  Archives.push_back(std::move(A));
 }
 
 
 void MCJIT::setObjectCache(ObjectCache* NewCache) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   ObjCache = NewCache;
 }
 
 ObjectBufferStream* MCJIT::emitObject(Module *M) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // This must be a module which has already been added but not loaded to this
   // MCJIT instance, since these conditions are tested by our caller,
@@ -141,7 +134,7 @@ ObjectBufferStream* MCJIT::emitObject(Module *M) {
 
   PassManager PM;
 
-  M->setDataLayout(TM->getDataLayout());
+  M->setDataLayout(TM->getSubtargetImpl()->getDataLayout());
   PM.add(new DataLayoutPass(M));
 
   // The RuntimeDyld will take ownership of this shortly
@@ -173,7 +166,7 @@ ObjectBufferStream* MCJIT::emitObject(Module *M) {
 
 void MCJIT::generateCodeForModule(Module *M) {
   // Get a thread lock to make sure we aren't trying to load multiple times
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // This must be a module which has already been added to this MCJIT instance.
   assert(OwnedModules.ownsModule(M) &&
@@ -213,7 +206,7 @@ void MCJIT::generateCodeForModule(Module *M) {
 }
 
 void MCJIT::finalizeLoadedModules() {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // Resolve any outstanding relocations.
   Dyld.resolveRelocations();
@@ -229,7 +222,7 @@ void MCJIT::finalizeLoadedModules() {
 
 // FIXME: Rename this.
 void MCJIT::finalizeObject() {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   for (ModulePtrSet::iterator I = OwnedModules.begin_added(),
                               E = OwnedModules.end_added();
@@ -242,7 +235,7 @@ void MCJIT::finalizeObject() {
 }
 
 void MCJIT::finalizeModule(Module *M) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // This must be a module which has already been added to this MCJIT instance.
   assert(OwnedModules.ownsModule(M) && "MCJIT::finalizeModule: Unknown module.");
@@ -259,7 +252,7 @@ void *MCJIT::getPointerToBasicBlock(BasicBlock *BB) {
 }
 
 uint64_t MCJIT::getExistingSymbolAddress(const std::string &Name) {
-  Mangler Mang(TM->getDataLayout());
+  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
   SmallString<128> FullName;
   Mang.getNameWithPrefix(FullName, Name);
   return Dyld.getSymbolLoadAddress(FullName);
@@ -267,7 +260,7 @@ uint64_t MCJIT::getExistingSymbolAddress(const std::string &Name) {
 
 Module *MCJIT::findModuleForSymbol(const std::string &Name,
                                    bool CheckFunctionsOnly) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // If it hasn't already been generated, see if it's in one of our modules.
   for (ModulePtrSet::iterator I = OwnedModules.begin_added(),
@@ -291,16 +284,14 @@ Module *MCJIT::findModuleForSymbol(const std::string &Name,
 uint64_t MCJIT::getSymbolAddress(const std::string &Name,
                                  bool CheckFunctionsOnly)
 {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   // First, check to see if we already have this symbol.
   uint64_t Addr = getExistingSymbolAddress(Name);
   if (Addr)
     return Addr;
 
-  SmallVector<object::Archive*, 2>::iterator I, E;
-  for (I = Archives.begin(), E = Archives.end(); I != E; ++I) {
-    object::Archive *A = *I;
+  for (std::unique_ptr<object::Archive> &A : Archives) {
     // Look for our symbols in each Archive
     object::Archive::child_iterator ChildIt = A->findSym(Name);
     if (ChildIt != A->child_end()) {
@@ -309,7 +300,7 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
           ChildIt->getAsBinary();
       if (ChildBinOrErr.getError())
         continue;
-      std::unique_ptr<object::Binary> ChildBin = std::move(ChildBinOrErr.get());
+      std::unique_ptr<object::Binary> &ChildBin = ChildBinOrErr.get();
       if (ChildBin->isObject()) {
         std::unique_ptr<object::ObjectFile> OF(
             static_cast<object::ObjectFile *>(ChildBin.release()));
@@ -325,17 +316,23 @@ uint64_t MCJIT::getSymbolAddress(const std::string &Name,
 
   // If it hasn't already been generated, see if it's in one of our modules.
   Module *M = findModuleForSymbol(Name, CheckFunctionsOnly);
-  if (!M)
-    return 0;
+  if (M) {
+    generateCodeForModule(M);
 
-  generateCodeForModule(M);
+    // Check the RuntimeDyld table again, it should be there now.
+    return getExistingSymbolAddress(Name);
+  }
 
-  // Check the RuntimeDyld table again, it should be there now.
-  return getExistingSymbolAddress(Name);
+  // If a LazyFunctionCreator is installed, use it to get/create the function.
+  // FIXME: Should we instead have a LazySymbolCreator callback?
+  if (LazyFunctionCreator)
+    Addr = (uint64_t)LazyFunctionCreator(Name);
+
+  return Addr;
 }
 
 uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   uint64_t Result = getSymbolAddress(Name, false);
   if (Result != 0)
     finalizeLoadedModules();
@@ -343,7 +340,7 @@ uint64_t MCJIT::getGlobalValueAddress(const std::string &Name) {
 }
 
 uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   uint64_t Result = getSymbolAddress(Name, true);
   if (Result != 0)
     finalizeLoadedModules();
@@ -352,7 +349,7 @@ uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
 
 // Deprecated.  Use getFunctionAddress instead.
 void *MCJIT::getPointerToFunction(Function *F) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
 
   if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
     bool AbortOnFailure = !F->hasExternalWeakLinkage();
@@ -375,7 +372,7 @@ void *MCJIT::getPointerToFunction(Function *F) {
   //
   // This is the accessor for the target address, so make sure to check the
   // load address of the symbol, not the local address.
-  Mangler Mang(TM->getDataLayout());
+  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
   SmallString<128> Name;
   TM->getNameWithPrefix(Name, F, Mang);
   return (void*)Dyld.getSymbolLoadAddress(Name);
@@ -551,13 +548,13 @@ void *MCJIT::getPointerToNamedFunction(const std::string &Name,
 void MCJIT::RegisterJITEventListener(JITEventListener *L) {
   if (!L)
     return;
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   EventListeners.push_back(L);
 }
 void MCJIT::UnregisterJITEventListener(JITEventListener *L) {
   if (!L)
     return;
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   SmallVector<JITEventListener*, 2>::reverse_iterator I=
       std::find(EventListeners.rbegin(), EventListeners.rend(), L);
   if (I != EventListeners.rend()) {
@@ -566,14 +563,14 @@ void MCJIT::UnregisterJITEventListener(JITEventListener *L) {
   }
 }
 void MCJIT::NotifyObjectEmitted(const ObjectImage& Obj) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   MemMgr.notifyObjectLoaded(this, &Obj);
   for (unsigned I = 0, S = EventListeners.size(); I < S; ++I) {
     EventListeners[I]->NotifyObjectEmitted(Obj);
   }
 }
 void MCJIT::NotifyFreeingObject(const ObjectImage& Obj) {
-  std::lock_guard<std::recursive_mutex> locked(lock);
+  MutexGuard locked(lock);
   for (unsigned I = 0, S = EventListeners.size(); I < S; ++I) {
     EventListeners[I]->NotifyFreeingObject(Obj);
   }
@@ -587,5 +584,7 @@ uint64_t LinkingMemoryManager::getSymbolAddress(const std::string &Name) {
     Result = ParentEngine->getSymbolAddress(Name.substr(1), false);
   if (Result)
     return Result;
+  if (ParentEngine->isSymbolSearchingDisabled())
+    return 0;
   return ClientMM->getSymbolAddress(Name);
 }

@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_OBJECT_ELF_OBJECT_FILE_H
-#define LLVM_OBJECT_ELF_OBJECT_FILE_H
+#ifndef LLVM_OBJECT_ELFOBJECTFILE_H
+#define LLVM_OBJECT_ELFOBJECTFILE_H
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
@@ -65,15 +65,11 @@ protected:
                                      uint32_t &Res) const override;
   std::error_code getSymbolSize(DataRefImpl Symb, uint64_t &Res) const override;
   uint32_t getSymbolFlags(DataRefImpl Symb) const override;
+  std::error_code getSymbolOther(DataRefImpl Symb, uint8_t &Res) const override;
   std::error_code getSymbolType(DataRefImpl Symb,
                                 SymbolRef::Type &Res) const override;
   std::error_code getSymbolSection(DataRefImpl Symb,
                                    section_iterator &Res) const override;
-
-  std::error_code getLibraryNext(DataRefImpl Data,
-                                 LibraryRef &Result) const override;
-  std::error_code getLibraryPath(DataRefImpl Data,
-                                 StringRef &Res) const override;
 
   void moveSectionNext(DataRefImpl &Sec) const override;
   std::error_code getSectionName(DataRefImpl Sec,
@@ -177,8 +173,7 @@ protected:
   bool isDyldELFObject;
 
 public:
-  ELFObjectFile(MemoryBuffer *Object, std::error_code &EC,
-                bool BufferOwned = true);
+  ELFObjectFile(std::unique_ptr<MemoryBuffer> Object, std::error_code &EC);
 
   const Elf_Sym *getSymbol(DataRefImpl Symb) const;
 
@@ -191,9 +186,6 @@ public:
   section_iterator section_begin() const override;
   section_iterator section_end() const override;
 
-  library_iterator needed_library_begin() const override;
-  library_iterator needed_library_end() const override;
-
   std::error_code getRelocationAddend(DataRefImpl Rel, int64_t &Res) const;
   std::error_code getSymbolVersion(SymbolRef Symb, StringRef &Version,
                                    bool &IsDefault) const;
@@ -201,7 +193,12 @@ public:
   uint8_t getBytesInAddress() const override;
   StringRef getFileFormatName() const override;
   unsigned getArch() const override;
-  StringRef getLoadName() const override;
+  StringRef getLoadName() const;
+
+  std::error_code getPlatformFlags(unsigned &Result) const override {
+    Result = EF.getHeader()->e_flags;
+    return object_error::success;
+  }
 
   const ELFFile<ELFT> *getELFFile() const { return &EF; }
 
@@ -292,6 +289,13 @@ template <class ELFT>
 std::error_code ELFObjectFile<ELFT>::getSymbolSize(DataRefImpl Symb,
                                                    uint64_t &Result) const {
   Result = toELFSymIter(Symb)->st_size;
+  return object_error::success;
+}
+
+template <class ELFT>
+std::error_code ELFObjectFile<ELFT>::getSymbolOther(DataRefImpl Symb,
+                                                    uint8_t &Result) const {
+  Result = toELFSymIter(Symb)->st_other;
   return object_error::success;
 }
 
@@ -774,13 +778,13 @@ ELFObjectFile<ELFT>::getRela(DataRefImpl Rela) const {
 }
 
 template <class ELFT>
-ELFObjectFile<ELFT>::ELFObjectFile(MemoryBuffer *Object, std::error_code &ec,
-                                   bool BufferOwned)
+ELFObjectFile<ELFT>::ELFObjectFile(std::unique_ptr<MemoryBuffer> Object,
+                                   std::error_code &EC)
     : ObjectFile(getELFType(static_cast<endianness>(ELFT::TargetEndianness) ==
                                 support::little,
                             ELFT::Is64Bits),
-                 Object, BufferOwned),
-      EF(Object, ec) {}
+                 std::move(Object)),
+      EF(Data->getBuffer(), EC) {}
 
 template <class ELFT>
 basic_symbol_iterator ELFObjectFile<ELFT>::symbol_begin_impl() const {
@@ -823,44 +827,6 @@ StringRef ELFObjectFile<ELFT>::getLoadName() const {
   if (DI != DE)
     return EF.getDynamicString(DI->getVal());
   return "";
-}
-
-template <class ELFT>
-library_iterator ELFObjectFile<ELFT>::needed_library_begin() const {
-  Elf_Dyn_Iter DI = EF.begin_dynamic_table();
-  Elf_Dyn_Iter DE = EF.end_dynamic_table();
-
-  while (DI != DE && DI->getTag() != ELF::DT_SONAME)
-    ++DI;
-
-  return library_iterator(LibraryRef(toDRI(DI), this));
-}
-
-template <class ELFT>
-std::error_code ELFObjectFile<ELFT>::getLibraryNext(DataRefImpl Data,
-                                                    LibraryRef &Result) const {
-  Elf_Dyn_Iter DI = toELFDynIter(Data);
-  Elf_Dyn_Iter DE = EF.end_dynamic_table();
-
-  // Skip to the next DT_NEEDED entry.
-  do
-    ++DI;
-  while (DI != DE && DI->getTag() != ELF::DT_NEEDED);
-
-  Result = LibraryRef(toDRI(DI), this);
-  return object_error::success;
-}
-
-template <class ELFT>
-std::error_code ELFObjectFile<ELFT>::getLibraryPath(DataRefImpl Data,
-                                                    StringRef &Res) const {
-  Res = EF.getDynamicString(toELFDynIter(Data)->getVal());
-  return object_error::success;
-}
-
-template <class ELFT>
-library_iterator ELFObjectFile<ELFT>::needed_library_end() const {
-  return library_iterator(LibraryRef(toDRI(EF.end_dynamic_table()), this));
 }
 
 template <class ELFT>
@@ -918,6 +884,7 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
 
 template <class ELFT>
 unsigned ELFObjectFile<ELFT>::getArch() const {
+  bool IsLittleEndian = ELFT::TargetEndianness == support::little;
   switch (EF.getHeader()->e_machine) {
   case ELF::EM_386:
     return Triple::x86;
@@ -930,11 +897,16 @@ unsigned ELFObjectFile<ELFT>::getArch() const {
   case ELF::EM_HEXAGON:
     return Triple::hexagon;
   case ELF::EM_MIPS:
-    return (ELFT::TargetEndianness == support::little) ? Triple::mipsel
-                                                       : Triple::mips;
+    switch (EF.getHeader()->e_ident[ELF::EI_CLASS]) {
+    case ELF::ELFCLASS32:
+      return IsLittleEndian ? Triple::mipsel : Triple::mips;
+    case ELF::ELFCLASS64:
+      return IsLittleEndian ? Triple::mips64el : Triple::mips64;
+    default:
+      report_fatal_error("Invalid ELFCLASS!");
+    }
   case ELF::EM_PPC64:
-    return (ELFT::TargetEndianness == support::little) ? Triple::ppc64le
-                                                       : Triple::ppc64;
+    return IsLittleEndian ? Triple::ppc64le : Triple::ppc64;
   case ELF::EM_S390:
     return Triple::systemz;
 

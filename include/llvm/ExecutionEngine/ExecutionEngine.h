@@ -22,10 +22,10 @@
 #include "llvm/IR/ValueMap.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Mutex.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include <map>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -42,6 +42,7 @@ class JITEventListener;
 class JITMemoryManager;
 class MachineCodeInfo;
 class Module;
+class MutexGuard;
 class ObjectCache;
 class RTDyldMemoryManager;
 class Triple;
@@ -58,7 +59,7 @@ class ExecutionEngineState {
 public:
   struct AddressMapConfig : public ValueMapConfig<const GlobalValue*> {
     typedef ExecutionEngineState *ExtraData;
-    static std::recursive_mutex *getMutex(ExecutionEngineState *EES);
+    static sys::Mutex *getMutex(ExecutionEngineState *EES);
     static void onDelete(ExecutionEngineState *EES, const GlobalValue *Old);
     static void onRAUW(ExecutionEngineState *, const GlobalValue *,
                        const GlobalValue *);
@@ -150,7 +151,6 @@ protected:
     Module *M,
     std::string *ErrorStr,
     RTDyldMemoryManager *MCJMM,
-    bool GVsWithCode,
     TargetMachine *TM);
   static ExecutionEngine *(*InterpCtor)(Module *M, std::string *ErrorStr);
 
@@ -163,46 +163,13 @@ public:
   /// lock - This lock protects the ExecutionEngine, MCJIT, JIT, JITResolver and
   /// JITEmitter classes.  It must be held while changing the internal state of
   /// any of those classes.
-  std::recursive_mutex lock;
+  sys::Mutex lock;
 
   //===--------------------------------------------------------------------===//
   //  ExecutionEngine Startup
   //===--------------------------------------------------------------------===//
 
   virtual ~ExecutionEngine();
-
-  /// create - This is the factory method for creating an execution engine which
-  /// is appropriate for the current machine.  This takes ownership of the
-  /// module.
-  ///
-  /// \param GVsWithCode - Allocating globals with code breaks
-  /// freeMachineCodeForFunction and is probably unsafe and bad for performance.
-  /// However, we have clients who depend on this behavior, so we must support
-  /// it.  Eventually, when we're willing to break some backwards compatibility,
-  /// this flag should be flipped to false, so that by default
-  /// freeMachineCodeForFunction works.
-  static ExecutionEngine *create(Module *M,
-                                 bool ForceInterpreter = false,
-                                 std::string *ErrorStr = nullptr,
-                                 CodeGenOpt::Level OptLevel =
-                                 CodeGenOpt::Default,
-                                 bool GVsWithCode = true);
-
-  /// createJIT - This is the factory method for creating a JIT for the current
-  /// machine, it does not fall back to the interpreter.  This takes ownership
-  /// of the Module and JITMemoryManager if successful.
-  ///
-  /// Clients should make sure to initialize targets prior to calling this
-  /// function.
-  static ExecutionEngine *createJIT(Module *M,
-                                    std::string *ErrorStr = nullptr,
-                                    JITMemoryManager *JMM = nullptr,
-                                    CodeGenOpt::Level OptLevel =
-                                    CodeGenOpt::Default,
-                                    bool GVsWithCode = true,
-                                    Reloc::Model RM = Reloc::Default,
-                                    CodeModel::Model CMM =
-                                    CodeModel::JITDefault);
 
   /// addModule - Add a Module to the list of modules that we can JIT from.
   /// Note that this takes ownership of the Module: when the ExecutionEngine is
@@ -229,11 +196,7 @@ public:
   /// resolve external symbols in objects it is loading.  If a symbol is found
   /// in the Archive the contained object file will be extracted (in memory)
   /// and loaded for possible execution.
-  ///
-  /// MCJIT will take ownership of the Archive.
-  virtual void addArchive(object::Archive *A) {
-    llvm_unreachable("ExecutionEngine subclass doesn't implement addArchive.");
-  }
+  virtual void addArchive(std::unique_ptr<object::Archive> A);
 
   //===--------------------------------------------------------------------===//
 

@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef X86SUBTARGET_H
-#define X86SUBTARGET_H
+#ifndef LLVM_LIB_TARGET_X86_X86SUBTARGET_H
+#define LLVM_LIB_TARGET_X86_X86SUBTARGET_H
 
 #include "X86FrameLowering.h"
 #include "X86ISelLowering.h"
@@ -139,6 +139,9 @@ protected:
   /// HasSHA - Processor has SHA instructions.
   bool HasSHA;
 
+  /// HasSGX - Processor has SGX instructions.
+  bool HasSGX;
+
   /// HasPRFCHW - Processor has PRFCHW instructions.
   bool HasPRFCHW;
 
@@ -170,9 +173,6 @@ protected:
   /// full divides and should be used when possible.
   bool HasSlowDivide;
 
-  /// PostRAScheduler - True if using post-register-allocation scheduler.
-  bool PostRAScheduler;
-
   /// PadShortFunctions - True if the short functions should be padded to prevent
   /// a stall when returning too early.
   bool PadShortFunctions;
@@ -192,13 +192,22 @@ protected:
 
   /// Processor has AVX-512 PreFetch Instructions
   bool HasPFI;
-  
+
   /// Processor has AVX-512 Exponential and Reciprocal Instructions
   bool HasERI;
-  
+
   /// Processor has AVX-512 Conflict Detection Instructions
   bool HasCDI;
-  
+
+  /// Processor has AVX-512 Doubleword and Quadword instructions
+  bool HasDQI;
+
+  /// Processor has AVX-512 Byte and Word instructions
+  bool HasBWI;
+
+  /// Processor has AVX-512 Vector Length eXtenstions
+  bool HasVLX;
+
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
   unsigned stackAlignment;
@@ -214,6 +223,9 @@ protected:
   InstrItineraryData InstrItins;
 
 private:
+  // Calculates type size & alignment
+  const DataLayout DL;
+
   /// StackAlignOverride - Override the stack alignment.
   unsigned StackAlignOverride;
 
@@ -226,8 +238,6 @@ private:
   /// In16BitMode - True if compiling for 16-bit, false for 32-bit or 64-bit.
   bool In16BitMode;
 
-  // Calculates type size & alignment
-  const DataLayout DL;
   X86SelectionDAGInfo TSInfo;
   // Ordering here is important. X86InstrInfo initializes X86RegisterInfo which
   // X86TargetLowering needs.
@@ -244,12 +254,21 @@ public:
                const std::string &FS, X86TargetMachine &TM,
                unsigned StackAlignOverride);
 
-  const X86TargetLowering *getTargetLowering() const { return &TLInfo; }
-  const X86InstrInfo *getInstrInfo() const { return &InstrInfo; }
-  const DataLayout *getDataLayout() const { return &DL; }
-  const X86FrameLowering *getFrameLowering() const { return &FrameLowering; }
-  const X86SelectionDAGInfo *getSelectionDAGInfo() const { return &TSInfo; }
-  X86JITInfo *getJITInfo() { return &JITInfo; }
+  const X86TargetLowering *getTargetLowering() const override {
+    return &TLInfo;
+  }
+  const X86InstrInfo *getInstrInfo() const override { return &InstrInfo; }
+  const DataLayout *getDataLayout() const override { return &DL; }
+  const X86FrameLowering *getFrameLowering() const override {
+    return &FrameLowering;
+  }
+  const X86SelectionDAGInfo *getSelectionDAGInfo() const override {
+    return &TSInfo;
+  }
+  const X86RegisterInfo *getRegisterInfo() const override {
+    return &getInstrInfo()->getRegisterInfo();
+  }
+  X86JITInfo *getJITInfo() override { return &JITInfo; }
 
   /// getStackAlignment - Returns the minimum alignment known to hold of the
   /// stack frame on entry to the function and which must be maintained by every
@@ -294,7 +313,8 @@ public:
 
   /// Is this x86_64 with the LP64 programming model (standard AMD64, no x32)?
   bool isTarget64BitLP64() const {
-    return In64BitMode && (TargetTriple.getEnvironment() != Triple::GNUX32);
+    return In64BitMode && (TargetTriple.getEnvironment() != Triple::GNUX32 &&
+                           TargetTriple.getOS() != Triple::NaCl);
   }
 
   PICStyles::Style getPICStyle() const { return PICStyle; }
@@ -335,6 +355,7 @@ public:
   bool hasHLE() const { return HasHLE; }
   bool hasADX() const { return HasADX; }
   bool hasSHA() const { return HasSHA; }
+  bool hasSGX() const { return HasSGX; }
   bool hasPRFCHW() const { return HasPRFCHW; }
   bool hasRDSEED() const { return HasRDSEED; }
   bool isBTMemSlow() const { return IsBTMemSlow; }
@@ -352,6 +373,9 @@ public:
   bool hasCDI() const { return HasCDI; }
   bool hasPFI() const { return HasPFI; }
   bool hasERI() const { return HasERI; }
+  bool hasDQI() const { return HasDQI; }
+  bool hasBWI() const { return HasBWI; }
+  bool hasVLX() const { return HasVLX; }
 
   bool isAtom() const { return X86ProcFamily == IntelAtom; }
   bool isSLM() const { return X86ProcFamily == IntelSLM; }
@@ -453,18 +477,17 @@ public:
   /// Enable the MachineScheduler pass for all X86 subtargets.
   bool enableMachineScheduler() const override { return true; }
 
-  /// enablePostRAScheduler - run for Atom optimization.
-  bool enablePostRAScheduler(CodeGenOpt::Level OptLevel,
-                             TargetSubtargetInfo::AntiDepBreakMode& Mode,
-                             RegClassVector& CriticalPathRCs) const override;
-
-  bool postRAScheduler() const { return PostRAScheduler; }
-
   bool enableEarlyIfConversion() const override;
 
   /// getInstrItins = Return the instruction itineraries based on the
   /// subtarget selection.
-  const InstrItineraryData &getInstrItineraryData() const { return InstrItins; }
+  const InstrItineraryData *getInstrItineraryData() const override {
+    return &InstrItins;
+  }
+
+  AntiDepBreakMode getAntiDepBreakMode() const override {
+    return TargetSubtargetInfo::ANTIDEP_CRITICAL;
+  }
 };
 
 } // End llvm namespace

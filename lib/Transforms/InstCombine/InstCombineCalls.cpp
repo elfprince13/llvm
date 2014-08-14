@@ -421,6 +421,21 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
         return InsertValueInst::Create(Struct, II->getArgOperand(0), 0);
       }
     }
+
+    // We can strength reduce reduce this signed add into a regular add if we
+    // can prove that it will never overflow.
+    if (II->getIntrinsicID() == Intrinsic::sadd_with_overflow) {
+      Value *LHS = II->getArgOperand(0), *RHS = II->getArgOperand(1);
+      if (WillNotOverflowSignedAdd(LHS, RHS)) {
+        Value *Add = Builder->CreateNSWAdd(LHS, RHS);
+        Add->takeName(&CI);
+        Constant *V[] = {UndefValue::get(Add->getType()), Builder->getFalse()};
+        StructType *ST = cast<StructType>(II->getType());
+        Constant *Struct = ConstantStruct::get(ST, V);
+        return InsertValueInst::Create(Struct, Add, 0);
+      }
+    }
+
     break;
   case Intrinsic::usub_with_overflow:
   case Intrinsic::ssub_with_overflow:
@@ -977,6 +992,23 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // restore.
     if (!CannotRemove && (isa<ReturnInst>(TI) || isa<ResumeInst>(TI)))
       return EraseInstFromFunction(CI);
+    break;
+  }
+  case Intrinsic::assume: {
+    // Canonicalize assume(a && b) -> assume(a); assume(b);
+    Value *IIOperand = II->getArgOperand(0), *A, *B,
+          *AssumeIntrinsic = II->getCalledValue();
+    if (match(IIOperand, m_And(m_Value(A), m_Value(B)))) {
+      Builder->CreateCall(AssumeIntrinsic, A, II->getName());
+      Builder->CreateCall(AssumeIntrinsic, B, II->getName());
+      return EraseInstFromFunction(*II);
+    }
+    // assume(!(a || b)) -> assume(!a); assume(!b);
+    if (match(IIOperand, m_Not(m_Or(m_Value(A), m_Value(B))))) {
+      Builder->CreateCall(AssumeIntrinsic, Builder->CreateNot(A), II->getName());
+      Builder->CreateCall(AssumeIntrinsic, Builder->CreateNot(B), II->getName());
+      return EraseInstFromFunction(*II);
+    }
     break;
   }
   }

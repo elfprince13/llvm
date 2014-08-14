@@ -49,6 +49,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
+#include "AMDGPUSubtarget.h"
 #include "SIInstrInfo.h"
 #include "SIMachineFunctionInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -147,7 +148,7 @@ void SILowerControlFlowPass::SkipIfDead(MachineInstr &MI) {
   MachineBasicBlock &MBB = *MI.getParent();
   DebugLoc DL = MI.getDebugLoc();
 
-  if (MBB.getParent()->getInfo<SIMachineFunctionInfo>()->ShaderType !=
+  if (MBB.getParent()->getInfo<SIMachineFunctionInfo>()->getShaderType() !=
       ShaderType::PIXEL ||
       !shouldSkip(&MBB, &MBB.getParent()->back()))
     return;
@@ -298,11 +299,13 @@ void SILowerControlFlowPass::Kill(MachineInstr &MI) {
   DebugLoc DL = MI.getDebugLoc();
   const MachineOperand &Op = MI.getOperand(0);
 
-  // Kill is only allowed in pixel / geometry shaders
-  assert(MBB.getParent()->getInfo<SIMachineFunctionInfo>()->ShaderType ==
-         ShaderType::PIXEL ||
-         MBB.getParent()->getInfo<SIMachineFunctionInfo>()->ShaderType ==
-         ShaderType::GEOMETRY);
+#ifndef NDEBUG
+  const SIMachineFunctionInfo *MFI
+    = MBB.getParent()->getInfo<SIMachineFunctionInfo>();
+  // Kill is only allowed in pixel / geometry shaders.
+  assert(MFI->getShaderType() == ShaderType::PIXEL ||
+         MFI->getShaderType() == ShaderType::GEOMETRY);
+#endif
 
   // Clear this thread from the exec mask if the operand is negative
   if ((Op.isImm() || Op.isFPImm())) {
@@ -440,8 +443,9 @@ void SILowerControlFlowPass::IndirectDst(MachineInstr &MI) {
 }
 
 bool SILowerControlFlowPass::runOnMachineFunction(MachineFunction &MF) {
-  TII = static_cast<const SIInstrInfo*>(MF.getTarget().getInstrInfo());
-  TRI = static_cast<const SIRegisterInfo*>(MF.getTarget().getRegisterInfo());
+  TII = static_cast<const SIInstrInfo *>(MF.getSubtarget().getInstrInfo());
+  TRI =
+      static_cast<const SIRegisterInfo *>(MF.getSubtarget().getRegisterInfo());
   SIMachineFunctionInfo *MFI = MF.getInfo<SIMachineFunctionInfo>();
 
   bool HaveKill = false;
@@ -540,7 +544,7 @@ bool SILowerControlFlowPass::runOnMachineFunction(MachineFunction &MF) {
     InitM0ForLDS(MBB.getFirstNonPHI());
   }
 
-  if (NeedWQM && MFI->ShaderType == ShaderType::PIXEL) {
+  if (NeedWQM && MFI->getShaderType() == ShaderType::PIXEL) {
     MachineBasicBlock &MBB = MF.front();
     BuildMI(MBB, MBB.getFirstNonPHI(), DebugLoc(), TII->get(AMDGPU::S_WQM_B64),
             AMDGPU::EXEC).addReg(AMDGPU::EXEC);

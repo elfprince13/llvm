@@ -66,7 +66,8 @@ X86SelectionDAGInfo::EmitTargetCodeForMemset(SelectionDAG &DAG, SDLoc dl,
       TargetLowering::CallLoweringInfo CLI(DAG);
       CLI.setDebugLoc(dl).setChain(Chain)
         .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
-                   DAG.getExternalSymbol(bzeroEntry, IntPtr), &Args, 0)
+                   DAG.getExternalSymbol(bzeroEntry, IntPtr), std::move(Args),
+                   0)
         .setDiscardResult();
 
       std::pair<SDValue,SDValue> CallResult = DAG.getTargetLoweringInfo().LowerCallTo(CLI);
@@ -202,8 +203,8 @@ X86SelectionDAGInfo::EmitTargetCodeForMemcpy(SelectionDAG &DAG, SDLoc dl,
 
   // ESI might be used as a base pointer, in that case we can't simply overwrite
   // the register.  Fall back to generic code.
-  const X86RegisterInfo *TRI =
-      static_cast<const X86RegisterInfo *>(DAG.getTarget().getRegisterInfo());
+  const X86RegisterInfo *TRI = static_cast<const X86RegisterInfo *>(
+      DAG.getSubtarget().getRegisterInfo());
   if (TRI->hasBasePointer(DAG.getMachineFunction()) &&
       TRI->getBaseRegister() == X86::ESI)
     return SDValue();

@@ -3082,17 +3082,25 @@ bool ARMAsmParser::tryParseRegisterWithWriteBack(OperandVector &Operands) {
 }
 
 /// MatchCoprocessorOperandName - Try to parse an coprocessor related
-/// instruction with a symbolic operand name. Example: "p1", "p7", "c3",
-/// "c5", ...
+/// instruction with a symbolic operand name.
+/// We accept "crN" syntax for GAS compatibility.
+/// <operand-name> ::= <prefix><number>
+/// If CoprocOp is 'c', then:
+///   <prefix> ::= c | cr
+/// If CoprocOp is 'p', then :
+///   <prefix> ::= p
+/// <number> ::= integer in range [0, 15]
 static int MatchCoprocessorOperandName(StringRef Name, char CoprocOp) {
   // Use the same layout as the tablegen'erated register name matcher. Ugly,
   // but efficient.
+  if (Name.size() < 2 || Name[0] != CoprocOp)
+    return -1;
+  Name = (Name[1] == 'r') ? Name.drop_front(2) : Name.drop_front();
+
   switch (Name.size()) {
   default: return -1;
-  case 2:
-    if (Name[0] != CoprocOp)
-      return -1;
-    switch (Name[1]) {
+  case 1:
+    switch (Name[0]) {
     default:  return -1;
     case '0': return 0;
     case '1': return 1;
@@ -3105,14 +3113,15 @@ static int MatchCoprocessorOperandName(StringRef Name, char CoprocOp) {
     case '8': return 8;
     case '9': return 9;
     }
-  case 3:
-    if (Name[0] != CoprocOp || Name[1] != '1')
+  case 2:
+    if (Name[0] != '1')
       return -1;
-    switch (Name[2]) {
+    switch (Name[1]) {
     default:  return -1;
-    // p10 and p11 are invalid for coproc instructions (reserved for FP/NEON)
-    case '0': return CoprocOp == 'p'? -1: 10;
-    case '1': return CoprocOp == 'p'? -1: 11;
+    // CP10 and CP11 are VFP/NEON and so vector instructions should be used.
+    // However, old cores (v5/v6) did use them in that way.
+    case '0': return 10;
+    case '1': return 11;
     case '2': return 12;
     case '3': return 13;
     case '4': return 14;
@@ -3168,6 +3177,9 @@ ARMAsmParser::parseCoprocNumOperand(OperandVector &Operands) {
 
   int Num = MatchCoprocessorOperandName(Tok.getString(), 'p');
   if (Num == -1)
+    return MatchOperand_NoMatch;
+  // ARMv7 and v8 don't allow cp10/cp11 due to VFP/NEON specific instructions
+  if ((hasV7Ops() || hasV8Ops()) && (Num == 10 || Num == 11))
     return MatchOperand_NoMatch;
 
   Parser.Lex(); // Eat identifier token.
@@ -5718,6 +5730,48 @@ bool ARMAsmParser::validateInstruction(MCInst &Inst,
     if (Rt2 != Rt + 1)
       return Error(Operands[3]->getStartLoc(),
                    "source operands must be sequential");
+    return false;
+  }
+  case ARM::STR_PRE_IMM:
+  case ARM::STR_PRE_REG:
+  case ARM::STR_POST_IMM:
+  case ARM::STR_POST_REG:
+  case ARM::STRH_PRE:
+  case ARM::STRH_POST:
+  case ARM::STRB_PRE_IMM:
+  case ARM::STRB_PRE_REG:
+  case ARM::STRB_POST_IMM:
+  case ARM::STRB_POST_REG: {
+    // Rt must be different from Rn.
+    const unsigned Rt = MRI->getEncodingValue(Inst.getOperand(1).getReg());
+    const unsigned Rn = MRI->getEncodingValue(Inst.getOperand(2).getReg());
+
+    if (Rt == Rn)
+      return Error(Operands[3]->getStartLoc(),
+                   "source register and base register can't be identical");
+    return false;
+  }
+  case ARM::LDR_PRE_IMM:
+  case ARM::LDR_PRE_REG:
+  case ARM::LDR_POST_IMM:
+  case ARM::LDR_POST_REG:
+  case ARM::LDRH_PRE:
+  case ARM::LDRH_POST:
+  case ARM::LDRSH_PRE:
+  case ARM::LDRSH_POST:
+  case ARM::LDRB_PRE_IMM:
+  case ARM::LDRB_PRE_REG:
+  case ARM::LDRB_POST_IMM:
+  case ARM::LDRB_POST_REG:
+  case ARM::LDRSB_PRE:
+  case ARM::LDRSB_POST: {
+    // Rt must be different from Rn.
+    const unsigned Rt = MRI->getEncodingValue(Inst.getOperand(0).getReg());
+    const unsigned Rn = MRI->getEncodingValue(Inst.getOperand(2).getReg());
+
+    if (Rt == Rn)
+      return Error(Operands[3]->getStartLoc(),
+                   "destination register and base register can't be identical");
     return false;
   }
   case ARM::SBFX:
@@ -9341,8 +9395,8 @@ extern "C" void LLVMInitializeARMAsmParser() {
 #define GET_MATCHER_IMPLEMENTATION
 #include "ARMGenAsmMatcher.inc"
 
-static const struct ExtMapEntry {
-  const char *Extension;
+static const struct {
+  const char *Name;
   const unsigned ArchCheck;
   const uint64_t Features;
 } Extensions[] = {
@@ -9379,40 +9433,41 @@ bool ARMAsmParser::parseDirectiveArchExtension(SMLoc L) {
     return false;
   }
 
-  StringRef Extension = Parser.getTok().getString();
+  StringRef Name = Parser.getTok().getString();
   SMLoc ExtLoc = Parser.getTok().getLoc();
   getLexer().Lex();
 
   bool EnableFeature = true;
-  if (Extension.startswith_lower("no")) {
+  if (Name.startswith_lower("no")) {
     EnableFeature = false;
-    Extension = Extension.substr(2);
+    Name = Name.substr(2);
   }
 
-  for (unsigned EI = 0, EE = array_lengthof(Extensions); EI != EE; ++EI) {
-    if (Extensions[EI].Extension != Extension)
+  for (const auto &Extension : Extensions) {
+    if (Extension.Name != Name)
       continue;
 
-    unsigned FB = getAvailableFeatures();
-    if ((FB & Extensions[EI].ArchCheck) != Extensions[EI].ArchCheck) {
-      Error(ExtLoc, "architectural extension '" + Extension + "' is not "
+    if (!Extension.Features)
+      report_fatal_error("unsupported architectural extension: " + Name);
+
+    if ((getAvailableFeatures() & Extension.ArchCheck) != Extension.ArchCheck) {
+      Error(ExtLoc, "architectural extension '" + Name + "' is not "
             "allowed for the current base architecture");
       return false;
     }
 
-    if (!Extensions[EI].Features)
-      report_fatal_error("unsupported architectural extension: " + Extension);
-
-    if (EnableFeature)
-      FB |= ComputeAvailableFeatures(Extensions[EI].Features);
-    else
-      FB &= ~ComputeAvailableFeatures(Extensions[EI].Features);
-
-    setAvailableFeatures(FB);
+    bool ToggleFeatures = EnableFeature
+                              ? (~STI.getFeatureBits() & Extension.Features)
+                              : ( STI.getFeatureBits() & Extension.Features);
+    if (ToggleFeatures) {
+      unsigned Features =
+          ComputeAvailableFeatures(STI.ToggleFeature(Extension.Features));
+      setAvailableFeatures(Features);
+    }
     return false;
   }
 
-  Error(ExtLoc, "unknown architectural extension: " + Extension);
+  Error(ExtLoc, "unknown architectural extension: " + Name);
   Parser.eatToEndOfStatement();
   return false;
 }

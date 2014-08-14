@@ -220,10 +220,11 @@ static std::string getDarwinDWARFResourceForPath(const std::string &Path) {
 }
 
 static bool checkFileCRC(StringRef Path, uint32_t CRCHash) {
-  std::unique_ptr<MemoryBuffer> MB;
-  if (MemoryBuffer::getFileOrSTDIN(Path, MB))
+  ErrorOr<std::unique_ptr<MemoryBuffer>> MB =
+      MemoryBuffer::getFileOrSTDIN(Path);
+  if (!MB)
     return false;
-  return !zlib::isAvailable() || CRCHash == zlib::crc32(MB->getBuffer());
+  return !zlib::isAvailable() || CRCHash == zlib::crc32(MB.get()->getBuffer());
 }
 
 static bool findDebugBinary(const std::string &OrigPath,
@@ -299,9 +300,9 @@ LLVMSymbolizer::getOrCreateBinary(const std::string &Path) {
     return I->second;
   Binary *Bin = nullptr;
   Binary *DbgBin = nullptr;
-  ErrorOr<Binary *> BinaryOrErr = createBinary(Path);
+  ErrorOr<std::unique_ptr<Binary>> BinaryOrErr = createBinary(Path);
   if (!error(BinaryOrErr.getError())) {
-    std::unique_ptr<Binary> ParsedBinary(BinaryOrErr.get());
+    std::unique_ptr<Binary> &ParsedBinary = BinaryOrErr.get();
     // Check if it's a universal binary.
     Bin = ParsedBinary.get();
     ParsedBinariesAndObjects.push_back(std::move(ParsedBinary));
@@ -313,8 +314,8 @@ LLVMSymbolizer::getOrCreateBinary(const std::string &Path) {
       BinaryOrErr = createBinary(ResourcePath);
       std::error_code EC = BinaryOrErr.getError();
       if (EC != errc::no_such_file_or_directory && !error(EC)) {
-        DbgBin = BinaryOrErr.get();
-        ParsedBinariesAndObjects.push_back(std::unique_ptr<Binary>(DbgBin));
+        DbgBin = BinaryOrErr.get().get();
+        ParsedBinariesAndObjects.push_back(std::move(BinaryOrErr.get()));
       }
     }
     // Try to locate the debug binary using .gnu_debuglink section.
@@ -326,8 +327,8 @@ LLVMSymbolizer::getOrCreateBinary(const std::string &Path) {
           findDebugBinary(Path, DebuglinkName, CRCHash, DebugBinaryPath)) {
         BinaryOrErr = createBinary(DebugBinaryPath);
         if (!error(BinaryOrErr.getError())) {
-          DbgBin = BinaryOrErr.get();
-          ParsedBinariesAndObjects.push_back(std::unique_ptr<Binary>(DbgBin));
+          DbgBin = BinaryOrErr.get().get();
+          ParsedBinariesAndObjects.push_back(std::move(BinaryOrErr.get()));
         }
       }
     }
@@ -349,10 +350,11 @@ LLVMSymbolizer::getObjectFileFromBinary(Binary *Bin, const std::string &ArchName
         std::make_pair(UB, ArchName));
     if (I != ObjectFileForArch.end())
       return I->second;
-    std::unique_ptr<ObjectFile> ParsedObj;
-    if (!UB->getObjectForArch(Triple(ArchName).getArch(), ParsedObj)) {
-      Res = ParsedObj.get();
-      ParsedBinariesAndObjects.push_back(std::move(ParsedObj));
+    ErrorOr<std::unique_ptr<ObjectFile>> ParsedObj =
+        UB->getObjectForArch(Triple(ArchName).getArch());
+    if (ParsedObj) {
+      Res = ParsedObj.get().get();
+      ParsedBinariesAndObjects.push_back(std::move(ParsedObj.get()));
     }
     ObjectFileForArch[std::make_pair(UB, ArchName)] = Res;
   } else if (Bin->isObject()) {
@@ -386,7 +388,7 @@ LLVMSymbolizer::getOrCreateModuleInfo(const std::string &ModuleName) {
     Modules.insert(make_pair(ModuleName, (ModuleInfo *)nullptr));
     return nullptr;
   }
-  DIContext *Context = DIContext::getDWARFContext(DbgObj);
+  DIContext *Context = DIContext::getDWARFContext(*DbgObj);
   assert(Context);
   ModuleInfo *Info = new ModuleInfo(Obj, Context);
   Modules.insert(make_pair(ModuleName, Info));

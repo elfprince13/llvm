@@ -32,6 +32,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <memory>
 
 using namespace llvm;
@@ -235,6 +236,7 @@ private:
     IES_RSHIFT,
     IES_PLUS,
     IES_MINUS,
+    IES_NOT,
     IES_MULTIPLY,
     IES_DIVIDE,
     IES_LBRAC,
@@ -372,6 +374,7 @@ private:
         State = IES_ERROR;
         break;
       case IES_PLUS:
+      case IES_NOT:
       case IES_MULTIPLY:
       case IES_DIVIDE:
       case IES_LPAREN:
@@ -397,6 +400,19 @@ private:
             Scale = 1;
           }
         }
+        break;
+      }
+      PrevState = CurrState;
+    }
+    void onNot() {
+      IntelExprState CurrState = State;
+      switch (State) {
+      default:
+        State = IES_ERROR;
+        break;
+      case IES_PLUS:
+      case IES_NOT:
+        State = IES_NOT;
         break;
       }
       PrevState = CurrState;
@@ -438,6 +454,7 @@ private:
         break;
       case IES_PLUS:
       case IES_MINUS:
+      case IES_NOT:
         State = IES_INTEGER;
         Sym = SymRef;
         SymName = SymRefName;
@@ -453,6 +470,7 @@ private:
         break;
       case IES_PLUS:
       case IES_MINUS:
+      case IES_NOT:
       case IES_OR:
       case IES_AND:
       case IES_LSHIFT:
@@ -476,11 +494,22 @@ private:
                     PrevState == IES_OR || PrevState == IES_AND ||
                     PrevState == IES_LSHIFT || PrevState == IES_RSHIFT ||
                     PrevState == IES_MULTIPLY || PrevState == IES_DIVIDE ||
-                    PrevState == IES_LPAREN || PrevState == IES_LBRAC) &&
+                    PrevState == IES_LPAREN || PrevState == IES_LBRAC ||
+                    PrevState == IES_NOT) &&
                    CurrState == IES_MINUS) {
           // Unary minus.  No need to pop the minus operand because it was never
           // pushed.
           IC.pushOperand(IC_IMM, -TmpInt); // Push -Imm.
+        } else if ((PrevState == IES_PLUS || PrevState == IES_MINUS ||
+                    PrevState == IES_OR || PrevState == IES_AND ||
+                    PrevState == IES_LSHIFT || PrevState == IES_RSHIFT ||
+                    PrevState == IES_MULTIPLY || PrevState == IES_DIVIDE ||
+                    PrevState == IES_LPAREN || PrevState == IES_LBRAC ||
+                    PrevState == IES_NOT) &&
+                   CurrState == IES_NOT) {
+          // Unary not.  No need to pop the not operand because it was never
+          // pushed.
+          IC.pushOperand(IC_IMM, ~TmpInt); // Push ~Imm.
         } else {
           IC.pushOperand(IC_IMM, TmpInt);
         }
@@ -561,6 +590,7 @@ private:
         break;
       case IES_PLUS:
       case IES_MINUS:
+      case IES_NOT:
       case IES_OR:
       case IES_AND:
       case IES_LSHIFT:
@@ -568,13 +598,14 @@ private:
       case IES_MULTIPLY:
       case IES_DIVIDE:
       case IES_LPAREN:
-        // FIXME: We don't handle this type of unary minus, yet.
+        // FIXME: We don't handle this type of unary minus or not, yet.
         if ((PrevState == IES_PLUS || PrevState == IES_MINUS ||
             PrevState == IES_OR || PrevState == IES_AND ||
             PrevState == IES_LSHIFT || PrevState == IES_RSHIFT ||
             PrevState == IES_MULTIPLY || PrevState == IES_DIVIDE ||
-            PrevState == IES_LPAREN || PrevState == IES_LBRAC) &&
-            CurrState == IES_MINUS) {
+            PrevState == IES_LPAREN || PrevState == IES_LBRAC ||
+            PrevState == IES_NOT) &&
+            (CurrState == IES_MINUS || CurrState == IES_NOT)) {
           State = IES_ERROR;
           break;
         }
@@ -666,6 +697,8 @@ private:
                                unsigned &ErrorInfo,
                                bool MatchingInlineAsm) override;
 
+  virtual bool OmitRegisterFromClobberLists(unsigned RegNo) override;
+
   /// doSrcDstMatch - Returns true if operands are matching in their
   /// word size (%si and %di, %esi and %edi, etc.). Order depends on
   /// the parsing mode (Intel vs. AT&T).
@@ -696,6 +729,13 @@ private:
     setAvailableFeatures(FB);
     assert(mode == (STI.getFeatureBits() &
                     (X86::Mode64Bit | X86::Mode32Bit | X86::Mode16Bit)));
+  }
+
+  unsigned getPointerWidth() {
+    if (is16BitMode()) return 16;
+    if (is32BitMode()) return 32;
+    if (is64BitMode()) return 64;
+    llvm_unreachable("invalid mode");
   }
 
   bool isParsingIntelSyntax() {
@@ -949,15 +989,20 @@ std::unique_ptr<X86Operand> X86AsmParser::CreateMemForInlineAsm(
     unsigned SegReg, const MCExpr *Disp, unsigned BaseReg, unsigned IndexReg,
     unsigned Scale, SMLoc Start, SMLoc End, unsigned Size, StringRef Identifier,
     InlineAsmIdentifierInfo &Info) {
-  // If this is not a VarDecl then assume it is a FuncDecl or some other label
-  // reference.  We need an 'r' constraint here, so we need to create register
-  // operand to ensure proper matching.  Just pick a GPR based on the size of
-  // a pointer.
-  if (isa<MCSymbolRefExpr>(Disp) && !Info.IsVarDecl) {
-    unsigned RegNo =
-        is64BitMode() ? X86::RBX : (is32BitMode() ? X86::EBX : X86::BX);
-    return X86Operand::CreateReg(RegNo, Start, End, /*AddressOf=*/true,
-                                 SMLoc(), Identifier, Info.OpDecl);
+  // If we found a decl other than a VarDecl, then assume it is a FuncDecl or
+  // some other label reference.
+  if (isa<MCSymbolRefExpr>(Disp) && Info.OpDecl && !Info.IsVarDecl) {
+    // Insert an explicit size if the user didn't have one.
+    if (!Size) {
+      Size = getPointerWidth();
+      InstInfo->AsmRewrites->push_back(AsmRewrite(AOK_SizeDirective, Start,
+                                                  /*Len=*/0, Size));
+    }
+
+    // Create an absolute memory reference in order to match against
+    // instructions taking a PC relative operand.
+    return X86Operand::CreateMem(Disp, Start, End, Size, Identifier,
+                                 Info.OpDecl);
   }
 
   // We either have a direct symbol reference, or an offset from a symbol.  The
@@ -1141,6 +1186,7 @@ bool X86AsmParser::ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End) {
     }
     case AsmToken::Plus:    SM.onPlus(); break;
     case AsmToken::Minus:   SM.onMinus(); break;
+    case AsmToken::Tilde:   SM.onNot(); break;
     case AsmToken::Star:    SM.onStar(); break;
     case AsmToken::Slash:   SM.onDivide(); break;
     case AsmToken::Pipe:    SM.onOr(); break;
@@ -1516,14 +1562,14 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand() {
   if (Size) {
     Parser.Lex(); // Eat operand size (e.g., byte, word).
     if (Tok.getString() != "PTR" && Tok.getString() != "ptr")
-      return ErrorOperand(Start, "Expected 'PTR' or 'ptr' token!");
+      return ErrorOperand(Tok.getLoc(), "Expected 'PTR' or 'ptr' token!");
     Parser.Lex(); // Eat ptr.
   }
   Start = Tok.getLoc();
 
   // Immediate.
   if (getLexer().is(AsmToken::Integer) || getLexer().is(AsmToken::Minus) ||
-      getLexer().is(AsmToken::LParen)) {    
+      getLexer().is(AsmToken::Tilde) || getLexer().is(AsmToken::LParen)) {
     AsmToken StartTok = Tok;
     IntelExprStateMachine SM(/*Imm=*/0, /*StopOnLBrac=*/true,
                              /*AddImmPrefix=*/false);
@@ -1598,6 +1644,9 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseATTOperand() {
     if (getLexer().isNot(AsmToken::Colon))
       return X86Operand::CreateReg(RegNo, Start, End);
 
+    if (!X86MCRegisterClasses[X86::SEGMENT_REGRegClassID].contains(RegNo))
+      return ErrorOperand(Start, "invalid segment register");
+
     getParser().Lex(); // Eat the colon.
     return ParseMemOperand(RegNo, Start);
   }
@@ -1633,6 +1682,8 @@ bool X86AsmParser::HandleAVX512Operand(OperandVector &Operands,
         // Recognize only reasonable suffixes.
         const char *BroadcastPrimitive =
           StringSwitch<const char*>(getLexer().getTok().getIdentifier())
+            .Case("to2",  "{1to2}")
+            .Case("to4",  "{1to4}")
             .Case("to8",  "{1to8}")
             .Case("to16", "{1to16}")
             .Default(nullptr);
@@ -1841,8 +1892,10 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseMemOperand(unsigned SegReg,
     return nullptr;
   }
 
-  return X86Operand::CreateMem(SegReg, Disp, BaseReg, IndexReg, Scale,
-                               MemStart, MemEnd);
+  if (SegReg || BaseReg || IndexReg)
+    return X86Operand::CreateMem(SegReg, Disp, BaseReg, IndexReg, Scale,
+                                 MemStart, MemEnd);
+  return X86Operand::CreateMem(Disp, MemStart, MemEnd);
 }
 
 bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
@@ -2248,9 +2301,8 @@ static const char *getSubtargetFeatureName(unsigned Val);
 
 void X86AsmParser::EmitInstruction(MCInst &Inst, OperandVector &Operands,
                                    MCStreamer &Out) {
-  Instrumentation->InstrumentInstruction(Inst, Operands, getContext(), MII,
-                                         Out);
-  Out.EmitInstruction(Inst, STI);
+  Instrumentation->InstrumentAndEmitInstruction(Inst, Operands, getContext(),
+                                                MII, Out);
 }
 
 bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
@@ -2266,27 +2318,22 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   // FIXME: This should be replaced with a real .td file alias mechanism.
   // Also, MatchInstructionImpl should actually *do* the EmitInstruction
   // call.
-  if (Op.getToken() == "fstsw" || Op.getToken() == "fstcw" ||
-      Op.getToken() == "fstsww" || Op.getToken() == "fstcww" ||
-      Op.getToken() == "finit" || Op.getToken() == "fsave" ||
-      Op.getToken() == "fstenv" || Op.getToken() == "fclex") {
+  const char *Repl = StringSwitch<const char *>(Op.getToken())
+                         .Case("finit", "fninit")
+                         .Case("fsave", "fnsave")
+                         .Case("fstcw", "fnstcw")
+                         .Case("fstcww", "fnstcw")
+                         .Case("fstenv", "fnstenv")
+                         .Case("fstsw", "fnstsw")
+                         .Case("fstsww", "fnstsw")
+                         .Case("fclex", "fnclex")
+                         .Default(nullptr);
+  if (Repl) {
     MCInst Inst;
     Inst.setOpcode(X86::WAIT);
     Inst.setLoc(IDLoc);
     if (!MatchingInlineAsm)
       EmitInstruction(Inst, Operands, Out);
-
-    const char *Repl = StringSwitch<const char *>(Op.getToken())
-                           .Case("finit", "fninit")
-                           .Case("fsave", "fnsave")
-                           .Case("fstcw", "fnstcw")
-                           .Case("fstcww", "fnstcw")
-                           .Case("fstenv", "fnstenv")
-                           .Case("fstsw", "fnstsw")
-                           .Case("fstsww", "fnstsw")
-                           .Case("fclex", "fnclex")
-                           .Default(nullptr);
-    assert(Repl && "Unknown wait-prefixed instruction");
     Operands[0] = X86Operand::CreateToken(Repl, IDLoc);
   }
 
@@ -2354,34 +2401,18 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   const char *Suffixes = Base[0] != 'f' ? "bwlq" : "slt\0";
 
   // Check for the various suffix matches.
-  Tmp[Base.size()] = Suffixes[0];
   unsigned ErrorInfoIgnore;
   unsigned ErrorInfoMissingFeature = 0; // Init suppresses compiler warnings.
-  unsigned Match1, Match2, Match3, Match4;
+  unsigned Match[4];
 
-  Match1 = MatchInstructionImpl(Operands, Inst, ErrorInfoIgnore,
-                                MatchingInlineAsm, isParsingIntelSyntax());
-  // If this returned as a missing feature failure, remember that.
-  if (Match1 == Match_MissingFeature)
-    ErrorInfoMissingFeature = ErrorInfoIgnore;
-  Tmp[Base.size()] = Suffixes[1];
-  Match2 = MatchInstructionImpl(Operands, Inst, ErrorInfoIgnore,
-                                MatchingInlineAsm, isParsingIntelSyntax());
-  // If this returned as a missing feature failure, remember that.
-  if (Match2 == Match_MissingFeature)
-    ErrorInfoMissingFeature = ErrorInfoIgnore;
-  Tmp[Base.size()] = Suffixes[2];
-  Match3 = MatchInstructionImpl(Operands, Inst, ErrorInfoIgnore,
-                                MatchingInlineAsm, isParsingIntelSyntax());
-  // If this returned as a missing feature failure, remember that.
-  if (Match3 == Match_MissingFeature)
-    ErrorInfoMissingFeature = ErrorInfoIgnore;
-  Tmp[Base.size()] = Suffixes[3];
-  Match4 = MatchInstructionImpl(Operands, Inst, ErrorInfoIgnore,
-                                MatchingInlineAsm, isParsingIntelSyntax());
-  // If this returned as a missing feature failure, remember that.
-  if (Match4 == Match_MissingFeature)
-    ErrorInfoMissingFeature = ErrorInfoIgnore;
+  for (unsigned I = 0, E = array_lengthof(Match); I != E; ++I) {
+    Tmp.back() = Suffixes[I];
+    Match[I] = MatchInstructionImpl(Operands, Inst, ErrorInfoIgnore,
+                                  MatchingInlineAsm, isParsingIntelSyntax());
+    // If this returned as a missing feature failure, remember that.
+    if (Match[I] == Match_MissingFeature)
+      ErrorInfoMissingFeature = ErrorInfoIgnore;
+  }
 
   // Restore the old token.
   Op.setTokenValue(Base);
@@ -2390,8 +2421,7 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   // instruction will already have been filled in correctly, since the failing
   // matches won't have modified it).
   unsigned NumSuccessfulMatches =
-    (Match1 == Match_Success) + (Match2 == Match_Success) +
-    (Match3 == Match_Success) + (Match4 == Match_Success);
+      std::count(std::begin(Match), std::end(Match), Match_Success);
   if (NumSuccessfulMatches == 1) {
     Inst.setLoc(IDLoc);
     if (!MatchingInlineAsm)
@@ -2407,10 +2437,9 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   if (NumSuccessfulMatches > 1) {
     char MatchChars[4];
     unsigned NumMatches = 0;
-    if (Match1 == Match_Success) MatchChars[NumMatches++] = Suffixes[0];
-    if (Match2 == Match_Success) MatchChars[NumMatches++] = Suffixes[1];
-    if (Match3 == Match_Success) MatchChars[NumMatches++] = Suffixes[2];
-    if (Match4 == Match_Success) MatchChars[NumMatches++] = Suffixes[3];
+    for (unsigned I = 0, E = array_lengthof(Match); I != E; ++I)
+      if (Match[I] == Match_Success)
+        MatchChars[NumMatches++] = Suffixes[I];
 
     SmallString<126> Msg;
     raw_svector_ostream OS(Msg);
@@ -2431,8 +2460,7 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 
   // If all of the instructions reported an invalid mnemonic, then the original
   // mnemonic was invalid.
-  if ((Match1 == Match_MnemonicFail) && (Match2 == Match_MnemonicFail) &&
-      (Match3 == Match_MnemonicFail) && (Match4 == Match_MnemonicFail)) {
+  if (std::count(std::begin(Match), std::end(Match), Match_MnemonicFail) == 4) {
     if (!WasOriginallyInvalidOperand) {
       ArrayRef<SMRange> Ranges =
           MatchingInlineAsm ? EmptyRanges : Op.getLocRange();
@@ -2460,8 +2488,8 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 
   // If one instruction matched with a missing feature, report this as a
   // missing feature.
-  if ((Match1 == Match_MissingFeature) + (Match2 == Match_MissingFeature) +
-      (Match3 == Match_MissingFeature) + (Match4 == Match_MissingFeature) == 1){
+  if (std::count(std::begin(Match), std::end(Match),
+                 Match_MissingFeature) == 1) {
     std::string Msg = "instruction requires:";
     unsigned Mask = 1;
     for (unsigned i = 0; i < (sizeof(ErrorInfoMissingFeature)*8-1); ++i) {
@@ -2476,8 +2504,8 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 
   // If one instruction matched with an invalid operand, report this as an
   // operand failure.
-  if ((Match1 == Match_InvalidOperand) + (Match2 == Match_InvalidOperand) +
-      (Match3 == Match_InvalidOperand) + (Match4 == Match_InvalidOperand) == 1){
+  if (std::count(std::begin(Match), std::end(Match),
+                 Match_InvalidOperand) == 1) {
     Error(IDLoc, "invalid operand for instruction", EmptyRanges,
           MatchingInlineAsm);
     return true;
@@ -2489,6 +2517,9 @@ bool X86AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   return true;
 }
 
+bool X86AsmParser::OmitRegisterFromClobberLists(unsigned RegNo) {
+  return X86MCRegisterClasses[X86::SEGMENT_REGRegClassID].contains(RegNo);
+}
 
 bool X86AsmParser::ParseDirective(AsmToken DirectiveID) {
   StringRef IDVal = DirectiveID.getIdentifier();
@@ -2497,14 +2528,25 @@ bool X86AsmParser::ParseDirective(AsmToken DirectiveID) {
   else if (IDVal.startswith(".code"))
     return ParseDirectiveCode(IDVal, DirectiveID.getLoc());
   else if (IDVal.startswith(".att_syntax")) {
+    if (getLexer().isNot(AsmToken::EndOfStatement)) {
+      if (Parser.getTok().getString() == "prefix")
+        Parser.Lex();
+      else if (Parser.getTok().getString() == "noprefix")
+        return Error(DirectiveID.getLoc(), "'.att_syntax noprefix' is not "
+                                           "supported: registers must have a "
+                                           "'%' prefix in .att_syntax");
+    }
     getParser().setAssemblerDialect(0);
     return false;
   } else if (IDVal.startswith(".intel_syntax")) {
     getParser().setAssemblerDialect(1);
     if (getLexer().isNot(AsmToken::EndOfStatement)) {
-      // FIXME: Handle noprefix
       if (Parser.getTok().getString() == "noprefix")
         Parser.Lex();
+      else if (Parser.getTok().getString() == "prefix")
+        return Error(DirectiveID.getLoc(), "'.intel_syntax prefix' is not "
+                                           "supported: registers must not have "
+                                           "a '%' prefix in .intel_syntax");
     }
     return false;
   }

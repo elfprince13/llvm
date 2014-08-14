@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef X86INSTRUCTIONINFO_H
-#define X86INSTRUCTIONINFO_H
+#ifndef LLVM_LIB_TARGET_X86_X86INSTRINFO_H
+#define LLVM_LIB_TARGET_X86_X86INSTRINFO_H
 
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "X86RegisterInfo.h"
@@ -65,6 +65,11 @@ namespace X86 {
   /// \brief Return a set opcode for the given condition and whether it has
   /// a memory operand.
   unsigned getSETFromCond(CondCode CC, bool HasMemoryOperand = false);
+
+  /// \brief Return a cmov opcode for the given condition, register size in
+  /// bytes, and operand type.
+  unsigned getCMovFromCond(CondCode CC, unsigned RegBytes,
+                           bool HasMemoryOperand = false);
 
   // Turn CMov opcode into condition code.
   CondCode getCondFromCMovOpc(unsigned Opc);

@@ -32,7 +32,7 @@ namespace {
   ///
   class FAddendCoef {
   public:
-    // The constructor has to initialize a APFloat, which is uncessary for
+    // The constructor has to initialize a APFloat, which is unnecessary for
     // most addends which have coefficient either 1 or -1. So, the constructor
     // is expensive. In order to avoid the cost of the constructor, we should
     // reuse some instances whenever possible. The pre-created instances
@@ -954,24 +954,21 @@ bool InstCombiner::WillNotOverflowUnsignedAdd(Value *LHS, Value *RHS) {
     return true;
 
   return false;
- }
+}
 
 // Checks if any operand is negative and we can convert add to sub.
 // This function checks for following negative patterns
 //   ADD(XOR(OR(Z, NOT(C)), C)), 1) == NEG(AND(Z, C))
-//   TODO: ADD(XOR(AND(Z, ~C), ~C), 1) == NEG(OR(Z, C)) if C is even
-//   TODO: XOR(AND(Z, ~C), (~C + 1)) == NEG(OR(Z, C)) if C is odd
-Value *checkForNegativeOperand(BinaryOperator &I,
-                               InstCombiner::BuilderTy *Builder) {
+//   ADD(XOR(AND(Z, C), C), 1) == NEG(OR(Z, ~C))
+//   XOR(AND(Z, C), (C + 1)) == NEG(OR(Z, ~C)) if C is even
+static Value *checkForNegativeOperand(BinaryOperator &I,
+                                      InstCombiner::BuilderTy *Builder) {
   Value *LHS = I.getOperand(0), *RHS = I.getOperand(1);
 
-  // This function creates 2 instructions to replace ADD, we need at least one 
+  // This function creates 2 instructions to replace ADD, we need at least one
   // of LHS or RHS to have one use to ensure benefit in transform.
   if (!LHS->hasOneUse() && !RHS->hasOneUse())
     return nullptr;
-
-  bool IHasNSW = I.hasNoSignedWrap();
-  bool IHasNUW = I.hasNoUnsignedWrap();
 
   Value *X = nullptr, *Y = nullptr, *Z = nullptr;
   const APInt *C1 = nullptr, *C2 = nullptr;
@@ -985,31 +982,53 @@ Value *checkForNegativeOperand(BinaryOperator &I,
     if (match(RHS, m_Xor(m_Value(Y), m_APInt(C1))))
       std::swap(X, RHS);
 
-    // X = XOR(Y, C1), Y = OR(Z, C2), C2 = NOT(C1) ==> X == NOT(AND(Z, C1))
-    // ADD(ADD(X, 1), RHS) == ADD(X, ADD(RHS, 1)) == SUB(RHS, AND(Z, C1))
     if (match(X, m_Xor(m_Value(Y), m_APInt(C1)))) {
+      // X = XOR(Y, C1), Y = OR(Z, C2), C2 = NOT(C1) ==> X == NOT(AND(Z, C1))
+      // ADD(ADD(X, 1), RHS) == ADD(X, ADD(RHS, 1)) == SUB(RHS, AND(Z, C1))
       if (match(Y, m_Or(m_Value(Z), m_APInt(C2))) && (*C2 == ~(*C1))) {
         Value *NewAnd = Builder->CreateAnd(Z, *C1);
-        return Builder->CreateSub(RHS, NewAnd, "", IHasNUW, IHasNSW);
+        return Builder->CreateSub(RHS, NewAnd, "sub");
+      } else if (match(Y, m_And(m_Value(Z), m_APInt(C2))) && (*C1 == *C2)) {
+        // X = XOR(Y, C1), Y = AND(Z, C2), C2 == C1 ==> X == NOT(OR(Z, ~C1))
+        // ADD(ADD(X, 1), RHS) == ADD(X, ADD(RHS, 1)) == SUB(RHS, OR(Z, ~C1))
+        Value *NewOr = Builder->CreateOr(Z, ~(*C1));
+        return Builder->CreateSub(RHS, NewOr, "sub");
       }
     }
   }
 
+  // Restore LHS and RHS
+  LHS = I.getOperand(0);
+  RHS = I.getOperand(1);
+
+  // if XOR is on other side, swap
+  if (match(RHS, m_Xor(m_Value(Y), m_APInt(C1))))
+    std::swap(LHS, RHS);
+
+  // C2 is ODD
+  // LHS = XOR(Y, C1), Y = AND(Z, C2), C1 == (C2 + 1) => LHS == NEG(OR(Z, ~C2))
+  // ADD(LHS, RHS) == SUB(RHS, OR(Z, ~C2))
+  if (match(LHS, m_Xor(m_Value(Y), m_APInt(C1))))
+    if (C1->countTrailingZeros() == 0)
+      if (match(Y, m_And(m_Value(Z), m_APInt(C2))) && *C1 == (*C2 + 1)) {
+        Value *NewOr = Builder->CreateOr(Z, ~(*C2));
+        return Builder->CreateSub(RHS, NewOr, "sub");
+      }
   return nullptr;
 }
 
 Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
-  bool Changed = SimplifyAssociativeOrCommutative(I);
-  Value *LHS = I.getOperand(0), *RHS = I.getOperand(1);
+   bool Changed = SimplifyAssociativeOrCommutative(I);
+   Value *LHS = I.getOperand(0), *RHS = I.getOperand(1);
 
-  if (Value *V = SimplifyVectorOp(I))
-    return ReplaceInstUsesWith(I, V);
+   if (Value *V = SimplifyVectorOp(I))
+     return ReplaceInstUsesWith(I, V);
 
-  if (Value *V = SimplifyAddInst(LHS, RHS, I.hasNoSignedWrap(),
-                                 I.hasNoUnsignedWrap(), DL))
-    return ReplaceInstUsesWith(I, V);
+   if (Value *V = SimplifyAddInst(LHS, RHS, I.hasNoSignedWrap(),
+                                  I.hasNoUnsignedWrap(), DL))
+     return ReplaceInstUsesWith(I, V);
 
-  // (A*B)+(A*C) -> A*(B+C) etc
+   // (A*B)+(A*C) -> A*(B+C) etc
   if (Value *V = SimplifyUsingDistributiveLaws(I))
     return ReplaceInstUsesWith(I, V);
 
@@ -1126,29 +1145,6 @@ Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
     }
   }
 
-  // W*X + Y*Z --> W * (X+Z)  iff W == Y
-  {
-    Value *W, *X, *Y, *Z;
-    if (match(LHS, m_Mul(m_Value(W), m_Value(X))) &&
-        match(RHS, m_Mul(m_Value(Y), m_Value(Z)))) {
-      if (W != Y) {
-        if (W == Z) {
-          std::swap(Y, Z);
-        } else if (Y == X) {
-          std::swap(W, X);
-        } else if (X == Z) {
-          std::swap(Y, Z);
-          std::swap(W, X);
-        }
-      }
-
-      if (W == Y) {
-        Value *NewAdd = Builder->CreateAdd(X, Z, LHS->getName());
-        return BinaryOperator::CreateMul(W, NewAdd);
-      }
-    }
-  }
-
   if (Constant *CRHS = dyn_cast<Constant>(RHS)) {
     Value *X;
     if (match(LHS, m_Not(m_Value(X)))) // ~X + C --> (C-1) - X
@@ -1244,7 +1240,7 @@ Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
     }
   }
 
-  // Check for (x & y) + (x ^ y)
+  // (add (xor A, B) (and A, B)) --> (or A, B)
   {
     Value *A = nullptr, *B = nullptr;
     if (match(RHS, m_Xor(m_Value(A), m_Value(B))) &&
@@ -1256,6 +1252,28 @@ Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
         (match(RHS, m_And(m_Specific(A), m_Specific(B))) ||
          match(RHS, m_And(m_Specific(B), m_Specific(A)))))
       return BinaryOperator::CreateOr(A, B);
+  }
+
+  // (add (or A, B) (and A, B)) --> (add A, B)
+  {
+    Value *A = nullptr, *B = nullptr;
+    if (match(RHS, m_Or(m_Value(A), m_Value(B))) &&
+        (match(LHS, m_And(m_Specific(A), m_Specific(B))) ||
+         match(LHS, m_And(m_Specific(B), m_Specific(A))))) {
+      auto *New = BinaryOperator::CreateAdd(A, B);
+      New->setHasNoSignedWrap(I.hasNoSignedWrap());
+      New->setHasNoUnsignedWrap(I.hasNoUnsignedWrap());
+      return New;
+    }
+
+    if (match(LHS, m_Or(m_Value(A), m_Value(B))) &&
+        (match(RHS, m_And(m_Specific(A), m_Specific(B))) ||
+         match(RHS, m_And(m_Specific(B), m_Specific(A))))) {
+      auto *New = BinaryOperator::CreateAdd(A, B);
+      New->setHasNoSignedWrap(I.hasNoSignedWrap());
+      New->setHasNoUnsignedWrap(I.hasNoUnsignedWrap());
+      return New;
+    }
   }
 
   // TODO(jingyue): Consider WillNotOverflowSignedAdd and
@@ -1466,11 +1484,17 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
   if (Value *V = SimplifyUsingDistributiveLaws(I))
     return ReplaceInstUsesWith(I, V);
 
-  // If this is a 'B = x-(-A)', change to B = x+A.  This preserves NSW/NUW.
+  // If this is a 'B = x-(-A)', change to B = x+A.
   if (Value *V = dyn_castNegVal(Op1)) {
     BinaryOperator *Res = BinaryOperator::CreateAdd(Op0, V);
-    Res->setHasNoSignedWrap(I.hasNoSignedWrap());
-    Res->setHasNoUnsignedWrap(I.hasNoUnsignedWrap());
+
+    if (const auto *BO = dyn_cast<BinaryOperator>(Op1)) {
+      assert(BO->getOpcode() == Instruction::Sub &&
+             "Expected a subtraction operator!");
+      if (BO->hasNoSignedWrap() && I.hasNoSignedWrap())
+        Res->setHasNoSignedWrap(true);
+    }
+
     return Res;
   }
 
@@ -1557,28 +1581,15 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
       return BinaryOperator::CreateAnd(Op0,
                                   Builder->CreateNot(Y, Y->getName() + ".not"));
 
-    // 0 - (X sdiv C)  -> (X sdiv -C)
-    if (match(Op1, m_SDiv(m_Value(X), m_Constant(C))) &&
-        match(Op0, m_Zero()))
+    // 0 - (X sdiv C)  -> (X sdiv -C)  provided the negation doesn't overflow.
+    if (match(Op1, m_SDiv(m_Value(X), m_Constant(C))) && match(Op0, m_Zero()) &&
+        !C->isMinSignedValue())
       return BinaryOperator::CreateSDiv(X, ConstantExpr::getNeg(C));
 
     // 0 - (X << Y)  -> (-X << Y)   when X is freely negatable.
     if (match(Op1, m_Shl(m_Value(X), m_Value(Y))) && match(Op0, m_Zero()))
       if (Value *XNeg = dyn_castNegVal(X))
         return BinaryOperator::CreateShl(XNeg, Y);
-
-    // X - X*C --> X * (1-C)
-    if (match(Op1, m_Mul(m_Specific(Op0), m_Constant(CI)))) {
-      Constant *CP1 = ConstantExpr::getSub(ConstantInt::get(I.getType(),1), CI);
-      return BinaryOperator::CreateMul(Op0, CP1);
-    }
-
-    // X - X<<C --> X * (1-(1<<C))
-    if (match(Op1, m_Shl(m_Specific(Op0), m_Constant(CI)))) {
-      Constant *One = ConstantInt::get(I.getType(), 1);
-      C = ConstantExpr::getSub(One, ConstantExpr::getShl(One, CI));
-      return BinaryOperator::CreateMul(Op0, C);
-    }
 
     // X - A*-B -> X + A*B
     // X - -A*B -> X + A*B
@@ -1610,7 +1621,7 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
         match(Op1, m_Trunc(m_PtrToInt(m_Value(RHSOp)))))
       if (Value *Res = OptimizePointerDifference(LHSOp, RHSOp, I.getType()))
         return ReplaceInstUsesWith(I, Res);
-  }
+      }
 
   return nullptr;
 }

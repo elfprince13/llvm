@@ -20,6 +20,7 @@
 #define LLVM_CODEGEN_SELECTIONDAGNODES_H
 
 #include "llvm/ADT/iterator_range.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/STLExtras.h"
@@ -116,11 +117,13 @@ namespace ISD {
 /// of information is represented with the SDValue value type.
 ///
 class SDValue {
+  friend struct DenseMapInfo<SDValue>;
+
   SDNode *Node;       // The node defining the value we are using.
   unsigned ResNo;     // Which return value of the node we are using.
 public:
   SDValue() : Node(nullptr), ResNo(0) {}
-  SDValue(SDNode *node, unsigned resno) : Node(node), ResNo(resno) {}
+  SDValue(SDNode *node, unsigned resno);
 
   /// get the index which selects a specific result in the SDNode
   unsigned getResNo() const { return ResNo; }
@@ -141,6 +144,9 @@ public:
   }
   bool operator<(const SDValue &O) const {
     return std::tie(Node, ResNo) < std::tie(O.Node, O.ResNo);
+  }
+  LLVM_EXPLICIT operator bool() const {
+    return Node != nullptr;
   }
 
   SDValue getValue(unsigned R) const {
@@ -204,10 +210,14 @@ public:
 
 template<> struct DenseMapInfo<SDValue> {
   static inline SDValue getEmptyKey() {
-    return SDValue((SDNode*)-1, -1U);
+    SDValue V;
+    V.ResNo = -1U;
+    return V;
   }
   static inline SDValue getTombstoneKey() {
-    return SDValue((SDNode*)-1, 0);
+    SDValue V;
+    V.ResNo = -2U;
+    return V;
   }
   static unsigned getHashValue(const SDValue &Val) {
     return ((unsigned)((uintptr_t)Val.getNode() >> 4) ^
@@ -407,6 +417,16 @@ public:
     return NodeType >= ISD::FIRST_TARGET_MEMORY_OPCODE;
   }
 
+  /// Test if this node is a memory intrinsic (with valid pointer information).
+  /// INTRINSIC_W_CHAIN and INTRINSIC_VOID nodes are sometimes created for
+  /// non-memory intrinsics (with chains) that are not really instances of
+  /// MemSDNode. For such nodes, we need some extra state to determine the
+  /// proper classof relationship.
+  bool isMemIntrinsic() const {
+    return (NodeType == ISD::INTRINSIC_W_CHAIN ||
+            NodeType == ISD::INTRINSIC_VOID) && ((SubclassData >> 13) & 1);
+  }
+
   /// isMachineOpcode - Test if this node has a post-isel opcode, directly
   /// corresponding to a MachineInstr opcode.
   bool isMachineOpcode() const { return NodeType < 0; }
@@ -593,6 +613,7 @@ public:
   typedef SDUse* op_iterator;
   op_iterator op_begin() const { return OperandList; }
   op_iterator op_end() const { return OperandList+NumOperands; }
+  ArrayRef<SDUse> ops() const { return makeArrayRef(op_begin(), op_end()); }
 
   SDVTList getVTList() const {
     SDVTList X = { ValueList, NumValues };
@@ -872,6 +893,13 @@ public:
 
 // Define inline functions from the SDValue class.
 
+inline SDValue::SDValue(SDNode *node, unsigned resno)
+    : Node(node), ResNo(resno) {
+  assert((!Node || ResNo < Node->getNumValues()) &&
+         "Invalid result number for the given node!");
+  assert(ResNo < -2U && "Cannot use result numbers reserved for DenseMaps.");
+}
+
 inline unsigned SDValue::getOpcode() const {
   return Node->getOpcode();
 }
@@ -1083,8 +1111,8 @@ public:
   // Returns the offset from the location of the access.
   int64_t getSrcValueOffset() const { return MMO->getOffset(); }
 
-  /// Returns the TBAAInfo that describes the dereference.
-  const MDNode *getTBAAInfo() const { return MMO->getTBAAInfo(); }
+  /// Returns the AA info that describes the dereference.
+  AAMDNodes getAAInfo() const { return MMO->getAAInfo(); }
 
   /// Returns the Ranges that describes the dereference.
   const MDNode *getRanges() const { return MMO->getRanges(); }
@@ -1140,6 +1168,7 @@ public:
            N->getOpcode() == ISD::ATOMIC_LOAD_UMAX    ||
            N->getOpcode() == ISD::ATOMIC_LOAD         ||
            N->getOpcode() == ISD::ATOMIC_STORE        ||
+           N->isMemIntrinsic()                        ||
            N->isTargetMemoryOpcode();
   }
 };
@@ -1268,14 +1297,14 @@ public:
                      ArrayRef<SDValue> Ops, EVT MemoryVT,
                      MachineMemOperand *MMO)
     : MemSDNode(Opc, Order, dl, VTs, Ops, MemoryVT, MMO) {
+    SubclassData |= 1u << 13;
   }
 
   // Methods to support isa and dyn_cast
   static bool classof(const SDNode *N) {
     // We lower some target intrinsics to their target opcode
     // early a node with a target opcode can be of this class
-    return N->getOpcode() == ISD::INTRINSIC_W_CHAIN ||
-           N->getOpcode() == ISD::INTRINSIC_VOID ||
+    return N->isMemIntrinsic()             ||
            N->getOpcode() == ISD::PREFETCH ||
            N->isTargetMemoryOpcode();
   }
@@ -1579,11 +1608,27 @@ public:
                        unsigned MinSplatBits = 0,
                        bool isBigEndian = false) const;
 
-  /// getConstantSplatValue - Check if this is a constant splat, and if so,
-  /// return the splat value only if it is a ConstantSDNode. Otherwise
-  /// return nullptr. This is a simpler form of isConstantSplat.
-  /// Get the constant splat only if you care about the splat value.
-  ConstantSDNode *getConstantSplatValue() const;
+  /// \brief Returns the splatted value or a null value if this is not a splat.
+  ///
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  SDValue getSplatValue(BitVector *UndefElements = nullptr) const;
+
+  /// \brief Returns the splatted constant or null if this is not a constant
+  /// splat.
+  ///
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  ConstantSDNode *
+  getConstantSplatNode(BitVector *UndefElements = nullptr) const;
+
+  /// \brief Returns the splatted constant FP or null if this is not a constant
+  /// FP splat.
+  ///
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  ConstantFPSDNode *
+  getConstantFPSplatNode(BitVector *UndefElements = nullptr) const;
 
   bool isConstant() const;
 

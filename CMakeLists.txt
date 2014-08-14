@@ -26,7 +26,7 @@ set(CMAKE_MODULE_PATH
   )
 
 set(LLVM_VERSION_MAJOR 3)
-set(LLVM_VERSION_MINOR 5)
+set(LLVM_VERSION_MINOR 6)
 set(LLVM_VERSION_PATCH 0)
 
 if (NOT PACKAGE_VERSION)
@@ -114,6 +114,12 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" uppercase_CMAKE_BUILD_TYPE)
 # They are used as destination of target generators.
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib)
+if(WIN32 OR CYGWIN)
+  # DLL platform -- put DLLs into bin.
+  set(LLVM_SHLIB_OUTPUT_INTDIR ${LLVM_RUNTIME_OUTPUT_INTDIR})
+else()
+  set(LLVM_SHLIB_OUTPUT_INTDIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
+endif()
 
 # Each of them corresponds to llvm-config's.
 set(LLVM_TOOLS_BINARY_DIR ${LLVM_RUNTIME_OUTPUT_INTDIR}) # --bindir
@@ -455,6 +461,7 @@ else(UNIX)
     set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
     if (${CMAKE_SYSTEM_NAME} MATCHES FreeBSD)
       set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,origin")
+      set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,origin")
     endif()
   endif(NOT DEFINED CMAKE_INSTALL_RPATH)
 endif()
@@ -499,7 +506,6 @@ add_subdirectory(lib)
 
 if( LLVM_INCLUDE_UTILS )
   add_subdirectory(utils/FileCheck)
-  add_subdirectory(utils/FileUpdate)
   add_subdirectory(utils/PerfectShuffle)
   add_subdirectory(utils/count)
   add_subdirectory(utils/not)

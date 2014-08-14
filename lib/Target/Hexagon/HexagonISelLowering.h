@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef Hexagon_ISELLOWERING_H
-#define Hexagon_ISELLOWERING_H
+#ifndef LLVM_LIB_TARGET_HEXAGON_HEXAGONISELLOWERING_H
+#define LLVM_LIB_TARGET_HEXAGON_HEXAGONISELLOWERING_H
 
 #include "Hexagon.h"
 #include "llvm/CodeGen/CallingConvLower.h"
@@ -74,8 +74,8 @@ namespace llvm {
                               unsigned& RetSize) const;
 
   public:
-    HexagonTargetMachine &TM;
-    explicit HexagonTargetLowering(HexagonTargetMachine &targetmachine);
+    const TargetMachine &TM;
+    explicit HexagonTargetLowering(const TargetMachine &targetmachine);
 
     /// IsEligibleForTailCallOptimization - Check whether the call is eligible
     /// for tail call optimization. Targets which want to do tail call

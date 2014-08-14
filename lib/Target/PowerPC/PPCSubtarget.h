@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef POWERPCSUBTARGET_H
-#define POWERPCSUBTARGET_H
+#ifndef LLVM_LIB_TARGET_POWERPC_PPCSUBTARGET_H
+#define LLVM_LIB_TARGET_POWERPC_PPCSUBTARGET_H
 
 #include "PPCFrameLowering.h"
 #include "PPCInstrInfo.h"
@@ -56,6 +56,7 @@ namespace PPC {
     DIR_PWR6,
     DIR_PWR6X,
     DIR_PWR7,
+    DIR_PWR8,
     DIR_64
   };
 }
@@ -65,6 +66,12 @@ class TargetMachine;
 
 class PPCSubtarget : public PPCGenSubtargetInfo {
 protected:
+  /// TargetTriple - What processor and OS we're targeting.
+  Triple TargetTriple;
+
+  // Calculates type size & alignment
+  const DataLayout DL;
+
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
   unsigned StackAlignment;
@@ -82,6 +89,7 @@ protected:
   bool UseCRBits;
   bool IsPPC64;
   bool HasAltivec;
+  bool HasSPE;
   bool HasQPX;
   bool HasVSX;
   bool HasFCPSGN;
@@ -96,20 +104,25 @@ protected:
   bool HasPOPCNTD;
   bool HasLDBRX;
   bool IsBookE;
+  bool IsE500;
+  bool IsPPC4xx;
+  bool IsPPC6xx;
   bool DeprecatedMFTB;
   bool DeprecatedDST;
   bool HasLazyResolverStubs;
   bool IsJITCodeModel;
   bool IsLittleEndian;
 
-  /// TargetTriple - What processor and OS we're targeting.
-  Triple TargetTriple;
-
   /// OptLevel - What default optimization level we're emitting code for.
   CodeGenOpt::Level OptLevel;
 
+  enum {
+    PPC_ABI_UNKNOWN,
+    PPC_ABI_ELFv1,
+    PPC_ABI_ELFv2
+  } TargetABI;
+
   PPCFrameLowering FrameLowering;
-  const DataLayout DL;
   PPCInstrInfo InstrInfo;
   PPCJITInfo JITInfo;
   PPCTargetLowering TLInfo;
@@ -120,7 +133,7 @@ public:
   /// of the specified triple.
   ///
   PPCSubtarget(const std::string &TT, const std::string &CPU,
-               const std::string &FS, PPCTargetMachine &TM, bool is64Bit,
+               const std::string &FS, PPCTargetMachine &TM,
                CodeGenOpt::Level OptLevel);
 
   /// ParseSubtargetFeatures - Parses features string setting specified
@@ -142,14 +155,25 @@ public:
 
   /// getInstrItins - Return the instruction itineraries based on subtarget
   /// selection.
-  const InstrItineraryData &getInstrItineraryData() const { return InstrItins; }
+  const InstrItineraryData *getInstrItineraryData() const override {
+    return &InstrItins;
+  }
 
-  const PPCFrameLowering *getFrameLowering() const { return &FrameLowering; }
-  const DataLayout *getDataLayout() const { return &DL; }
-  const PPCInstrInfo *getInstrInfo() const { return &InstrInfo; }
-  PPCJITInfo *getJITInfo() { return &JITInfo; }
-  const PPCTargetLowering *getTargetLowering() const { return &TLInfo; }
-  const PPCSelectionDAGInfo *getSelectionDAGInfo() const { return &TSInfo; }
+  const PPCFrameLowering *getFrameLowering() const override {
+    return &FrameLowering;
+  }
+  const DataLayout *getDataLayout() const override { return &DL; }
+  const PPCInstrInfo *getInstrInfo() const override { return &InstrInfo; }
+  PPCJITInfo *getJITInfo() override { return &JITInfo; }
+  const PPCTargetLowering *getTargetLowering() const override {
+    return &TLInfo;
+  }
+  const PPCSelectionDAGInfo *getSelectionDAGInfo() const override {
+    return &TSInfo;
+  }
+  const PPCRegisterInfo *getRegisterInfo() const override {
+    return &getInstrInfo()->getRegisterInfo();
+  }
 
   /// initializeSubtargetDependencies - Initializes using a CPU and feature string
   /// so that we can use initializer lists for subtarget initialization.
@@ -204,6 +228,7 @@ public:
   bool hasFPRND() const { return HasFPRND; }
   bool hasFPCVT() const { return HasFPCVT; }
   bool hasAltivec() const { return HasAltivec; }
+  bool hasSPE() const { return HasSPE; }
   bool hasQPX() const { return HasQPX; }
   bool hasVSX() const { return HasVSX; }
   bool hasMFOCRF() const { return HasMFOCRF; }
@@ -211,6 +236,9 @@ public:
   bool hasPOPCNTD() const { return HasPOPCNTD; }
   bool hasLDBRX() const { return HasLDBRX; }
   bool isBookE() const { return IsBookE; }
+  bool isPPC4xx() const { return IsPPC4xx; }
+  bool isPPC6xx() const { return IsPPC6xx; }
+  bool isE500() const { return IsE500; }
   bool isDeprecatedMFTB() const { return DeprecatedMFTB; }
   bool isDeprecatedDST() const { return DeprecatedDST; }
 
@@ -221,18 +249,22 @@ public:
   /// isBGQ - True if this is a BG/Q platform.
   bool isBGQ() const { return TargetTriple.getVendor() == Triple::BGQ; }
 
+  bool isTargetELF() const { return TargetTriple.isOSBinFormatELF(); }
+  bool isTargetMachO() const { return TargetTriple.isOSBinFormatMachO(); }
+
   bool isDarwinABI() const { return isDarwin(); }
   bool isSVR4ABI() const { return !isDarwin(); }
-
-  /// enablePostRAScheduler - True at 'More' optimization.
-  bool enablePostRAScheduler(CodeGenOpt::Level OptLevel,
-                             TargetSubtargetInfo::AntiDepBreakMode& Mode,
-                             RegClassVector& CriticalPathRCs) const override;
+  bool isELFv2ABI() const { return TargetABI == PPC_ABI_ELFv2; }
 
   bool enableEarlyIfConversion() const override { return hasISEL(); }
 
   // Scheduling customization.
   bool enableMachineScheduler() const override;
+  // This overrides the PostRAScheduler bit in the SchedModel for each CPU.
+  bool enablePostMachineScheduler() const override;
+  AntiDepBreakMode getAntiDepBreakMode() const override;
+  void getCriticalPathRCs(RegClassVector &CriticalPathRCs) const override;
+
   void overrideSchedPolicy(MachineSchedPolicy &Policy,
                            MachineInstr *begin,
                            MachineInstr *end,
