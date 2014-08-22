@@ -292,11 +292,13 @@ ObjectFileCoverageMappingReader::ObjectFileCoverageMappingReader(
 ObjectFileCoverageMappingReader::ObjectFileCoverageMappingReader(
     std::unique_ptr<MemoryBuffer> &ObjectBuffer, sys::fs::file_magic Type)
     : CurrentRecord(0) {
-  auto File = llvm::object::ObjectFile::createObjectFile(ObjectBuffer, Type);
+  auto File = object::ObjectFile::createObjectFile(
+      ObjectBuffer->getMemBufferRef(), Type);
   if (!File)
     error(File.getError());
   else
-    Object = std::move(File.get());
+    Object = OwningBinary<ObjectFile>(std::move(File.get()),
+                                      std::move(ObjectBuffer));
 }
 
 namespace {
@@ -306,6 +308,7 @@ template <typename IntPtrT> struct CoverageMappingFunctionRecord {
   IntPtrT FunctionNamePtr;
   uint32_t FunctionNameSize;
   uint32_t CoverageMappingSize;
+  uint64_t FunctionHash;
 };
 
 /// \brief The coverage mapping data for a single translation unit.
@@ -420,8 +423,8 @@ std::error_code readCoverageMappingData(
                                           FunctionName))
         return Err;
       Records.push_back(ObjectFileCoverageMappingReader::ProfileMappingRecord(
-          Version, FunctionName, Mapping, FilenamesBegin,
-          Filenames.size() - FilenamesBegin));
+          Version, FunctionName, MappingRecord.FunctionHash, Mapping,
+          FilenamesBegin, Filenames.size() - FilenamesBegin));
     }
   }
 
@@ -429,16 +432,17 @@ std::error_code readCoverageMappingData(
 }
 
 std::error_code ObjectFileCoverageMappingReader::readHeader() {
-  if (!Object)
+  ObjectFile *OF = Object.getBinary().get();
+  if (!OF)
     return getError();
-  auto BytesInAddress = Object->getBytesInAddress();
+  auto BytesInAddress = OF->getBytesInAddress();
   if (BytesInAddress != 4 && BytesInAddress != 8)
     return error(instrprof_error::malformed);
 
   // Look for the sections that we are interested in.
   int FoundSectionCount = 0;
   SectionRef ProfileNames, CoverageMapping;
-  for (const auto &Section : Object->sections()) {
+  for (const auto &Section : OF->sections()) {
     StringRef Name;
     if (auto Err = Section.getName(Name))
       return Err;
@@ -482,6 +486,7 @@ ObjectFileCoverageMappingReader::readNextRecord(CoverageMappingRecord &Record) {
       FunctionsFilenames, Expressions, MappingRegions);
   if (auto Err = Reader.read(Record))
     return Err;
+  Record.FunctionHash = R.FunctionHash;
   ++CurrentRecord;
   return success();
 }
