@@ -25,6 +25,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
@@ -307,7 +308,7 @@ bool TargetInstrInfo::getStackSlotRange(const TargetRegisterClass *RC,
 
   assert(RC->getSize() >= (Offset + Size) && "bad subregister range");
 
-  if (!TM->getSubtargetImpl()->getDataLayout()->isLittleEndian()) {
+  if (!TM->getDataLayout()->isLittleEndian()) {
     Offset = RC->getSize() - (Offset + Size);
   }
   return true;
@@ -370,6 +371,10 @@ static const TargetRegisterClass *canFoldCopy(const MachineInstr *MI,
 
   // FIXME: Allow folding when register classes are memory compatible.
   return nullptr;
+}
+
+void TargetInstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
+  llvm_unreachable("Not a MachO target");
 }
 
 bool TargetInstrInfo::
@@ -640,6 +645,28 @@ isReallyTriviallyReMaterializableGeneric(const MachineInstr *MI,
   return true;
 }
 
+int TargetInstrInfo::getSPAdjust(const MachineInstr *MI) const {
+  const MachineFunction *MF = MI->getParent()->getParent();
+  const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
+  bool StackGrowsDown =
+    TFI->getStackGrowthDirection() == TargetFrameLowering::StackGrowsDown;
+
+  int FrameSetupOpcode = getCallFrameSetupOpcode();
+  int FrameDestroyOpcode = getCallFrameDestroyOpcode();
+
+  if (MI->getOpcode() != FrameSetupOpcode &&
+      MI->getOpcode() != FrameDestroyOpcode)
+    return 0;
+ 
+  int SPAdj = MI->getOperand(0).getImm();
+
+  if ((!StackGrowsDown && MI->getOpcode() == FrameSetupOpcode) ||
+       (StackGrowsDown && MI->getOpcode() == FrameDestroyOpcode))
+    SPAdj = -SPAdj;
+
+  return SPAdj;
+}
+
 /// isSchedulingBoundary - Test if the given instruction should be
 /// considered a scheduling boundary. This primarily includes labels
 /// and terminators.
@@ -746,14 +773,14 @@ TargetInstrInfo::getNumMicroOps(const InstrItineraryData *ItinData,
 }
 
 /// Return the default expected latency for a def based on it's opcode.
-unsigned TargetInstrInfo::defaultDefLatency(const MCSchedModel *SchedModel,
+unsigned TargetInstrInfo::defaultDefLatency(const MCSchedModel &SchedModel,
                                             const MachineInstr *DefMI) const {
   if (DefMI->isTransient())
     return 0;
   if (DefMI->mayLoad())
-    return SchedModel->LoadLatency;
+    return SchedModel.LoadLatency;
   if (isHighLatencyDef(DefMI->getOpcode()))
-    return SchedModel->HighLatency;
+    return SchedModel.HighLatency;
   return 1;
 }
 

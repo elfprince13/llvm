@@ -34,7 +34,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
@@ -602,8 +601,7 @@ static bool ProfitableToMerge(MachineBasicBlock *MBB1,
   // instructions that would be deleted in the merge.
   MachineFunction *MF = MBB1->getParent();
   if (EffectiveTailLen >= 2 &&
-      MF->getFunction()->getAttributes().
-        hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize) &&
+      MF->getFunction()->hasFnAttribute(Attribute::OptimizeForSize) &&
       (I1 == MBB1->begin() || I2 == MBB2->begin()))
     return true;
 
@@ -917,7 +915,7 @@ bool BranchFolder::TailMergeBlocks(MachineFunction &MF) {
         continue;
 
       // Visit each predecessor only once.
-      if (!UniquePreds.insert(PBB))
+      if (!UniquePreds.insert(PBB).second)
         continue;
 
       // Skip blocks which may jump to a landing pad. Can't tail merge these.

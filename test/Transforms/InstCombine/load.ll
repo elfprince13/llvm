@@ -1,7 +1,9 @@
 ; RUN: opt -instcombine -S < %s | FileCheck %s
+; RUN: opt -passes=instcombine -S < %s | FileCheck %s
 
 ; This test makes sure that these instructions are properly eliminated.
 
+target datalayout = "e-m:e-p:64:64:64-i64:64-f80:128-n8:16:32:64-S128"
 
 @X = constant i32 42		; <i32*> [#uses=2]
 @X2 = constant i32 47		; <i32*> [#uses=1]
@@ -117,4 +119,85 @@ define i32 @test12(i32* %P) {
 define <16 x i8> @test13(<2 x i64> %x) {
   %tmp = load <16 x i8>* bitcast ([4 x i32]* @GLOBAL to <16 x i8>*)
   ret <16 x i8> %tmp
+}
+
+define i8 @test14(i8 %x, i32 %y) {
+; This test must not have the store of %x forwarded to the load -- there is an
+; intervening store if %y. However, the intervening store occurs with a different
+; type and size and to a different pointer value. This is ensuring that none of
+; those confuse the analysis into thinking that the second store does not alias
+; the first.
+; CHECK-LABEL: @test14(
+; CHECK:         %[[R:.*]] = load i8*
+; CHECK-NEXT:    ret i8 %[[R]]
+  %a = alloca i32
+  %a.i8 = bitcast i32* %a to i8*
+  store i8 %x, i8* %a.i8
+  store i32 %y, i32* %a
+  %r = load i8* %a.i8
+  ret i8 %r
+}
+
+@test15_global = external global i32
+
+define i8 @test15(i8 %x, i32 %y) {
+; Same test as @test14 essentially, but using a global instead of an alloca.
+; CHECK-LABEL: @test15(
+; CHECK:         %[[R:.*]] = load i8*
+; CHECK-NEXT:    ret i8 %[[R]]
+  %g.i8 = bitcast i32* @test15_global to i8*
+  store i8 %x, i8* %g.i8
+  store i32 %y, i32* @test15_global
+  %r = load i8* %g.i8
+  ret i8 %r
+}
+
+define void @test16(i8* %x, i8* %a, i8* %b, i8* %c) {
+; Check that we canonicalize loads which are only stored to use integer types
+; when there is a valid integer type.
+; CHECK-LABEL: @test16(
+; CHECK: %[[L1:.*]] = load i32*
+; CHECK-NOT: load
+; CHECK: store i32 %[[L1]], i32*
+; CHECK: store i32 %[[L1]], i32*
+; CHECK-NOT: store
+; CHECK: %[[L1:.*]] = load i32*
+; CHECK-NOT: load
+; CHECK: store i32 %[[L1]], i32*
+; CHECK: store i32 %[[L1]], i32*
+; CHECK-NOT: store
+; CHECK: ret
+
+entry:
+  %x.cast = bitcast i8* %x to float*
+  %a.cast = bitcast i8* %a to float*
+  %b.cast = bitcast i8* %b to float*
+  %c.cast = bitcast i8* %c to i32*
+
+  %x1 = load float* %x.cast
+  store float %x1, float* %a.cast
+  store float %x1, float* %b.cast
+
+  %x2 = load float* %x.cast
+  store float %x2, float* %b.cast
+  %x2.cast = bitcast float %x2 to i32
+  store i32 %x2.cast, i32* %c.cast
+
+  ret void
+}
+
+define void @test17(i8** %x, i8 %y) {
+; Check that in cases similar to @test16 we don't try to rewrite a load when
+; its only use is a store but it is used as the pointer to that store rather
+; than the value.
+;
+; CHECK-LABEL: @test17(
+; CHECK: %[[L:.*]] = load i8**
+; CHECK: store i8 %y, i8* %[[L]]
+
+entry:
+  %x.load = load i8** %x
+  store i8 %y, i8* %x.load
+
+  ret void
 }

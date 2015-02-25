@@ -184,12 +184,12 @@ LLVMBool LLVMCreateMCJITCompilerForModule(
   EngineBuilder builder(std::unique_ptr<Module>(unwrap(M)));
   builder.setEngineKind(EngineKind::JIT)
          .setErrorStr(&Error)
-         .setUseMCJIT(true)
          .setOptLevel((CodeGenOpt::Level)options.OptLevel)
          .setCodeModel(unwrap(options.CodeModel))
          .setTargetOptions(targetOptions);
   if (options.MCJMM)
-    builder.setMCJITMemoryManager(unwrap(options.MCJMM));
+    builder.setMCJITMemoryManager(
+      std::unique_ptr<RTDyldMemoryManager>(unwrap(options.MCJMM)));
   if (ExecutionEngine *JIT = builder.create()) {
     *OutJIT = wrap(JIT);
     return 0;
@@ -267,7 +267,6 @@ LLVMGenericValueRef LLVMRunFunction(LLVMExecutionEngineRef EE, LLVMValueRef F,
 }
 
 void LLVMFreeMachineCodeForFunction(LLVMExecutionEngineRef EE, LLVMValueRef F) {
-  unwrap(EE)->freeMachineCodeForFunction(unwrap<Function>(F));
 }
 
 void LLVMAddModule(LLVMExecutionEngineRef EE, LLVMModuleRef M){
@@ -306,7 +305,7 @@ LLVMBool LLVMFindFunction(LLVMExecutionEngineRef EE, const char *Name,
 
 void *LLVMRecompileAndRelinkFunction(LLVMExecutionEngineRef EE,
                                      LLVMValueRef Fn) {
-  return unwrap(EE)->recompileAndRelinkFunction(unwrap<Function>(Fn));
+  return nullptr;
 }
 
 LLVMTargetDataRef LLVMGetExecutionEngineTargetData(LLVMExecutionEngineRef EE) {
@@ -327,6 +326,14 @@ void *LLVMGetPointerToGlobal(LLVMExecutionEngineRef EE, LLVMValueRef Global) {
   unwrap(EE)->finalizeObject();
   
   return unwrap(EE)->getPointerToGlobal(unwrap<GlobalValue>(Global));
+}
+
+uint64_t LLVMGetGlobalValueAddress(LLVMExecutionEngineRef EE, const char *Name) {
+  return unwrap(EE)->getGlobalValueAddress(Name);
+}
+
+uint64_t LLVMGetFunctionAddress(LLVMExecutionEngineRef EE, const char *Name) {
+  return unwrap(EE)->getFunctionAddress(Name);
 }
 
 /*===-- Operations on memory managers -------------------------------------===*/

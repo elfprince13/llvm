@@ -16,6 +16,7 @@
 #define LLVM_LIB_TARGET_R600_SIMACHINEFUNCTIONINFO_H
 
 #include "AMDGPUMachineFunction.h"
+#include "SIRegisterInfo.h"
 #include <map>
 
 namespace llvm {
@@ -26,6 +27,10 @@ class MachineRegisterInfo;
 /// tells the hardware which interpolation parameters to load.
 class SIMachineFunctionInfo : public AMDGPUMachineFunction {
   void anchor() override;
+
+  unsigned TIDReg;
+  bool HasSpilledVGPRs;
+
 public:
 
   struct SpilledReg {
@@ -44,6 +49,15 @@ public:
   unsigned PSInputAddr;
   unsigned NumUserSGPRs;
   std::map<unsigned, unsigned> LaneVGPRs;
+  unsigned LDSWaveSpillSize;
+  unsigned ScratchOffsetReg;
+  bool hasCalculatedTID() const { return TIDReg != AMDGPU::NoRegister; };
+  unsigned getTIDReg() const { return TIDReg; };
+  void setTIDReg(unsigned Reg) { TIDReg = Reg; }
+  bool hasSpilledVGPRs() const { return HasSpilledVGPRs; }
+  void setHasSpilledVGPRs(bool Spill = true) { HasSpilledVGPRs = Spill; }
+
+  unsigned getMaximumWorkGroupSize(const MachineFunction &MF) const;
 };
 
 } // End namespace llvm

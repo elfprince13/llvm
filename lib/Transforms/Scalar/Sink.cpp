@@ -50,9 +50,9 @@ namespace {
       FunctionPass::getAnalysisUsage(AU);
       AU.addRequired<AliasAnalysis>();
       AU.addRequired<DominatorTreeWrapperPass>();
-      AU.addRequired<LoopInfo>();
+      AU.addRequired<LoopInfoWrapperPass>();
       AU.addPreserved<DominatorTreeWrapperPass>();
-      AU.addPreserved<LoopInfo>();
+      AU.addPreserved<LoopInfoWrapperPass>();
     }
   private:
     bool ProcessBlock(BasicBlock &BB);
@@ -64,7 +64,7 @@ namespace {
 
 char Sinking::ID = 0;
 INITIALIZE_PASS_BEGIN(Sinking, "sink", "Code sinking", false, false)
-INITIALIZE_PASS_DEPENDENCY(LoopInfo)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
 INITIALIZE_PASS_END(Sinking, "sink", "Code sinking", false, false)
@@ -98,7 +98,7 @@ bool Sinking::AllUsesDominatedByBlock(Instruction *Inst,
 
 bool Sinking::runOnFunction(Function &F) {
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-  LI = &getAnalysis<LoopInfo>();
+  LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   AA = &getAnalysis<AliasAnalysis>();
   DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
   DL = DLP ? &DLP->getDataLayout() : nullptr;
@@ -166,9 +166,8 @@ static bool isSafeToMove(Instruction *Inst, AliasAnalysis *AA,
 
   if (LoadInst *L = dyn_cast<LoadInst>(Inst)) {
     AliasAnalysis::Location Loc = AA->getLocation(L);
-    for (SmallPtrSet<Instruction *, 8>::iterator I = Stores.begin(),
-         E = Stores.end(); I != E; ++I)
-      if (AA->getModRefInfo(*I, Loc) & AliasAnalysis::Mod)
+    for (Instruction *S : Stores)
+      if (AA->getModRefInfo(S, Loc) & AliasAnalysis::Mod)
         return false;
   }
 

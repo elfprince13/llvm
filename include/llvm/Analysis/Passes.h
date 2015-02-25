@@ -66,6 +66,13 @@ namespace llvm {
 
   //===--------------------------------------------------------------------===//
   //
+  // createCFLAliasAnalysisPass - This pass implements a set-based approach to
+  // alias analysis.
+  //
+  ImmutablePass *createCFLAliasAnalysisPass();
+
+  //===--------------------------------------------------------------------===//
+  //
   /// createLibCallAliasAnalysisPass - Create an alias analysis pass that knows
   /// about the semantics of a set of libcalls specified by LCI.  The newly
   /// constructed pass takes ownership of the pointer that is provided.
@@ -99,6 +106,8 @@ namespace llvm {
   // alias analysis.
   //
   ImmutablePass *createObjCARCAliasAnalysisPass();
+
+  FunctionPass *createPAEvalPass();
 
   //===--------------------------------------------------------------------===//
   //
@@ -153,6 +162,14 @@ namespace llvm {
   // createJumpInstrTableInfoPass - This creates a pass that stores information
   // about the jump tables created by JumpInstrTables
   ImmutablePass *createJumpInstrTableInfoPass();
+
+  //===--------------------------------------------------------------------===//
+  //
+  // createMemDerefPrinter - This pass collects memory dereferenceability
+  // information and prints it with -analyze.
+  //
+  FunctionPass *createMemDerefPrinter();
+
 }
 
 #endif

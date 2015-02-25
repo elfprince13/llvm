@@ -28,6 +28,7 @@ class StringRef;
 ///
 class MCSubtargetInfo {
   std::string TargetTriple;            // Target triple
+  std::string CPU; // CPU being targeted.
   ArrayRef<SubtargetFeatureKV> ProcFeatures;  // Processor feature list
   ArrayRef<SubtargetFeatureKV> ProcDesc;  // Processor descriptions
 
@@ -36,7 +37,7 @@ class MCSubtargetInfo {
   const MCWriteProcResEntry *WriteProcResTable;
   const MCWriteLatencyEntry *WriteLatencyTable;
   const MCReadAdvanceEntry *ReadAdvanceTable;
-  const MCSchedModel *CPUSchedModel;
+  MCSchedModel CPUSchedModel;
 
   const InstrStage *Stages;            // Instruction itinerary stages
   const unsigned *OperandCycles;       // Itinerary operand cycles
@@ -57,6 +58,11 @@ public:
   /// getTargetTriple - Return the target triple string.
   StringRef getTargetTriple() const {
     return TargetTriple;
+  }
+
+  /// getCPU - Return the CPU string.
+  StringRef getCPU() const {
+    return CPU;
   }
 
   /// getFeatureBits - Return the feature bits.
@@ -86,11 +92,11 @@ public:
 
   /// getSchedModelForCPU - Get the machine model of a CPU.
   ///
-  const MCSchedModel *getSchedModelForCPU(StringRef CPU) const;
+  MCSchedModel getSchedModelForCPU(StringRef CPU) const;
 
   /// getSchedModel - Get the machine model for this subtarget's CPU.
   ///
-  const MCSchedModel *getSchedModel() const { return CPUSchedModel; }
+  const MCSchedModel &getSchedModel() const { return CPUSchedModel; }
 
   /// Return an iterator at the first process resource consumed by the given
   /// scheduling class.
@@ -136,6 +142,15 @@ public:
 
   /// Initialize an InstrItineraryData instance.
   void initInstrItins(InstrItineraryData &InstrItins) const;
+
+  /// Check whether the CPU string is valid.
+  bool isCPUStringValid(StringRef CPU) {
+    auto Found = std::find_if(ProcDesc.begin(), ProcDesc.end(),
+                              [=](const SubtargetFeatureKV &KV) {
+                                return CPU == KV.Key; 
+                              });
+    return Found != ProcDesc.end();
+  }
 };
 
 } // End llvm namespace

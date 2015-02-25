@@ -134,18 +134,13 @@ bool X86_MC::GetCpuIDAndInfoEx(unsigned value, unsigned subleaf, unsigned *rEAX,
             "c" (subleaf));
     return false;
   #elif defined(_MSC_VER)
-    // __cpuidex was added in MSVC++ 9.0 SP1
-    #if (_MSC_VER > 1500) || (_MSC_VER == 1500 && _MSC_FULL_VER >= 150030729)
-      int registers[4];
-      __cpuidex(registers, value, subleaf);
-      *rEAX = registers[0];
-      *rEBX = registers[1];
-      *rECX = registers[2];
-      *rEDX = registers[3];
-      return false;
-    #else
-      return true;
-    #endif
+    int registers[4];
+    __cpuidex(registers, value, subleaf);
+    *rEAX = registers[0];
+    *rEBX = registers[1];
+    *rECX = registers[2];
+    *rEDX = registers[3];
+    return false;
   #else
     return true;
   #endif
@@ -351,11 +346,8 @@ static MCCodeGenInfo *createX86MCCodeGenInfo(StringRef TT, Reloc::Model RM,
 
 static MCStreamer *createMCStreamer(const Target &T, StringRef TT,
                                     MCContext &Ctx, MCAsmBackend &MAB,
-                                    raw_ostream &_OS,
-                                    MCCodeEmitter *_Emitter,
-                                    const MCSubtargetInfo &STI,
-                                    bool RelaxAll,
-                                    bool NoExecStack) {
+                                    raw_ostream &_OS, MCCodeEmitter *_Emitter,
+                                    const MCSubtargetInfo &STI, bool RelaxAll) {
   Triple TheTriple(TT);
 
   switch (TheTriple.getObjectFormat()) {
@@ -366,7 +358,7 @@ static MCStreamer *createMCStreamer(const Target &T, StringRef TT,
     assert(TheTriple.isOSWindows() && "only Windows COFF is supported");
     return createX86WinCOFFStreamer(Ctx, MAB, _Emitter, _OS, RelaxAll);
   case Triple::ELF:
-    return createELFStreamer(Ctx, MAB, _OS, _Emitter, RelaxAll, NoExecStack);
+    return createELFStreamer(Ctx, MAB, _OS, _Emitter, RelaxAll);
   }
 }
 
@@ -377,7 +369,7 @@ static MCInstPrinter *createX86MCInstPrinter(const Target &T,
                                              const MCRegisterInfo &MRI,
                                              const MCSubtargetInfo &STI) {
   if (SyntaxVariant == 0)
-    return new X86ATTInstPrinter(MAI, MII, MRI);
+    return new X86ATTInstPrinter(MAI, MII, MRI, STI);
   if (SyntaxVariant == 1)
     return new X86IntelInstPrinter(MAI, MII, MRI);
   return nullptr;

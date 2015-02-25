@@ -162,6 +162,10 @@ def SDTBr : SDTypeProfile<0, 1, [           // br
   SDTCisVT<0, OtherVT>
 ]>;
 
+def SDTBrCC : SDTypeProfile<0, 4, [       // brcc
+  SDTCisVT<0, OtherVT>, SDTCisSameAs<1, 2>, SDTCisVT<3, OtherVT>
+]>;
+
 def SDTBrcond : SDTypeProfile<0, 2, [       // brcond
   SDTCisInt<0>, SDTCisVT<1, OtherVT>
 ]>;
@@ -182,6 +186,22 @@ def SDTStore : SDTypeProfile<0, 2, [        // store
 
 def SDTIStore : SDTypeProfile<1, 3, [       // indexed store
   SDTCisSameAs<0, 2>, SDTCisPtrTy<0>, SDTCisPtrTy<3>
+]>;
+
+def SDTMaskedStore: SDTypeProfile<0, 3, [       // masked store
+  SDTCisPtrTy<0>, SDTCisVec<1>, SDTCisVec<2>
+]>;
+
+def SDTMaskedLoad: SDTypeProfile<1, 3, [       // masked load
+  SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisVec<2>, SDTCisSameAs<0, 3>
+]>;
+
+def SDTMaskedGather: SDTypeProfile<1, 3, [       // masked gather
+  SDTCisVec<0>, SDTCisSameAs<0, 1>, SDTCisVec<2>
+]>;
+
+def SDTMaskedScatter: SDTypeProfile<1, 3, [       // masked scatter
+  SDTCisVec<0>, SDTCisVec<1>, SDTCisSameAs<0, 2>
 ]>;
 
 def SDTVecShuffle : SDTypeProfile<1, 2, [
@@ -359,6 +379,7 @@ def zext       : SDNode<"ISD::ZERO_EXTEND", SDTIntExtendOp>;
 def anyext     : SDNode<"ISD::ANY_EXTEND" , SDTIntExtendOp>;
 def trunc      : SDNode<"ISD::TRUNCATE"   , SDTIntTruncOp>;
 def bitconvert : SDNode<"ISD::BITCAST"    , SDTUnaryOp>;
+def addrspacecast : SDNode<"ISD::ADDRSPACECAST", SDTUnaryOp>;
 def extractelt : SDNode<"ISD::EXTRACT_VECTOR_ELT", SDTVecExtract>;
 def insertelt  : SDNode<"ISD::INSERT_VECTOR_ELT", SDTVecInsert>;
 
@@ -368,7 +389,10 @@ def fmul       : SDNode<"ISD::FMUL"       , SDTFPBinOp, [SDNPCommutative]>;
 def fdiv       : SDNode<"ISD::FDIV"       , SDTFPBinOp>;
 def frem       : SDNode<"ISD::FREM"       , SDTFPBinOp>;
 def fma        : SDNode<"ISD::FMA"        , SDTFPTernaryOp>;
+def fmad       : SDNode<"ISD::FMAD"       , SDTFPTernaryOp>;
 def fabs       : SDNode<"ISD::FABS"       , SDTFPUnaryOp>;
+def fminnum    : SDNode<"ISD::FMINNUM"    , SDTFPBinOp>;
+def fmaxnum    : SDNode<"ISD::FMAXNUM"    , SDTFPBinOp>;
 def fgetsign   : SDNode<"ISD::FGETSIGN"   , SDTFPToIntOp>;
 def fneg       : SDNode<"ISD::FNEG"       , SDTFPUnaryOp>;
 def fsqrt      : SDNode<"ISD::FSQRT"      , SDTFPUnaryOp>;
@@ -400,6 +424,7 @@ def select     : SDNode<"ISD::SELECT"     , SDTSelect>;
 def vselect    : SDNode<"ISD::VSELECT"    , SDTVSelect>;
 def selectcc   : SDNode<"ISD::SELECT_CC"  , SDTSelectCC>;
 
+def brcc       : SDNode<"ISD::BR_CC"      , SDTBrCC,   [SDNPHasChain]>;
 def brcond     : SDNode<"ISD::BRCOND"     , SDTBrcond, [SDNPHasChain]>;
 def brind      : SDNode<"ISD::BRIND"      , SDTBrind,  [SDNPHasChain]>;
 def br         : SDNode<"ISD::BR"         , SDTBr,     [SDNPHasChain]>;
@@ -446,6 +471,15 @@ def atomic_load      : SDNode<"ISD::ATOMIC_LOAD", SDTAtomicLoad,
                     [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
 def atomic_store     : SDNode<"ISD::ATOMIC_STORE", SDTAtomicStore,
                     [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
+
+def masked_store : SDNode<"ISD::MSTORE",  SDTMaskedStore,
+                       [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
+def masked_load  : SDNode<"ISD::MLOAD",  SDTMaskedLoad,
+                       [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
+def masked_scatter : SDNode<"ISD::MSCATTER",  SDTMaskedScatter,
+                       [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
+def masked_gather  : SDNode<"ISD::MGATHER",  SDTMaskedGather,
+                       [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
 
 // Do not use ld, st directly. Use load, extload, sextload, zextload, store,
 // and truncst (see below).

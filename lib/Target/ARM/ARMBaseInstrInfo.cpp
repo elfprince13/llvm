@@ -594,16 +594,6 @@ template <> bool IsCPSRDead<MachineInstr>(MachineInstr *MI) {
 }
 }
 
-/// FIXME: Works around a gcc miscompilation with -fstrict-aliasing.
-LLVM_ATTRIBUTE_NOINLINE
-static unsigned getNumJTEntries(const std::vector<MachineJumpTableEntry> &JT,
-                                unsigned JTI);
-static unsigned getNumJTEntries(const std::vector<MachineJumpTableEntry> &JT,
-                                unsigned JTI) {
-  assert(JTI < JT.size());
-  return JT[JTI].MBBs.size();
-}
-
 /// GetInstSize - Return the size of the specified MachineInstr.
 ///
 unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
@@ -676,7 +666,7 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
     // bytes, we can use 16-bit entries instead. Then there won't be an
     // alignment issue.
     unsigned InstSize = (Opc == ARM::tBR_JTr || Opc == ARM::t2BR_JT) ? 2 : 4;
-    unsigned NumEntries = getNumJTEntries(JT, JTI);
+    unsigned NumEntries = JT[JTI].MBBs.size();
     if (Opc == ARM::t2TBB_JT && (NumEntries & 1))
       // Make sure the instruction that follows TBB is 2-byte aligned.
       // FIXME: Constant island pass should insert an "ALIGN" instruction
@@ -684,6 +674,8 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
       ++NumEntries;
     return NumEntries * EntrySize + InstSize;
   }
+  case ARM::SPACE:
+    return MI->getOperand(1).getImm();
   }
 }
 
@@ -696,6 +688,49 @@ unsigned ARMBaseInstrInfo::getInstBundleLength(const MachineInstr *MI) const {
     Size += GetInstSizeInBytes(&*I);
   }
   return Size;
+}
+
+void ARMBaseInstrInfo::copyFromCPSR(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator I,
+                                    unsigned DestReg, bool KillSrc,
+                                    const ARMSubtarget &Subtarget) const {
+  unsigned Opc = Subtarget.isThumb()
+                     ? (Subtarget.isMClass() ? ARM::t2MRS_M : ARM::t2MRS_AR)
+                     : ARM::MRS;
+
+  MachineInstrBuilder MIB =
+      BuildMI(MBB, I, I->getDebugLoc(), get(Opc), DestReg);
+
+  // There is only 1 A/R class MRS instruction, and it always refers to
+  // APSR. However, there are lots of other possibilities on M-class cores.
+  if (Subtarget.isMClass())
+    MIB.addImm(0x800);
+
+  AddDefaultPred(MIB);
+
+  MIB.addReg(ARM::CPSR, RegState::Implicit | getKillRegState(KillSrc));
+}
+
+void ARMBaseInstrInfo::copyToCPSR(MachineBasicBlock &MBB,
+                                  MachineBasicBlock::iterator I,
+                                  unsigned SrcReg, bool KillSrc,
+                                  const ARMSubtarget &Subtarget) const {
+  unsigned Opc = Subtarget.isThumb()
+                     ? (Subtarget.isMClass() ? ARM::t2MSR_M : ARM::t2MSR_AR)
+                     : ARM::MSR;
+
+  MachineInstrBuilder MIB = BuildMI(MBB, I, I->getDebugLoc(), get(Opc));
+
+  if (Subtarget.isMClass())
+    MIB.addImm(0x800);
+  else
+    MIB.addImm(8);
+
+  MIB.addReg(SrcReg, getKillRegState(KillSrc));
+
+  AddDefaultPred(MIB);
+
+  MIB.addReg(ARM::CPSR, RegState::Implicit | RegState::Define);
 }
 
 void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
@@ -785,6 +820,12 @@ void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     Opc = ARM::VMOVS;
     BeginIdx = ARM::ssub_0;
     SubRegs = 2;
+  } else if (SrcReg == ARM::CPSR) {
+    copyFromCPSR(MBB, I, DestReg, KillSrc, Subtarget);
+    return;
+  } else if (DestReg == ARM::CPSR) {
+    copyToCPSR(MBB, I, SrcReg, KillSrc, Subtarget);
+    return;
   }
 
   assert(Opc && "Impossible reg-to-reg copy");
@@ -1795,8 +1836,10 @@ bool ARMBaseInstrInfo::analyzeSelect(const MachineInstr *MI,
   return false;
 }
 
-MachineInstr *ARMBaseInstrInfo::optimizeSelect(MachineInstr *MI,
-                                               bool PreferFalse) const {
+MachineInstr *
+ARMBaseInstrInfo::optimizeSelect(MachineInstr *MI,
+                                 SmallPtrSetImpl<MachineInstr *> &SeenMIs,
+                                 bool PreferFalse) const {
   assert((MI->getOpcode() == ARM::MOVCCr || MI->getOpcode() == ARM::t2MOVCCr) &&
          "Unknown select instruction");
   MachineRegisterInfo &MRI = MI->getParent()->getParent()->getRegInfo();
@@ -1843,6 +1886,10 @@ MachineInstr *ARMBaseInstrInfo::optimizeSelect(MachineInstr *MI,
   FalseReg.setImplicit();
   NewMI.addOperand(FalseReg);
   NewMI->tieOperands(0, NewMI->getNumOperands() - 1);
+
+  // Update SeenMIs set: register newly created MI and erase removed DefMI.
+  SeenMIs.insert(NewMI);
+  SeenMIs.erase(DefMI);
 
   // The caller will erase MI, but not DefMI.
   DefMI->eraseFromParent();
@@ -1944,8 +1991,7 @@ bool llvm::tryFoldSPUpdateIntoPushPop(const ARMSubtarget &Subtarget,
                                       unsigned NumBytes) {
   // This optimisation potentially adds lots of load and store
   // micro-operations, it's only really a great benefit to code-size.
-  if (!MF.getFunction()->getAttributes().hasAttribute(
-          AttributeSet::FunctionIndex, Attribute::MinSize))
+  if (!MF.getFunction()->hasFnAttribute(Attribute::MinSize))
     return false;
 
   // If only one register is pushed/popped, LLVM can use an LDR/STR
@@ -2353,7 +2399,8 @@ optimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, unsigned SrcReg2,
   else if (MI->getParent() != CmpInstr->getParent() || CmpValue != 0) {
     // Conservatively refuse to convert an instruction which isn't in the same
     // BB as the comparison.
-    // For CMPri, we need to check Sub, thus we can't return here.
+    // For CMPri w/ CmpValue != 0, a Sub may still be a candidate.
+    // Thus we cannot return here.
     if (CmpInstr->getOpcode() == ARM::CMPri ||
        CmpInstr->getOpcode() == ARM::t2CMPri)
       MI = nullptr;
@@ -2432,8 +2479,8 @@ optimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, unsigned SrcReg2,
   case ARM::t2EORrr:
   case ARM::t2EORri: {
     // Scan forward for the use of CPSR
-    // When checking against MI: if it's a conditional code requires
-    // checking of V bit, then this is not safe to do.
+    // When checking against MI: if it's a conditional code that requires
+    // checking of the V bit or C bit, then this is not safe to do.
     // It is safe to remove CmpInstr if CPSR is redefined or killed.
     // If we are done with the basic block, we need to check whether CPSR is
     // live-out.
@@ -2500,19 +2547,30 @@ optimizeCompareInstr(MachineInstr *CmpInstr, unsigned SrcReg, unsigned SrcReg2,
             OperandsToUpdate.push_back(
                 std::make_pair(&((*I).getOperand(IO - 1)), NewCC));
           }
-        } else
+        } else {
+          // No Sub, so this is x = <op> y, z; cmp x, 0.
           switch (CC) {
-          default:
+          case ARMCC::EQ: // Z
+          case ARMCC::NE: // Z
+          case ARMCC::MI: // N
+          case ARMCC::PL: // N
+          case ARMCC::AL: // none
             // CPSR can be used multiple times, we should continue.
             break;
-          case ARMCC::VS:
-          case ARMCC::VC:
-          case ARMCC::GE:
-          case ARMCC::LT:
-          case ARMCC::GT:
-          case ARMCC::LE:
+          case ARMCC::HS: // C
+          case ARMCC::LO: // C
+          case ARMCC::VS: // V
+          case ARMCC::VC: // V
+          case ARMCC::HI: // C Z
+          case ARMCC::LS: // C Z
+          case ARMCC::GE: // N V
+          case ARMCC::LT: // N V
+          case ARMCC::GT: // Z N V
+          case ARMCC::LE: // Z N V
+            // The instruction uses the V bit or C bit which is not safe.
             return false;
           }
+        }
       }
     }
 
@@ -2889,7 +2947,7 @@ static unsigned getNumMicroOpsSwiftLdSt(const InstrItineraryData *ItinData,
 // FIXME: The current MachineInstr design does not support relying on machine
 // mem operands to determine the width of a memory access. Instead, we expect
 // the target to provide this information based on the instruction opcode and
-// operands. However, using MachineMemOperand is a the best solution now for
+// operands. However, using MachineMemOperand is the best solution now for
 // two reasons:
 //
 // 1) getNumMicroOps tries to infer LDM memory width from the total number of MI
@@ -3606,9 +3664,7 @@ ARMBaseInstrInfo::getOperandLatency(const InstrItineraryData *ItinData,
     // instructions).
     if (Latency > 0 && Subtarget.isThumb2()) {
       const MachineFunction *MF = DefMI->getParent()->getParent();
-      if (MF->getFunction()->getAttributes().
-            hasAttribute(AttributeSet::FunctionIndex,
-                         Attribute::OptimizeForSize))
+      if (MF->getFunction()->hasFnAttribute(Attribute::OptimizeForSize))
         --Latency;
     }
     return Latency;
@@ -4450,29 +4506,6 @@ breakPartialRegDependency(MachineBasicBlock::iterator MI,
   MI->addRegisterKilled(DReg, TRI, true);
 }
 
-void ARMBaseInstrInfo::getUnconditionalBranch(
-    MCInst &Branch, const MCSymbolRefExpr *BranchTarget) const {
-  if (Subtarget.isThumb())
-    Branch.setOpcode(ARM::tB);
-  else if (Subtarget.isThumb2())
-    Branch.setOpcode(ARM::t2B);
-  else
-    Branch.setOpcode(ARM::Bcc);
-
-  Branch.addOperand(MCOperand::CreateExpr(BranchTarget));
-  Branch.addOperand(MCOperand::CreateImm(ARMCC::AL));
-  Branch.addOperand(MCOperand::CreateReg(0));
-}
-
-void ARMBaseInstrInfo::getTrap(MCInst &MI) const {
-  if (Subtarget.isThumb())
-    MI.setOpcode(ARM::tTRAP);
-  else if (Subtarget.useNaClTrap())
-    MI.setOpcode(ARM::TRAPNaCl);
-  else
-    MI.setOpcode(ARM::TRAP);
-}
-
 bool ARMBaseInstrInfo::hasNOP() const {
   return (Subtarget.getFeatureBits() & ARM::HasV6T2Ops) != 0;
 }
@@ -4489,4 +4522,73 @@ bool ARMBaseInstrInfo::isSwiftFastImmShift(const MachineInstr *MI) const {
     return true;
 
   return false;
+}
+
+bool ARMBaseInstrInfo::getRegSequenceLikeInputs(
+    const MachineInstr &MI, unsigned DefIdx,
+    SmallVectorImpl<RegSubRegPairAndIdx> &InputRegs) const {
+  assert(DefIdx < MI.getDesc().getNumDefs() && "Invalid definition index");
+  assert(MI.isRegSequenceLike() && "Invalid kind of instruction");
+
+  switch (MI.getOpcode()) {
+  case ARM::VMOVDRR:
+    // dX = VMOVDRR rY, rZ
+    // is the same as:
+    // dX = REG_SEQUENCE rY, ssub_0, rZ, ssub_1
+    // Populate the InputRegs accordingly.
+    // rY
+    const MachineOperand *MOReg = &MI.getOperand(1);
+    InputRegs.push_back(
+        RegSubRegPairAndIdx(MOReg->getReg(), MOReg->getSubReg(), ARM::ssub_0));
+    // rZ
+    MOReg = &MI.getOperand(2);
+    InputRegs.push_back(
+        RegSubRegPairAndIdx(MOReg->getReg(), MOReg->getSubReg(), ARM::ssub_1));
+    return true;
+  }
+  llvm_unreachable("Target dependent opcode missing");
+}
+
+bool ARMBaseInstrInfo::getExtractSubregLikeInputs(
+    const MachineInstr &MI, unsigned DefIdx,
+    RegSubRegPairAndIdx &InputReg) const {
+  assert(DefIdx < MI.getDesc().getNumDefs() && "Invalid definition index");
+  assert(MI.isExtractSubregLike() && "Invalid kind of instruction");
+
+  switch (MI.getOpcode()) {
+  case ARM::VMOVRRD:
+    // rX, rY = VMOVRRD dZ
+    // is the same as:
+    // rX = EXTRACT_SUBREG dZ, ssub_0
+    // rY = EXTRACT_SUBREG dZ, ssub_1
+    const MachineOperand &MOReg = MI.getOperand(2);
+    InputReg.Reg = MOReg.getReg();
+    InputReg.SubReg = MOReg.getSubReg();
+    InputReg.SubIdx = DefIdx == 0 ? ARM::ssub_0 : ARM::ssub_1;
+    return true;
+  }
+  llvm_unreachable("Target dependent opcode missing");
+}
+
+bool ARMBaseInstrInfo::getInsertSubregLikeInputs(
+    const MachineInstr &MI, unsigned DefIdx, RegSubRegPair &BaseReg,
+    RegSubRegPairAndIdx &InsertedReg) const {
+  assert(DefIdx < MI.getDesc().getNumDefs() && "Invalid definition index");
+  assert(MI.isInsertSubregLike() && "Invalid kind of instruction");
+
+  switch (MI.getOpcode()) {
+  case ARM::VSETLNi32:
+    // dX = VSETLNi32 dY, rZ, imm
+    const MachineOperand &MOBaseReg = MI.getOperand(1);
+    const MachineOperand &MOInsertedReg = MI.getOperand(2);
+    const MachineOperand &MOIndex = MI.getOperand(3);
+    BaseReg.Reg = MOBaseReg.getReg();
+    BaseReg.SubReg = MOBaseReg.getSubReg();
+
+    InsertedReg.Reg = MOInsertedReg.getReg();
+    InsertedReg.SubReg = MOInsertedReg.getSubReg();
+    InsertedReg.SubIdx = MOIndex.getImm() == 0 ? ARM::ssub_0 : ARM::ssub_1;
+    return true;
+  }
+  llvm_unreachable("Target dependent opcode missing");
 }
