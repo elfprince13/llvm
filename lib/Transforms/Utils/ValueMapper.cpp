@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/ValueMapper.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InlineAsm.h"
@@ -291,13 +292,17 @@ static Metadata *MapMetadataImpl(const Metadata *MD,
     return nullptr;
   }
 
+  // Note: this cast precedes the Flags check so we always get its associated
+  // assertion.
   const MDNode *Node = cast<MDNode>(MD);
-  assert(Node->isResolved() && "Unexpected unresolved node");
 
   // If this is a module-level metadata and we know that nothing at the
   // module level is changing, then use an identity mapping.
   if (Flags & RF_NoModuleLevelChanges)
     return mapToSelf(VM, MD);
+
+  // Require resolved nodes whenever metadata might be remapped.
+  assert(Node->isResolved() && "Unexpected unresolved node");
 
   if (Node->isDistinct())
     return mapDistinctNode(Node, Cycles, VM, Flags, TypeMapper, Materializer);
@@ -379,7 +384,24 @@ void llvm::RemapInstruction(Instruction *I, ValueToValueMapTy &VMap,
       I->setMetadata(MI->first, New);
   }
   
+  if (!TypeMapper)
+    return;
+
   // If the instruction's type is being remapped, do so now.
-  if (TypeMapper)
-    I->mutateType(TypeMapper->remapType(I->getType()));
+  if (auto CS = CallSite(I)) {
+    SmallVector<Type *, 3> Tys;
+    FunctionType *FTy = CS.getFunctionType();
+    Tys.reserve(FTy->getNumParams());
+    for (Type *Ty : FTy->params())
+      Tys.push_back(TypeMapper->remapType(Ty));
+    CS.mutateFunctionType(FunctionType::get(
+        TypeMapper->remapType(I->getType()), Tys, FTy->isVarArg()));
+    return;
+  }
+  if (auto *AI = dyn_cast<AllocaInst>(I))
+    AI->setAllocatedType(TypeMapper->remapType(AI->getAllocatedType()));
+  if (auto *GEP = dyn_cast<GetElementPtrInst>(I))
+    GEP->setSourceElementType(
+        TypeMapper->remapType(GEP->getSourceElementType()));
+  I->mutateType(TypeMapper->remapType(I->getType()));
 }

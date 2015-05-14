@@ -54,7 +54,7 @@ void ilist_traits<MachineBasicBlock>::deleteNode(MachineBasicBlock *MBB) {
 
 MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
-    : Fn(F), Target(TM), STI(TM.getSubtargetImpl()), Ctx(mmi.getContext()),
+    : Fn(F), Target(TM), STI(TM.getSubtargetImpl(*F)), Ctx(mmi.getContext()),
       MMI(mmi) {
   if (STI->getRegisterInfo())
     RegInfo = new (Allocator) MachineRegisterInfo(this);
@@ -380,7 +380,7 @@ namespace llvm {
   DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
 
     static std::string getGraphName(const MachineFunction *F) {
-      return "CFG for '" + F->getName().str() + "' function";
+      return ("CFG for '" + F->getName() + "' function").str();
     }
 
     std::string getNodeLabel(const MachineBasicBlock *Node,
@@ -468,7 +468,7 @@ MCSymbol *MachineFunction::getJTISymbol(unsigned JTI, MCContext &Ctx,
   SmallString<60> Name;
   raw_svector_ostream(Name)
     << Prefix << "JTI" << getFunctionNumber() << '_' << JTI;
-  return Ctx.GetOrCreateSymbol(Name.str());
+  return Ctx.GetOrCreateSymbol(Name);
 }
 
 /// getPICBaseSymbol - Return a function-local symbol to represent the PIC
@@ -584,14 +584,6 @@ int MachineFrameInfo::CreateFixedSpillStackObject(uint64_t Size,
   return -++NumFixedObjects;
 }
 
-int MachineFrameInfo::CreateFrameAllocation(uint64_t Size) {
-  // Force the use of a frame pointer. The intention is that this intrinsic be
-  // used in conjunction with unwind mechanisms that leak the frame pointer.
-  setFrameAddressIsTaken(true);
-  Size = RoundUpToAlignment(Size, StackAlignment);
-  return CreateStackObject(Size, StackAlignment, false);
-}
-
 BitVector
 MachineFrameInfo::getPristineRegs(const MachineBasicBlock *MBB) const {
   assert(MBB && "MBB must be valid");
@@ -608,8 +600,8 @@ MachineFrameInfo::getPristineRegs(const MachineBasicBlock *MBB) const {
   for (const MCPhysReg *CSR = TRI->getCalleeSavedRegs(MF); CSR && *CSR; ++CSR)
     BV.set(*CSR);
 
-  // The entry MBB always has all CSRs pristine.
-  if (MBB == &MF->front())
+  // Each MBB before the save point has all CSRs pristine.
+  if (isBeforeSavePoint(*MF, *MBB))
     return BV;
 
   // On other MBBs the saved CSRs are not pristine.
@@ -619,6 +611,40 @@ MachineFrameInfo::getPristineRegs(const MachineBasicBlock *MBB) const {
     BV.reset(I->getReg());
 
   return BV;
+}
+
+// Note: We could use some sort of caching mecanism, but we lack the ability
+// to know when the cache is invalid, i.e., the CFG changed.
+// Assuming we have that, we can simply compute all the set of MBBs
+// that are before the save point.
+bool MachineFrameInfo::isBeforeSavePoint(const MachineFunction &MF,
+                                         const MachineBasicBlock &MBB) const {
+  // Early exit if shrink-wrapping did not kick.
+  if (!Save)
+    return &MBB == &MF.front();
+
+  // Starting from MBB, check if there is a path leading to Save that do
+  // not cross Restore.
+  SmallPtrSet<const MachineBasicBlock *, 8> Visited;
+  SmallVector<const MachineBasicBlock *, 8> WorkList;
+  WorkList.push_back(&MBB);
+  Visited.insert(&MBB);
+  do {
+    const MachineBasicBlock *CurBB = WorkList.pop_back_val();
+    // By construction, the region that is after the save point is
+    // dominated by the Save and post-dominated by the Restore.
+    // If we do not reach Restore and still reach Save, this
+    // means MBB is before Save.
+    if (CurBB == Save)
+      return true;
+    if (CurBB == Restore)
+      continue;
+    // Enqueue all the successors not already visited.
+    for (MachineBasicBlock *SuccBB : CurBB->successors())
+      if (Visited.insert(SuccBB).second)
+        WorkList.push_back(SuccBB);
+  } while (!WorkList.empty());
+  return false;
 }
 
 unsigned MachineFrameInfo::estimateStackSize(const MachineFunction &MF) const {
@@ -903,16 +929,16 @@ static bool CanShareConstantPoolEntry(const Constant *A, const Constant *B,
   // DataLayout.
   if (isa<PointerType>(A->getType()))
     A = ConstantFoldInstOperands(Instruction::PtrToInt, IntTy,
-                                 const_cast<Constant*>(A), TD);
+                                 const_cast<Constant *>(A), *TD);
   else if (A->getType() != IntTy)
     A = ConstantFoldInstOperands(Instruction::BitCast, IntTy,
-                                 const_cast<Constant*>(A), TD);
+                                 const_cast<Constant *>(A), *TD);
   if (isa<PointerType>(B->getType()))
     B = ConstantFoldInstOperands(Instruction::PtrToInt, IntTy,
-                                 const_cast<Constant*>(B), TD);
+                                 const_cast<Constant *>(B), *TD);
   else if (B->getType() != IntTy)
     B = ConstantFoldInstOperands(Instruction::BitCast, IntTy,
-                                 const_cast<Constant*>(B), TD);
+                                 const_cast<Constant *>(B), *TD);
 
   return A == B;
 }

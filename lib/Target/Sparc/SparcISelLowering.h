@@ -22,7 +22,7 @@ namespace llvm {
   class SparcSubtarget;
 
   namespace SPISD {
-    enum {
+    enum NodeType : unsigned {
       FIRST_NUMBER = ISD::BUILTIN_OP_END,
       CMPICC,      // Compare two GPR operands, set icc+xcc.
       CMPFCC,      // Compare two FP operands, set fcc.
@@ -80,8 +80,10 @@ namespace llvm {
                                       std::string &Constraint,
                                       std::vector<SDValue> &Ops,
                                       SelectionDAG &DAG) const override;
-    std::pair<unsigned, const TargetRegisterClass*>
-    getRegForInlineAsmConstraint(const std::string &Constraint, MVT VT) const override;
+    std::pair<unsigned, const TargetRegisterClass *>
+    getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                                 const std::string &Constraint,
+                                 MVT VT) const override;
 
     bool isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const override;
     MVT getScalarShiftAmountTy(EVT LHSTy) const override { return MVT::i32; }

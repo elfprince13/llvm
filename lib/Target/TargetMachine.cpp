@@ -22,6 +22,7 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/SectionKind.h"
@@ -36,21 +37,28 @@ using namespace llvm;
 // TargetMachine Class
 //
 
-TargetMachine::TargetMachine(const Target &T,
+TargetMachine::TargetMachine(const Target &T, StringRef DataLayoutString,
                              StringRef TT, StringRef CPU, StringRef FS,
                              const TargetOptions &Options)
-  : TheTarget(T), TargetTriple(TT), TargetCPU(CPU), TargetFS(FS),
-    CodeGenInfo(nullptr), AsmInfo(nullptr),
-    RequireStructuredCFG(false),
-    Options(Options) {
-}
+    : TheTarget(T), DL(DataLayoutString), TargetTriple(TT), TargetCPU(CPU),
+      TargetFS(FS), CodeGenInfo(nullptr), AsmInfo(nullptr), MRI(nullptr),
+      MII(nullptr), STI(nullptr), RequireStructuredCFG(false),
+      Options(Options) {}
 
 TargetMachine::~TargetMachine() {
   delete CodeGenInfo;
   delete AsmInfo;
+  delete MRI;
+  delete MII;
+  delete STI;
 }
 
 /// \brief Reset the target options based on the function's attributes.
+// FIXME: This function needs to go away for a number of reasons:
+// a) global state on the TargetMachine is terrible in general,
+// b) there's no default state here to keep,
+// c) these target options should be passed only on the function
+//    and not on the TargetMachine (via TargetOptions) at all.
 void TargetMachine::resetTargetOptions(const Function &F) const {
 #define RESET_OPTION(X, Y)                                                     \
   do {                                                                         \
@@ -63,7 +71,6 @@ void TargetMachine::resetTargetOptions(const Function &F) const {
   RESET_OPTION(UnsafeFPMath, "unsafe-fp-math");
   RESET_OPTION(NoInfsFPMath, "no-infs-fp-math");
   RESET_OPTION(NoNaNsFPMath, "no-nans-fp-math");
-  RESET_OPTION(UseSoftFloat, "use-soft-float");
   RESET_OPTION(DisableTailCalls, "disable-tail-calls");
 
   Options.MCOptions.SanitizeAddress = F.hasFnAttribute(Attribute::SanitizeAddress);
@@ -177,12 +184,12 @@ void TargetMachine::getNameWithPrefix(SmallVectorImpl<char> &Name,
   const TargetLoweringObjectFile *TLOF = getObjFileLowering();
   const MCSection *TheSection = TLOF->SectionForGlobal(GV, GVKind, Mang, *this);
   bool CannotUsePrivateLabel = !canUsePrivateLabel(*AsmInfo, *TheSection);
-  Mang.getNameWithPrefix(Name, GV, CannotUsePrivateLabel);
+  TLOF->getNameWithPrefix(Name, GV, CannotUsePrivateLabel, Mang, *this);
 }
 
 MCSymbol *TargetMachine::getSymbol(const GlobalValue *GV, Mangler &Mang) const {
   SmallString<60> NameStr;
   getNameWithPrefix(NameStr, GV, Mang);
   const TargetLoweringObjectFile *TLOF = getObjFileLowering();
-  return TLOF->getContext().GetOrCreateSymbol(NameStr.str());
+  return TLOF->getContext().GetOrCreateSymbol(NameStr);
 }

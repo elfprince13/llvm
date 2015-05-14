@@ -30,23 +30,22 @@
 using namespace llvm;
 
 ARMInstrInfo::ARMInstrInfo(const ARMSubtarget &STI)
-  : ARMBaseInstrInfo(STI), RI(STI) {
-}
+    : ARMBaseInstrInfo(STI), RI() {}
 
 /// getNoopForMachoTarget - Return the noop instruction to use for a noop.
 void ARMInstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
   if (hasNOP()) {
     NopInst.setOpcode(ARM::HINT);
-    NopInst.addOperand(MCOperand::CreateImm(0));
-    NopInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
-    NopInst.addOperand(MCOperand::CreateReg(0));
+    NopInst.addOperand(MCOperand::createImm(0));
+    NopInst.addOperand(MCOperand::createImm(ARMCC::AL));
+    NopInst.addOperand(MCOperand::createReg(0));
   } else {
     NopInst.setOpcode(ARM::MOVr);
-    NopInst.addOperand(MCOperand::CreateReg(ARM::R0));
-    NopInst.addOperand(MCOperand::CreateReg(ARM::R0));
-    NopInst.addOperand(MCOperand::CreateImm(ARMCC::AL));
-    NopInst.addOperand(MCOperand::CreateReg(0));
-    NopInst.addOperand(MCOperand::CreateReg(0));
+    NopInst.addOperand(MCOperand::createReg(ARM::R0));
+    NopInst.addOperand(MCOperand::createReg(ARM::R0));
+    NopInst.addOperand(MCOperand::createImm(ARMCC::AL));
+    NopInst.addOperand(MCOperand::createReg(0));
+    NopInst.addOperand(MCOperand::createReg(0));
   }
 }
 
@@ -146,6 +145,10 @@ namespace {
         return false;
       const ARMSubtarget &STI =
           static_cast<const ARMSubtarget &>(MF.getSubtarget());
+      // Don't do this for Thumb1.
+      if (STI.isThumb1Only())
+	return false;
+
       const TargetMachine &TM = MF.getTarget();
       if (TM.getRelocationModel() != Reloc::PIC_)
         return false;

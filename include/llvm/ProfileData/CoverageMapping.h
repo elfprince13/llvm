@@ -18,11 +18,13 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/raw_ostream.h"
 #include <system_error>
+#include <tuple>
 
 namespace llvm {
 class IndexedInstrProfReader;
@@ -407,7 +409,8 @@ public:
 
   /// \brief Load the coverage mapping from the given files.
   static ErrorOr<std::unique_ptr<CoverageMapping>>
-  load(StringRef ObjectFilename, StringRef ProfileFilename);
+  load(StringRef ObjectFilename, StringRef ProfileFilename,
+       Triple::ArchType Arch = Triple::ArchType::UnknownArch);
 
   /// \brief The number of functions that couldn't have their profiles mapped.
   ///
@@ -481,7 +484,26 @@ template<> struct DenseMapInfo<coverage::CounterExpression> {
   }
 };
 
+const std::error_category &coveragemap_category();
+
+enum class coveragemap_error {
+  success = 0,
+  eof,
+  no_data_found,
+  unsupported_version,
+  truncated,
+  malformed
+};
+
+inline std::error_code make_error_code(coveragemap_error E) {
+  return std::error_code(static_cast<int>(E), coveragemap_category());
+}
 
 } // end namespace llvm
+
+namespace std {
+template <>
+struct is_error_code_enum<llvm::coveragemap_error> : std::true_type {};
+}
 
 #endif // LLVM_PROFILEDATA_COVERAGEMAPPING_H_

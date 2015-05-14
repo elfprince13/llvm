@@ -37,6 +37,7 @@ enum class EncodingType {
   ARM,     /// Windows NT (Windows on ARM)
   CE,      /// Windows CE ARM, PowerPC, SH3, SH4
   Itanium, /// Windows x64, Windows Itanium (IA-64)
+  X86,     /// Windows x86, uses no CFI, just EH tables
   MIPS = Alpha,
 };
 }
@@ -117,6 +118,9 @@ protected:
 
   // Print the EH begin symbol with an assignment. Defaults to false.
   bool UseAssignmentForEHBegin;
+
+  // Do we need to create a local symbol for .size?
+  bool NeedsLocalForSize;
 
   /// This prefix is used for globals like constant pool entries that are
   /// completely private to the .s file and should not have names in the .o
@@ -225,7 +229,7 @@ protected:
 
   /// True if the expression
   ///   .long f - g
-  /// uses an relocation but it can be supressed by writting
+  /// uses a relocation but it can be suppressed by writing
   ///   a = f - g
   ///   .long a
   bool SetDirectiveSuppressesReloc;
@@ -252,6 +256,10 @@ protected:
   /// Describes if the .lcomm directive for the target supports an alignment
   /// argument and how it is interpreted.  Defaults to NoAlignment.
   LCOMM::LCOMMType LCOMMDirectiveAlignmentType;
+
+  // True if the target allows .align directives on functions. This is true for
+  // most targets, so defaults to true.
+  bool HasFunctionAlignment;
 
   /// True if the target has .type and .size directives, this is true for most
   /// ELF targets.  Defaults to true.
@@ -332,7 +340,7 @@ protected:
 
   std::vector<MCCFIInstruction> InitialFrameState;
 
-  //===--- Integrated Assembler State ----------------------------------===//
+  //===--- Integrated Assembler Information ----------------------------===//
 
   /// Should we use the integrated assembler?
   /// The integrated assembler should be enabled by default (by the
@@ -343,6 +351,10 @@ protected:
 
   /// Compress DWARF debug sections. Defaults to false.
   bool CompressDebugSections;
+
+  /// True if the integrated assembler should interpret 'a >> b' constant
+  /// expressions as logical rather than arithmetic.
+  bool UseLogicalShr;
 
 public:
   explicit MCAsmInfo();
@@ -427,6 +439,7 @@ public:
   const char *getLabelSuffix() const { return LabelSuffix; }
 
   bool useAssignmentForEHBegin() const { return UseAssignmentForEHBegin; }
+  bool needsLocalForSize() const { return NeedsLocalForSize; }
   const char *getPrivateGlobalPrefix() const { return PrivateGlobalPrefix; }
   const char *getPrivateLabelPrefix() const { return PrivateLabelPrefix; }
   bool hasLinkerPrivateGlobalPrefix() const {
@@ -463,6 +476,7 @@ public:
   LCOMM::LCOMMType getLCOMMDirectiveAlignmentType() const {
     return LCOMMDirectiveAlignmentType;
   }
+  bool hasFunctionAlignment() const { return HasFunctionAlignment; }
   bool hasDotTypeDotSizeDirective() const { return HasDotTypeDotSizeDirective; }
   bool hasSingleParameterDotFile() const { return HasSingleParameterDotFile; }
   bool hasIdentDirective() const { return HasIdentDirective; }
@@ -493,12 +507,13 @@ public:
   /// frame information to unwind.
   bool usesCFIForEH() const {
     return (ExceptionsType == ExceptionHandling::DwarfCFI ||
-            ExceptionsType == ExceptionHandling::ARM ||
-            ExceptionsType == ExceptionHandling::WinEH);
+            ExceptionsType == ExceptionHandling::ARM || usesWindowsCFI());
   }
 
   bool usesWindowsCFI() const {
-    return ExceptionsType == ExceptionHandling::WinEH;
+    return ExceptionsType == ExceptionHandling::WinEH &&
+           (WinEHEncodingType != WinEH::EncodingType::Invalid &&
+            WinEHEncodingType != WinEH::EncodingType::X86);
   }
 
   bool doesDwarfUseRelocationsAcrossSections() const {
@@ -529,6 +544,8 @@ public:
   void setCompressDebugSections(bool CompressDebugSections) {
     this->CompressDebugSections = CompressDebugSections;
   }
+
+  bool shouldUseLogicalShr() const { return UseLogicalShr; }
 };
 }
 

@@ -246,20 +246,16 @@ public:
 
   /// \brief Return the debug variable referenced by
   /// this DBG_VALUE instruction.
-  DIVariable getDebugVariable() const {
+  const DILocalVariable *getDebugVariable() const {
     assert(isDebugValue() && "not a DBG_VALUE");
-    DIVariable Var(getOperand(2).getMetadata());
-    assert(Var.Verify() && "not a DIVariable");
-    return Var;
+    return cast<DILocalVariable>(getOperand(2).getMetadata());
   }
 
   /// \brief Return the complex address expression referenced by
   /// this DBG_VALUE instruction.
-  DIExpression getDebugExpression() const {
+  const DIExpression *getDebugExpression() const {
     assert(isDebugValue() && "not a DBG_VALUE");
-    DIExpression Expr(getOperand(3).getMetadata());
-    assert(Expr.Verify() && "not a DIExpression");
-    return Expr;
+    return cast<DIExpression>(getOperand(3).getMetadata());
   }
 
   /// emitError - Emit an error referring to the source location of this
@@ -1113,8 +1109,7 @@ public:
   //
   // Debugging support
   //
-  void print(raw_ostream &OS, const TargetMachine *TM = nullptr,
-             bool SkipOpers = false) const;
+  void print(raw_ostream &OS, bool SkipOpers = false) const;
   void dump() const;
 
   //===--------------------------------------------------------------------===//
@@ -1170,11 +1165,11 @@ public:
     assert(NumMemRefs == NewMemRefsEnd - NewMemRefs && "Too many memrefs");
   }
 
-private:
-  /// getRegInfo - If this instruction is embedded into a MachineFunction,
-  /// return the MachineRegisterInfo object for the current function, otherwise
-  /// return null.
-  MachineRegisterInfo *getRegInfo();
+  /// clearMemRefs - Clear this MachineInstr's memory reference descriptor list.
+  void clearMemRefs() {
+    MemRefs = nullptr;
+    NumMemRefs = 0;
+  }
 
   /// untieRegOperand - Break any tie involving OpIdx.
   void untieRegOperand(unsigned OpIdx) {
@@ -1184,6 +1179,13 @@ private:
       MO.TiedTo = 0;
     }
   }
+
+
+private:
+  /// getRegInfo - If this instruction is embedded into a MachineFunction,
+  /// return the MachineRegisterInfo object for the current function, otherwise
+  /// return null.
+  MachineRegisterInfo *getRegInfo();
 
   /// addImplicitDefUseOperands - Add all implicit def and use operands to
   /// this instruction.

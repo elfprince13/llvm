@@ -31,7 +31,7 @@ using namespace llvm;
 
 AArch64InstrInfo::AArch64InstrInfo(const AArch64Subtarget &STI)
     : AArch64GenInstrInfo(AArch64::ADJCALLSTACKDOWN, AArch64::ADJCALLSTACKUP),
-      RI(this, &STI), Subtarget(STI) {}
+      RI(STI.getTargetTriple()), Subtarget(STI) {}
 
 /// GetInstSize - Return the number of bytes of code the specified
 /// instruction may be.  This returns the maximum number of bytes.
@@ -1526,7 +1526,7 @@ void AArch64InstrInfo::copyPhysRegTuple(
   }
 
   for (; SubReg != End; SubReg += Incr) {
-    const MachineInstrBuilder &MIB = BuildMI(MBB, I, DL, get(Opcode));
+    const MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(Opcode));
     AddSubReg(MIB, DestReg, Indices[SubReg], RegState::Define, TRI);
     AddSubReg(MIB, SrcReg, Indices[SubReg], 0, TRI);
     AddSubReg(MIB, SrcReg, Indices[SubReg], getKillRegState(KillSrc), TRI);
@@ -1904,7 +1904,7 @@ void AArch64InstrInfo::storeRegToStackSlot(
   }
   assert(Opc && "Unknown register class");
 
-  const MachineInstrBuilder &MI = BuildMI(MBB, MBBI, DL, get(Opc))
+  const MachineInstrBuilder MI = BuildMI(MBB, MBBI, DL, get(Opc))
                                       .addReg(SrcReg, getKillRegState(isKill))
                                       .addFrameIndex(FI);
 
@@ -2002,7 +2002,7 @@ void AArch64InstrInfo::loadRegFromStackSlot(
   }
   assert(Opc && "Unknown register class");
 
-  const MachineInstrBuilder &MI = BuildMI(MBB, MBBI, DL, get(Opc))
+  const MachineInstrBuilder MI = BuildMI(MBB, MBBI, DL, get(Opc))
                                       .addReg(DestReg, getDefRegState(true))
                                       .addFrameIndex(FI);
   if (Offset)
@@ -2068,10 +2068,10 @@ void llvm::emitFrameOffset(MachineBasicBlock &MBB,
       .setMIFlag(Flag);
 }
 
-MachineInstr *
-AArch64InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
-                                        const SmallVectorImpl<unsigned> &Ops,
-                                        int FrameIndex) const {
+MachineInstr *AArch64InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
+                                                      MachineInstr *MI,
+                                                      ArrayRef<unsigned> Ops,
+                                                      int FrameIndex) const {
   // This is a bit of a hack. Consider this instruction:
   //
   //   %vreg0<def> = COPY %SP; GPR64all:%vreg0
@@ -2366,7 +2366,7 @@ bool llvm::rewriteAArch64FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
 
 void AArch64InstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
   NopInst.setOpcode(AArch64::HINT);
-  NopInst.addOperand(MCOperand::CreateImm(0));
+  NopInst.addOperand(MCOperand::createImm(0));
 }
 /// useMachineCombiner - return true when a target supports MachineCombiner
 bool AArch64InstrInfo::useMachineCombiner() const {

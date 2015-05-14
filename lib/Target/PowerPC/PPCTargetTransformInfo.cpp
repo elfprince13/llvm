@@ -192,6 +192,10 @@ void PPCTTIImpl::getUnrollingPreferences(Loop *L,
   BaseT::getUnrollingPreferences(L, UP);
 }
 
+bool PPCTTIImpl::enableAggressiveInterleaving(bool LoopHasReductions) {
+  return LoopHasReductions;
+}
+
 unsigned PPCTTIImpl::getNumberOfRegisters(bool Vector) {
   if (Vector && !ST->hasAltivec() && !ST->hasQPX())
     return 0;
@@ -211,7 +215,7 @@ unsigned PPCTTIImpl::getRegisterBitWidth(bool Vector) {
 
 }
 
-unsigned PPCTTIImpl::getMaxInterleaveFactor() {
+unsigned PPCTTIImpl::getMaxInterleaveFactor(unsigned VF) {
   unsigned Directive = ST->getDarwinDirective();
   // The 440 has no SIMD support, but floating-point instructions
   // have a 5-cycle latency, so unroll by 5x for latency hiding.

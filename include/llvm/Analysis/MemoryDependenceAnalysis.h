@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/PredIteratorCache.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/Pass.h"
 
@@ -29,7 +30,6 @@ namespace llvm {
   class CallSite;
   class AliasAnalysis;
   class AssumptionCache;
-  class DataLayout;
   class MemoryDependenceAnalysis;
   class PredIteratorCache;
   class DominatorTree;
@@ -324,14 +324,13 @@ namespace llvm {
 
     /// Current AA implementation, just a cache.
     AliasAnalysis *AA;
-    const DataLayout *DL;
     DominatorTree *DT;
     AssumptionCache *AC;
-    std::unique_ptr<PredIteratorCache> PredCache;
+    PredIteratorCache PredCache;
 
   public:
     MemoryDependenceAnalysis();
-    ~MemoryDependenceAnalysis();
+    ~MemoryDependenceAnalysis() override;
     static char ID;
 
     /// Pass Implementation stuff.  This doesn't do any analysis eagerly.
@@ -421,8 +420,7 @@ namespace llvm {
     static unsigned getLoadLoadClobberFullWidthSize(const Value *MemLocBase,
                                                     int64_t MemLocOffs,
                                                     unsigned MemLocSize,
-                                                    const LoadInst *LI,
-                                                    const DataLayout &DL);
+                                                    const LoadInst *LI);
 
   private:
     MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,

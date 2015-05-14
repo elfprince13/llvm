@@ -502,6 +502,16 @@ def : MipsPat<(i32 (trunc (or GPR64:$lhs, GPR64:$rhs))),
 def : MipsPat<(i32 (trunc (xor GPR64:$lhs, GPR64:$rhs))),
               (EXTRACT_SUBREG (XOR64 GPR64:$lhs, GPR64:$rhs), sub_32)>;
 
+// variable shift instructions patterns
+def : MipsPat<(shl GPR64:$rt, (i32 (trunc GPR64:$rs))),
+              (DSLLV GPR64:$rt, (EXTRACT_SUBREG GPR64:$rs, sub_32))>;
+def : MipsPat<(srl GPR64:$rt, (i32 (trunc GPR64:$rs))),
+              (DSRLV GPR64:$rt, (EXTRACT_SUBREG GPR64:$rs, sub_32))>;
+def : MipsPat<(sra GPR64:$rt, (i32 (trunc GPR64:$rs))),
+              (DSRAV GPR64:$rt, (EXTRACT_SUBREG GPR64:$rs, sub_32))>;
+def : MipsPat<(rotr GPR64:$rt, (i32 (trunc GPR64:$rs))),
+              (DROTRV GPR64:$rt, (EXTRACT_SUBREG GPR64:$rs, sub_32))>;
+
 // 32-to-64-bit extension
 def : MipsPat<(i64 (anyext GPR32:$src)), (SLL64_32 GPR32:$src)>;
 def : MipsPat<(i64 (zext GPR32:$src)), (DSRL (DSLL64_32 GPR32:$src), 32)>;
@@ -557,6 +567,15 @@ def : MipsInstAlias<"dadd $rs, $imm",
 def : MipsInstAlias<"dsll $rd, $rt, $rs",
                     (DSLLV GPR64Opnd:$rd, GPR64Opnd:$rt, GPR32Opnd:$rs), 0>,
                     ISA_MIPS3;
+def : MipsInstAlias<"dneg $rt, $rs",
+                    (DSUB GPR64Opnd:$rt, ZERO_64, GPR64Opnd:$rs), 1>,
+                    ISA_MIPS3;
+def : MipsInstAlias<"dneg $rt",
+                    (DSUB GPR64Opnd:$rt, ZERO_64, GPR64Opnd:$rt), 0>,
+                    ISA_MIPS3;
+def : MipsInstAlias<"dnegu $rt, $rs",
+                    (DSUBu GPR64Opnd:$rt, ZERO_64, GPR64Opnd:$rs), 1>,
+                    ISA_MIPS3;
 def : MipsInstAlias<"dsubu $rt, $rs, $imm",
                     (DADDiu GPR64Opnd:$rt, GPR64Opnd:$rs,
                             InvertedImOperand64:$imm), 0>, ISA_MIPS3;
@@ -604,7 +623,7 @@ def : MipsInstAlias<"syncws",     (SYNC 0x5), 0>;
 // Assembler Pseudo Instructions
 //===----------------------------------------------------------------------===//
 
-class LoadImm64<string instr_asm, Operand Od, RegisterOperand RO> :
+class LoadImmediate64<string instr_asm, Operand Od, RegisterOperand RO> :
   MipsAsmPseudoInst<(outs RO:$rt), (ins Od:$imm64),
                      !strconcat(instr_asm, "\t$rt, $imm64")> ;
-def LoadImm64Reg : LoadImm64<"dli", imm64, GPR64Opnd>;
+def LoadImm64 : LoadImmediate64<"dli", imm64, GPR64Opnd>;

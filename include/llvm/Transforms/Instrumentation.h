@@ -60,6 +60,10 @@ struct GCOVOptions {
   // Emit the name of the function in the .gcda files. This is redundant, as
   // the function identifier can be used to find the name from the .gcno file.
   bool FunctionNamesInData;
+
+  // Emit the exit block immediately after the start block, rather than after
+  // all of the function body's blocks.
+  bool ExitBlockBeforeBody;
 };
 ModulePass *createGCOVProfilerPass(const GCOVOptions &Options =
                                    GCOVOptions::getDefault());
@@ -70,6 +74,9 @@ struct InstrProfOptions {
 
   // Add the 'noredzone' attribute to added runtime library calls.
   bool NoRedZone;
+
+  // Name of the profile file to use as output
+  std::string InstrProfileOutput;
 };
 
 /// Insert frontend instrumentation based profiling.
@@ -91,8 +98,27 @@ ModulePass *createDataFlowSanitizerPass(
     const std::vector<std::string> &ABIListFiles = std::vector<std::string>(),
     void *(*getArgTLS)() = nullptr, void *(*getRetValTLS)() = nullptr);
 
+// Options for sanitizer coverage instrumentation.
+struct SanitizerCoverageOptions {
+  SanitizerCoverageOptions()
+      : CoverageType(SCK_None), IndirectCalls(false), TraceBB(false),
+        TraceCmp(false), Use8bitCounters(false) {}
+
+  enum Type {
+    SCK_None = 0,
+    SCK_Function,
+    SCK_BB,
+    SCK_Edge
+  } CoverageType;
+  bool IndirectCalls;
+  bool TraceBB;
+  bool TraceCmp;
+  bool Use8bitCounters;
+};
+
 // Insert SanitizerCoverage instrumentation.
-ModulePass *createSanitizerCoverageModulePass(int CoverageLevel);
+ModulePass *createSanitizerCoverageModulePass(
+    const SanitizerCoverageOptions &Options = SanitizerCoverageOptions());
 
 #if defined(__GNUC__) && defined(__linux__) && !defined(ANDROID)
 inline ModulePass *createDataFlowSanitizerPassForJIT(

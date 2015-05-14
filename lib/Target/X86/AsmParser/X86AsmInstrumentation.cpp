@@ -14,7 +14,6 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/MachineValueType.h"
-#include "llvm/IR/Function.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
@@ -246,7 +245,7 @@ protected:
     assert(VT == MVT::i32 || VT == MVT::i64);
     MCInst Inst;
     Inst.setOpcode(VT == MVT::i32 ? X86::LEA32r : X86::LEA64r);
-    Inst.addOperand(MCOperand::CreateReg(getX86SubSuperRegister(Reg, VT)));
+    Inst.addOperand(MCOperand::createReg(getX86SubSuperRegister(Reg, VT)));
     Op.addMemOperands(Inst, 5);
     EmitInstruction(Out, Inst);
   }
@@ -643,7 +642,7 @@ void X86AddressSanitizer32::InstrumentMemOperandSmall(
   {
     MCInst Inst;
     Inst.setOpcode(X86::MOV8rm);
-    Inst.addOperand(MCOperand::CreateReg(ShadowRegI8));
+    Inst.addOperand(MCOperand::createReg(ShadowRegI8));
     const MCExpr *Disp = MCConstantExpr::Create(kShadowOffset, Ctx);
     std::unique_ptr<X86Operand> Op(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI32, 0, 1,
@@ -726,7 +725,7 @@ void X86AddressSanitizer32::InstrumentMemOperandLarge(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI32, 0, 1,
                               SMLoc(), SMLoc()));
     Op->addMemOperands(Inst, 5);
-    Inst.addOperand(MCOperand::CreateImm(0));
+    Inst.addOperand(MCOperand::createImm(0));
     EmitInstruction(Out, Inst);
   }
   MCSymbol *DoneSym = Ctx.CreateTempSymbol();
@@ -914,7 +913,7 @@ void X86AddressSanitizer64::InstrumentMemOperandSmall(
   {
     MCInst Inst;
     Inst.setOpcode(X86::MOV8rm);
-    Inst.addOperand(MCOperand::CreateReg(ShadowRegI8));
+    Inst.addOperand(MCOperand::createReg(ShadowRegI8));
     const MCExpr *Disp = MCConstantExpr::Create(kShadowOffset, Ctx);
     std::unique_ptr<X86Operand> Op(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI64, 0, 1,
@@ -997,7 +996,7 @@ void X86AddressSanitizer64::InstrumentMemOperandLarge(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI64, 0, 1,
                               SMLoc(), SMLoc()));
     Op->addMemOperands(Inst, 5);
-    Inst.addOperand(MCOperand::CreateImm(0));
+    Inst.addOperand(MCOperand::createImm(0));
     EmitInstruction(Out, Inst);
   }
 

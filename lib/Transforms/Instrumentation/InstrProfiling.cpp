@@ -97,7 +97,8 @@ private:
   /// Add uses of our data variables and runtime hook.
   void emitUses();
 
-  /// Create a static initializer for our data, on platforms that need it.
+  /// Create a static initializer for our data, on platforms that need it,
+  /// and for any profile output file that was specified.
   void emitInitialization();
 };
 
@@ -288,6 +289,7 @@ void InstrProfiling::emitRuntimeHook() {
   User->addFnAttr(Attribute::NoInline);
   if (Options.NoRedZone)
     User->addFnAttr(Attribute::NoRedZone);
+  User->setVisibility(GlobalValue::HiddenVisibility);
 
   IRBuilder<> IRB(BasicBlock::Create(M->getContext(), "", User));
   auto *Load = IRB.CreateLoad(Var);
@@ -327,8 +329,10 @@ void InstrProfiling::emitUses() {
 }
 
 void InstrProfiling::emitInitialization() {
+  std::string InstrProfileOutput = Options.InstrProfileOutput;
+
   Constant *RegisterF = M->getFunction("__llvm_profile_register_functions");
-  if (!RegisterF)
+  if (!RegisterF && InstrProfileOutput.empty())
     return;
 
   // Create the initialization function.
@@ -343,7 +347,24 @@ void InstrProfiling::emitInitialization() {
 
   // Add the basic block and the necessary calls.
   IRBuilder<> IRB(BasicBlock::Create(M->getContext(), "", F));
-  IRB.CreateCall(RegisterF);
+  if (RegisterF)
+    IRB.CreateCall(RegisterF);
+  if (!InstrProfileOutput.empty()) {
+    auto *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    auto *SetNameTy = FunctionType::get(VoidTy, Int8PtrTy, false);
+    auto *SetNameF =
+        Function::Create(SetNameTy, GlobalValue::ExternalLinkage,
+                         "__llvm_profile_override_default_filename", M);
+
+    // Create variable for profile name
+    Constant *ProfileNameConst =
+        ConstantDataArray::getString(M->getContext(), InstrProfileOutput, true);
+    GlobalVariable *ProfileName =
+        new GlobalVariable(*M, ProfileNameConst->getType(), true,
+                           GlobalValue::PrivateLinkage, ProfileNameConst);
+
+    IRB.CreateCall(SetNameF, IRB.CreatePointerCast(ProfileName, Int8PtrTy));
+  }
   IRB.CreateRetVoid();
 
   appendToGlobalCtors(*M, F, 0);

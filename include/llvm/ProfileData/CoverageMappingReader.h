@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/ProfileData/CoverageMapping.h"
 #include "llvm/ProfileData/InstrProf.h"
@@ -79,12 +80,6 @@ class RawCoverageReader {
 protected:
   StringRef Data;
 
-  /// \brief Return the error code.
-  std::error_code error(std::error_code EC) { return EC; }
-
-  /// \brief Clear the current error code and return a successful one.
-  std::error_code success() { return error(instrprof_error::success); }
-
   RawCoverageReader(StringRef Data) : Data(Data) {}
 
   std::error_code readULEB128(uint64_t &Result);
@@ -142,7 +137,7 @@ private:
 
 /// \brief Reader for the coverage mapping data that is emitted by the
 /// frontend and stored in an object file.
-class ObjectFileCoverageMappingReader : public CoverageMappingReader {
+class BinaryCoverageReader : public CoverageMappingReader {
 public:
   struct ProfileMappingRecord {
     CoverageMappingVersion Version;
@@ -161,8 +156,6 @@ public:
   };
 
 private:
-  std::error_code LastError;
-  object::OwningBinary<object::ObjectFile> Object;
   std::vector<StringRef> Filenames;
   std::vector<ProfileMappingRecord> MappingRecords;
   size_t CurrentRecord;
@@ -170,36 +163,17 @@ private:
   std::vector<CounterExpression> Expressions;
   std::vector<CounterMappingRegion> MappingRegions;
 
-  ObjectFileCoverageMappingReader(const ObjectFileCoverageMappingReader &)
-      = delete;
-  ObjectFileCoverageMappingReader &
-  operator=(const ObjectFileCoverageMappingReader &) = delete;
+  BinaryCoverageReader(const BinaryCoverageReader &) = delete;
+  BinaryCoverageReader &operator=(const BinaryCoverageReader &) = delete;
 
-  /// \brief Set the current error_code and return same.
-  std::error_code error(std::error_code EC) {
-    LastError = EC;
-    return EC;
-  }
-
-  /// \brief Clear the current error code and return a successful one.
-  std::error_code success() { return error(instrprof_error::success); }
+  BinaryCoverageReader() : CurrentRecord(0) {}
 
 public:
-  ObjectFileCoverageMappingReader(StringRef FileName);
-  ObjectFileCoverageMappingReader(
-      std::unique_ptr<MemoryBuffer> &ObjectBuffer,
-      sys::fs::file_magic Type = sys::fs::file_magic::unknown);
+  static ErrorOr<std::unique_ptr<BinaryCoverageReader>>
+  create(std::unique_ptr<MemoryBuffer> &ObjectBuffer,
+         Triple::ArchType Arch = Triple::ArchType::UnknownArch);
 
-  std::error_code readHeader();
   std::error_code readNextRecord(CoverageMappingRecord &Record) override;
-
-  /// \brief Return true if the reader has finished reading the profile data.
-  bool isEOF() { return LastError == instrprof_error::eof; }
-  /// \brief Return true if the reader encountered an error reading profiling
-  /// data.
-  bool hasError() { return LastError && !isEOF(); }
-  /// \brief Get the current error code.
-  std::error_code getError() { return LastError; }
 };
 
 } // end namespace coverage

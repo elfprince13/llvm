@@ -24,7 +24,7 @@
 
 namespace llvm {
   namespace PPCISD {
-    enum NodeType {
+    enum NodeType : unsigned {
       // Start the numbering where the builtin ops and target ops leave off.
       FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
@@ -70,8 +70,6 @@ namespace llvm {
       /// Constant.  Selected naively, these turn into 'lis G+C' and 'li G+C',
       /// though these are usually folded into other nodes.
       Hi, Lo,
-
-      TOC_ENTRY,
 
       /// The following two target-specific nodes are used for calls through
       /// function pointers in the 64-bit SVR4 ABI.
@@ -121,6 +119,15 @@ namespace llvm {
       /// resultant GPR.  Bits corresponding to other CR regs are undefined.
       MFOCRF,
 
+      /// Direct move from a VSX register to a GPR
+      MFVSR,
+
+      /// Direct move from a GPR to a VSX register (algebraic)
+      MTVSRA,
+
+      /// Direct move from a GPR to a VSX register (zero)
+      MTVSRZ,
+
       // FIXME: Remove these once the ANDI glue bug is fixed:
       /// i1 = ANDIo_1_[EQ|GT]_BIT(i32 or i64 x) - Represents the result of the
       /// eq or gt bit of CR0 after executing andi. x, 1. This is used to
@@ -167,14 +174,6 @@ namespace llvm {
 
       /// F8RC = MFFS - This moves the FPSCR (not modeled) into the register.
       MFFS,
-
-      /// LARX = This corresponds to PPC l{w|d}arx instrcution: load and
-      /// reserve indexed. This is used to implement atomic operations.
-      LARX,
-
-      /// STCX = This corresponds to PPC stcx. instrcution: store conditional
-      /// indexed. This is used to implement atomic operations.
-      STCX,
 
       /// TC_RETURN - A tail call return.
       ///   operand #0 chain
@@ -337,7 +336,12 @@ namespace llvm {
 
       /// QBRC, CHAIN = QVLFSb CHAIN, Ptr
       /// The 4xf32 load used for v4i1 constants.
-      QVLFSb
+      QVLFSb,
+
+      /// GPRC = TOC_ENTRY GA, TOC
+      /// Loads the entry for GA from the TOC, where the TOC base is given by
+      /// the last operand.
+      TOC_ENTRY
     };
   }
 
@@ -372,10 +376,6 @@ namespace llvm {
     /// specifies a splat of a single element that is suitable for input to
     /// VSPLTB/VSPLTH/VSPLTW.
     bool isSplatShuffleMask(ShuffleVectorSDNode *N, unsigned EltSize);
-
-    /// isAllNegativeZeroVector - Returns true if all elements of build_vector
-    /// are -0.0.
-    bool isAllNegativeZeroVector(SDNode *N);
 
     /// getVSPLTImmediate - Return the appropriate VSPLT* immediate to splat the
     /// specified isSplatShuffleMask VECTOR_SHUFFLE mask.
@@ -486,7 +486,8 @@ namespace llvm {
       EmitInstrWithCustomInserter(MachineInstr *MI,
                                   MachineBasicBlock *MBB) const override;
     MachineBasicBlock *EmitAtomicBinary(MachineInstr *MI,
-                                        MachineBasicBlock *MBB, bool is64Bit,
+                                        MachineBasicBlock *MBB,
+                                        unsigned AtomicSize,
                                         unsigned BinOpcode) const;
     MachineBasicBlock *EmitPartwordAtomicBinary(MachineInstr *MI,
                                                 MachineBasicBlock *MBB,
@@ -506,9 +507,10 @@ namespace llvm {
     ConstraintWeight getSingleConstraintMatchWeight(
       AsmOperandInfo &info, const char *constraint) const override;
 
-    std::pair<unsigned, const TargetRegisterClass*>
-      getRegForInlineAsmConstraint(const std::string &Constraint,
-                                   MVT VT) const override;
+    std::pair<unsigned, const TargetRegisterClass *>
+    getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                                 const std::string &Constraint,
+                                 MVT VT) const override;
 
     /// getByValTypeAlignment - Return the desired alignment for ByVal aggregate
     /// function arguments in the caller parameter area.  This is the actual
@@ -521,6 +523,21 @@ namespace llvm {
                                       std::string &Constraint,
                                       std::vector<SDValue> &Ops,
                                       SelectionDAG &DAG) const override;
+
+    unsigned getInlineAsmMemConstraint(
+        const std::string &ConstraintCode) const override {
+      if (ConstraintCode == "es")
+        return InlineAsm::Constraint_es;
+      else if (ConstraintCode == "o")
+        return InlineAsm::Constraint_o;
+      else if (ConstraintCode == "Q")
+        return InlineAsm::Constraint_Q;
+      else if (ConstraintCode == "Z")
+        return InlineAsm::Constraint_Z;
+      else if (ConstraintCode == "Zy")
+        return InlineAsm::Constraint_Zy;
+      return TargetLowering::getInlineAsmMemConstraint(ConstraintCode);
+    }
 
     /// isLegalAddressingMode - Return true if the addressing mode represented
     /// by AM is legal for this target, for a load/store of the specified type.
@@ -637,6 +654,10 @@ namespace llvm {
 
     void LowerFP_TO_INTForReuse(SDValue Op, ReuseLoadInfo &RLI,
                                 SelectionDAG &DAG, SDLoc dl) const;
+    SDValue LowerFP_TO_INTDirectMove(SDValue Op, SelectionDAG &DAG,
+                                     SDLoc dl) const;
+    SDValue LowerINT_TO_FPDirectMove(SDValue Op, SelectionDAG &DAG,
+                                     SDLoc dl) const;
 
     SDValue getFramePointerFrameIndex(SelectionDAG & DAG) const;
     SDValue getReturnAddrFrameIndex(SelectionDAG & DAG) const;

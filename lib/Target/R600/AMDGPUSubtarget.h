@@ -44,6 +44,10 @@ public:
     VOLCANIC_ISLANDS,
   };
 
+  enum {
+    FIXED_SGPR_COUNT_FOR_INIT_BUG = 80
+  };
+
 private:
   std::string DevName;
   bool Is64bit;
@@ -66,6 +70,12 @@ private:
   bool CFALUBug;
   int LocalMemorySize;
   bool EnableVGPRSpilling;
+  bool SGPRInitBug;
+  bool IsGCN;
+  bool GCN1Encoding;
+  bool GCN3Encoding;
+  bool CIInsts;
+  bool FeatureDisable;
 
   AMDGPUFrameLowering FrameLowering;
   std::unique_ptr<AMDGPUTargetLowering> TLInfo;
@@ -175,6 +185,14 @@ public:
     return (getGeneration() >= EVERGREEN);
   }
 
+  bool hasCARRY() const {
+    return (getGeneration() >= EVERGREEN);
+  }
+
+  bool hasBORROW() const {
+    return (getGeneration() >= EVERGREEN);
+  }
+
   bool IsIRStructurizerEnabled() const {
     return EnableIRStructurizer;
   }
@@ -204,6 +222,10 @@ public:
 
   int getLocalMemorySize() const {
     return LocalMemorySize;
+  }
+
+  bool hasSGPRInitBug() const {
+    return SGPRInitBug;
   }
 
   unsigned getAmdKernelCodeChipID() const;

@@ -4,7 +4,7 @@
 ; in-function jumps from function exiting jumps.
 
 define void @tail_jmp_reg(i32, i32, void ()* %fptr) {
-  tail call void ()* %fptr()
+  tail call void () %fptr()
   ret void
 }
 
@@ -27,8 +27,8 @@ define void @tail_jmp_imm() {
 @g_fptr = global void ()* @tail_tgt
 
 define void @tail_jmp_mem() {
-  %fptr = load void ()** @g_fptr
-  tail call void ()* %fptr()
+  %fptr = load void ()*, void ()** @g_fptr
+  tail call void () %fptr()
   ret void
 }
 

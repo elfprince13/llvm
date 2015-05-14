@@ -205,7 +205,7 @@ void HexagonAsmPrinter::EmitInstruction(const MachineInstr *MI) {
       HexagonMCInstrInfo::AppendImplicitOperands(MCI);
       HexagonMCInstrInfo::setPacketBegin(MCI, Index == 0);
       HexagonMCInstrInfo::setPacketEnd(MCI, Index == (Size - 1));
-      EmitToStreamer(OutStreamer, MCI);
+      EmitToStreamer(*OutStreamer, MCI);
     }
   }
   else {
@@ -216,27 +216,12 @@ void HexagonAsmPrinter::EmitInstruction(const MachineInstr *MI) {
       HexagonMCInstrInfo::setPacketBegin(MCI, true);
       HexagonMCInstrInfo::setPacketEnd(MCI, true);
     }
-    EmitToStreamer(OutStreamer, MCI);
+    EmitToStreamer(*OutStreamer, MCI);
   }
 
   return;
 }
 
-static MCInstPrinter *createHexagonMCInstPrinter(const Target &T,
-                                                 unsigned SyntaxVariant,
-                                                 const MCAsmInfo &MAI,
-                                                 const MCInstrInfo &MII,
-                                                 const MCRegisterInfo &MRI,
-                                                 const MCSubtargetInfo &STI) {
-  if (SyntaxVariant == 0)
-    return(new HexagonInstPrinter(MAI, MII, MRI));
-  else
-   return nullptr;
-}
-
 extern "C" void LLVMInitializeHexagonAsmPrinter() {
   RegisterAsmPrinter<HexagonAsmPrinter> X(TheHexagonTarget);
-
-  TargetRegistry::RegisterMCInstPrinter(TheHexagonTarget,
-                                        createHexagonMCInstPrinter);
 }

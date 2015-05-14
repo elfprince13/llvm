@@ -28,12 +28,15 @@ class PredicateControl {
   list<Predicate> FGRPredicates = [];
   // Predicates for the instruction group membership such as ISA's and ASE's
   list<Predicate> InsnPredicates = [];
+  // Predicate for marking the instruction as usable in hard-float mode only.
+  list<Predicate> HardFloatPredicate = [];
   // Predicates for anything else
   list<Predicate> AdditionalPredicates = [];
   list<Predicate> Predicates = !listconcat(EncodingPredicates,
                                            GPRPredicates,
                                            FGRPredicates,
                                            InsnPredicates,
+                                           HardFloatPredicate,
                                            AdditionalPredicates);
 }
 
@@ -58,22 +61,24 @@ def MipsInstrInfo : InstrInfo;
 //===----------------------------------------------------------------------===//
 
 def FeatureNoABICalls  : SubtargetFeature<"noabicalls", "NoABICalls", "true",
-                                "Disable SVR4-style position-independent code.">;
+                                "Disable SVR4-style position-independent code">;
 def FeatureGP64Bit     : SubtargetFeature<"gp64", "IsGP64bit", "true",
-                                "General Purpose Registers are 64-bit wide.">;
+                                "General Purpose Registers are 64-bit wide">;
 def FeatureFP64Bit     : SubtargetFeature<"fp64", "IsFP64bit", "true",
-                                "Support 64-bit FP registers.">;
+                                "Support 64-bit FP registers">;
 def FeatureFPXX        : SubtargetFeature<"fpxx", "IsFPXX", "true",
-                                "Support for FPXX.">;
+                                "Support for FPXX">;
 def FeatureNaN2008     : SubtargetFeature<"nan2008", "IsNaN2008bit", "true",
-                                "IEEE 754-2008 NaN encoding.">;
+                                "IEEE 754-2008 NaN encoding">;
 def FeatureSingleFloat : SubtargetFeature<"single-float", "IsSingleFloat",
                                 "true", "Only supports single precision float">;
+def FeatureSoftFloat   : SubtargetFeature<"soft-float", "IsSoftFloat", "true",
+                                "Does not support floating point instructions">;
 def FeatureNoOddSPReg  : SubtargetFeature<"nooddspreg", "UseOddSPReg", "false",
                               "Disable odd numbered single-precision "
                               "registers">;
 def FeatureVFPU        : SubtargetFeature<"vfpu", "HasVFPU",
-                                "true", "Enable vector FPU instructions.">;
+                                "true", "Enable vector FPU instructions">;
 def FeatureMips1       : SubtargetFeature<"mips1", "MipsArchVersion", "Mips1",
                                 "Mips I ISA Support [highly experimental]">;
 def FeatureMips2       : SubtargetFeature<"mips2", "MipsArchVersion", "Mips2",

@@ -37,6 +37,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
@@ -409,6 +410,8 @@ ARMBaseInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   assert((Cond.size() == 2 || Cond.size() == 0) &&
          "ARM branch conditions have two components!");
 
+  // For conditional branches, we use addOperand to preserve CPSR flags.
+
   if (!FBB) {
     if (Cond.empty()) { // Unconditional branch?
       if (isThumb)
@@ -417,13 +420,13 @@ ARMBaseInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
         BuildMI(&MBB, DL, get(BOpc)).addMBB(TBB);
     } else
       BuildMI(&MBB, DL, get(BccOpc)).addMBB(TBB)
-        .addImm(Cond[0].getImm()).addReg(Cond[1].getReg());
+        .addImm(Cond[0].getImm()).addOperand(Cond[1]);
     return 1;
   }
 
   // Two-way conditional branch.
   BuildMI(&MBB, DL, get(BccOpc)).addMBB(TBB)
-    .addImm(Cond[0].getImm()).addReg(Cond[1].getReg());
+    .addImm(Cond[0].getImm()).addOperand(Cond[1]);
   if (isThumb)
     BuildMI(&MBB, DL, get(BOpc)).addMBB(FBB).addImm(ARMCC::AL).addReg(0);
   else
@@ -652,7 +655,7 @@ unsigned ARMBaseInstrInfo::GetInstSizeInBytes(const MachineInstr *MI) const {
       ? 1 : ((Opc == ARM::t2TBH_JT) ? 2 : 4);
     unsigned NumOps = MCID.getNumOperands();
     MachineOperand JTOP =
-      MI->getOperand(NumOps - (MI->isPredicable() ? 3 : 2));
+      MI->getOperand(NumOps - (MI->isPredicable() ? 2 : 1));
     unsigned JTI = JTOP.getIndex();
     const MachineJumpTableInfo *MJTI = MF->getJumpTableInfo();
     assert(MJTI != nullptr);
@@ -1684,6 +1687,33 @@ isProfitableToIfCvt(MachineBasicBlock &MBB,
   if (!NumCycles)
     return false;
 
+  // If we are optimizing for size, see if the branch in the predecessor can be
+  // lowered to cbn?z by the constant island lowering pass, and return false if
+  // so. This results in a shorter instruction sequence.
+  const Function *F = MBB.getParent()->getFunction();
+  if (F->hasFnAttribute(Attribute::OptimizeForSize) ||
+      F->hasFnAttribute(Attribute::MinSize)) {
+    MachineBasicBlock *Pred = *MBB.pred_begin();
+    if (!Pred->empty()) {
+      MachineInstr *LastMI = &*Pred->rbegin();
+      if (LastMI->getOpcode() == ARM::t2Bcc) {
+        MachineBasicBlock::iterator CmpMI = LastMI;
+        if (CmpMI != Pred->begin()) {
+          --CmpMI;
+          if (CmpMI->getOpcode() == ARM::tCMPi8 ||
+              CmpMI->getOpcode() == ARM::t2CMPri) {
+            unsigned Reg = CmpMI->getOperand(0).getReg();
+            unsigned PredReg = 0;
+            ARMCC::CondCodes P = getInstrPredicate(CmpMI, PredReg);
+            if (P == ARMCC::AL && CmpMI->getOperand(1).getImm() == 0 &&
+                isARMLowRegister(Reg))
+              return false;
+          }
+        }
+      }
+    }
+  }
+
   // Attempt to estimate the relative costs of predication versus branching.
   unsigned UnpredCost = Probability.getNumerator() * NumCycles;
   UnpredCost /= Probability.getDenominator();
@@ -1890,6 +1920,13 @@ ARMBaseInstrInfo::optimizeSelect(MachineInstr *MI,
   // Update SeenMIs set: register newly created MI and erase removed DefMI.
   SeenMIs.insert(NewMI);
   SeenMIs.erase(DefMI);
+
+  // If MI is inside a loop, and DefMI is outside the loop, then kill flags on
+  // DefMI would be invalid when tranferred inside the loop.  Checking for a
+  // loop is expensive, but at least remove kill flags if they are in different
+  // BBs.
+  if (DefMI->getParent() != MI->getParent())
+    NewMI->clearKillInfo();
 
   // The caller will erase MI, but not DefMI.
   DefMI->eraseFromParent();
@@ -2285,16 +2322,6 @@ static bool isSuitableForMask(MachineInstr *&MI, unsigned SrcReg,
       if (SrcReg == MI->getOperand(CommonUse ? 1 : 0).getReg())
         return true;
       break;
-    case ARM::COPY: {
-      // Walk down one instruction which is potentially an 'and'.
-      const MachineInstr &Copy = *MI;
-      MachineBasicBlock::iterator AND(
-        std::next(MachineBasicBlock::iterator(MI)));
-      if (AND == MI->getParent()->end()) return false;
-      MI = AND;
-      return isSuitableForMask(MI, Copy.getOperand(0).getReg(),
-                               CmpMask, true);
-    }
   }
 
   return false;
@@ -4115,19 +4142,21 @@ enum ARMExeDomain {
 //
 std::pair<uint16_t, uint16_t>
 ARMBaseInstrInfo::getExecutionDomain(const MachineInstr *MI) const {
-  // VMOVD, VMOVRS and VMOVSR are VFP instructions, but can be changed to NEON
-  // if they are not predicated.
-  if (MI->getOpcode() == ARM::VMOVD && !isPredicated(MI))
-    return std::make_pair(ExeVFP, (1<<ExeVFP) | (1<<ExeNEON));
+  // If we don't have access to NEON instructions then we won't be able
+  // to swizzle anything to the NEON domain. Check to make sure.
+  if (Subtarget.hasNEON()) {
+    // VMOVD, VMOVRS and VMOVSR are VFP instructions, but can be changed to NEON
+    // if they are not predicated.
+    if (MI->getOpcode() == ARM::VMOVD && !isPredicated(MI))
+      return std::make_pair(ExeVFP, (1 << ExeVFP) | (1 << ExeNEON));
 
-  // CortexA9 is particularly picky about mixing the two and wants these
-  // converted.
-  if (Subtarget.isCortexA9() && !isPredicated(MI) &&
-      (MI->getOpcode() == ARM::VMOVRS ||
-       MI->getOpcode() == ARM::VMOVSR ||
-       MI->getOpcode() == ARM::VMOVS))
-    return std::make_pair(ExeVFP, (1<<ExeVFP) | (1<<ExeNEON));
-
+    // CortexA9 is particularly picky about mixing the two and wants these
+    // converted.
+    if (Subtarget.isCortexA9() && !isPredicated(MI) &&
+        (MI->getOpcode() == ARM::VMOVRS || MI->getOpcode() == ARM::VMOVSR ||
+         MI->getOpcode() == ARM::VMOVS))
+      return std::make_pair(ExeVFP, (1 << ExeVFP) | (1 << ExeNEON));
+  }
   // No other instructions can be swizzled, so just determine their domain.
   unsigned Domain = MI->getDesc().TSFlags & ARMII::DomainMask;
 
@@ -4219,6 +4248,9 @@ ARMBaseInstrInfo::setExecutionDomain(MachineInstr *MI, unsigned Domain) const {
 
       // Zap the predicate operands.
       assert(!isPredicated(MI) && "Cannot predicate a VORRd");
+
+      // Make sure we've got NEON instructions.
+      assert(Subtarget.hasNEON() && "VORRd requires NEON");
 
       // Source instruction is %DDst = VMOVD %DSrc, 14, %noreg (; implicits)
       DstReg = MI->getOperand(0).getReg();
@@ -4507,7 +4539,7 @@ breakPartialRegDependency(MachineBasicBlock::iterator MI,
 }
 
 bool ARMBaseInstrInfo::hasNOP() const {
-  return (Subtarget.getFeatureBits() & ARM::HasV6T2Ops) != 0;
+  return (Subtarget.getFeatureBits() & ARM::HasV6KOps) != 0;
 }
 
 bool ARMBaseInstrInfo::isSwiftFastImmShift(const MachineInstr *MI) const {

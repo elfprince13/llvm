@@ -48,6 +48,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/ExecutionEngine/MCJIT.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
@@ -1292,10 +1293,11 @@ static llvm::Function *createCatchWrappedInvokeFunction(
   // (_Unwind_Exception instance). This member tells us whether or not
   // the exception is foreign.
   llvm::Value *unwindExceptionClass =
-    builder.CreateLoad(builder.CreateStructGEP(
-             builder.CreatePointerCast(unwindException,
-                                       ourUnwindExceptionType->getPointerTo()),
-                                               0));
+      builder.CreateLoad(builder.CreateStructGEP(
+          ourUnwindExceptionType,
+          builder.CreatePointerCast(unwindException,
+                                    ourUnwindExceptionType->getPointerTo()),
+          0));
 
   // Branch to the externalExceptionBlock if the exception is foreign or
   // to a catch router if not. Either way the finally block will be run.
@@ -1335,10 +1337,10 @@ static llvm::Function *createCatchWrappedInvokeFunction(
   //
   // Note: Index is not relative to pointer but instead to structure
   //       unlike a true getelementptr (GEP) instruction
-  typeInfoThrown = builder.CreateStructGEP(typeInfoThrown, 0);
+  typeInfoThrown = builder.CreateStructGEP(ourExceptionType, typeInfoThrown, 0);
 
   llvm::Value *typeInfoThrownType =
-  builder.CreateStructGEP(typeInfoThrown, 0);
+      builder.CreateStructGEP(builder.getInt8PtrTy(), typeInfoThrown, 0);
 
   generateIntegerPrint(context,
                        module,
@@ -1572,7 +1574,7 @@ public:
                                  std::runtime_error::operator=(toCopy)));
   }
 
-  virtual ~OurCppRunException (void) throw () {}
+  ~OurCppRunException(void) throw() override {}
 };
 } // end anonymous namespace
 
@@ -1971,8 +1973,7 @@ int main(int argc, char *argv[]) {
     // Set up the optimizer pipeline.
     // Start with registering info about how the
     // target lays out data structures.
-    module->setDataLayout(executionEngine->getDataLayout());
-    fpm.add(new llvm::DataLayoutPass());
+    module->setDataLayout(*executionEngine->getDataLayout());
 
     // Optimizations turned on
 #ifdef ADD_OPT_PASSES

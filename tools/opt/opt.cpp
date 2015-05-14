@@ -25,6 +25,7 @@
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassNameParser.h"
@@ -38,6 +39,7 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/PluginLoader.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -178,17 +180,23 @@ DefaultDataLayout("default-data-layout",
           cl::desc("data layout string to use if not specified by module"),
           cl::value_desc("layout-string"), cl::init(""));
 
+static cl::opt<bool> PreserveBitcodeUseListOrder(
+    "preserve-bc-uselistorder",
+    cl::desc("Preserve use-list order when writing LLVM bitcode."),
+    cl::init(true), cl::Hidden);
 
+static cl::opt<bool> PreserveAssemblyUseListOrder(
+    "preserve-ll-uselistorder",
+    cl::desc("Preserve use-list order when writing LLVM assembly."),
+    cl::init(false), cl::Hidden);
 
 static inline void addPass(legacy::PassManagerBase &PM, Pass *P) {
   // Add the pass to the pass manager...
   PM.add(P);
 
   // If we are verifying all of the intermediate steps, add the verifier...
-  if (VerifyEach) {
+  if (VerifyEach)
     PM.add(createVerifierPass());
-    PM.add(createDebugInfoVerifierPass());
-  }
 }
 
 /// This routine adds optimization passes based on selected optimization level,
@@ -198,8 +206,7 @@ static inline void addPass(legacy::PassManagerBase &PM, Pass *P) {
 static void AddOptimizationPasses(legacy::PassManagerBase &MPM,
                                   legacy::FunctionPassManager &FPM,
                                   unsigned OptLevel, unsigned SizeLevel) {
-  FPM.add(createVerifierPass());          // Verify that input is correct
-  MPM.add(createDebugInfoVerifierPass()); // Verify that debug info is correct
+  FPM.add(createVerifierPass()); // Verify that input is correct
 
   PassManagerBuilder Builder;
   Builder.OptLevel = OptLevel;
@@ -234,7 +241,6 @@ static void AddOptimizationPasses(legacy::PassManagerBase &MPM,
 static void AddStandardLinkPasses(legacy::PassManagerBase &PM) {
   PassManagerBuilder Builder;
   Builder.VerifyInput = true;
-  Builder.StripDebug = StripDebug;
   if (DisableOptimizations)
     Builder.OptLevel = 0;
 
@@ -247,7 +253,7 @@ static void AddStandardLinkPasses(legacy::PassManagerBase &PM) {
 // CodeGen-related helper functions.
 //
 
-CodeGenOpt::Level GetCodeGenOptLevel() {
+static CodeGenOpt::Level GetCodeGenOptLevel() {
   if (OptLevelO1)
     return CodeGenOpt::Less;
   if (OptLevelO2)
@@ -258,7 +264,8 @@ CodeGenOpt::Level GetCodeGenOptLevel() {
 }
 
 // Returns the TargetMachine instance or zero if no triple is provided.
-static TargetMachine* GetTargetMachine(Triple TheTriple) {
+static TargetMachine* GetTargetMachine(Triple TheTriple, StringRef CPUStr,
+                                       StringRef FeaturesStr) {
   std::string Error;
   const Target *TheTarget = TargetRegistry::lookupTarget(MArch, TheTriple,
                                                          Error);
@@ -267,17 +274,8 @@ static TargetMachine* GetTargetMachine(Triple TheTriple) {
     return nullptr;
   }
 
-  // Package up features to be passed to target/subtarget
-  std::string FeaturesStr;
-  if (MAttrs.size()) {
-    SubtargetFeatures Features;
-    for (unsigned i = 0; i != MAttrs.size(); ++i)
-      Features.AddFeature(MAttrs[i]);
-    FeaturesStr = Features.getString();
-  }
-
   return TheTarget->createTargetMachine(TheTriple.getTriple(),
-                                        MCPU, FeaturesStr,
+                                        CPUStr, FeaturesStr,
                                         InitTargetOptionsFromCodeGenFlags(),
                                         RelocModel, CMModel,
                                         GetCodeGenOptLevel());
@@ -349,6 +347,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Strip debug info before running the verifier.
+  if (StripDebug)
+    StripDebugInfo(*M);
+
+  // Immediately run the verifier to catch any problems before starting up the
+  // pass pipelines.  Otherwise we can crash on broken code during
+  // doInitialization().
+  if (!NoVerify && verifyModule(*M, &errs())) {
+    errs() << argv[0] << ": " << InputFilename
+           << ": error: input module is broken!\n";
+    return 1;
+  }
+
   // If we are supposed to override the target triple, do so now.
   if (!TargetTriple.empty())
     M->setTargetTriple(Triple::normalize(TargetTriple));
@@ -373,10 +384,18 @@ int main(int argc, char **argv) {
   }
 
   Triple ModuleTriple(M->getTargetTriple());
+  std::string CPUStr, FeaturesStr;
   TargetMachine *Machine = nullptr;
-  if (ModuleTriple.getArch())
-    Machine = GetTargetMachine(ModuleTriple);
+  if (ModuleTriple.getArch()) {
+    CPUStr = getCPUStr();
+    FeaturesStr = getFeaturesStr();
+    Machine = GetTargetMachine(ModuleTriple, CPUStr, FeaturesStr);
+  }
+
   std::unique_ptr<TargetMachine> TM(Machine);
+
+  // Override function attributes.
+  overrideFunctionAttributes(CPUStr, FeaturesStr, *M);
 
   // If the output is set to be emitted to standard out, and standard out is a
   // console, print out a warning message and refuse to do it.  We don't
@@ -400,7 +419,8 @@ int main(int argc, char **argv) {
     // string. Hand off the rest of the functionality to the new code for that
     // layer.
     return runPassPipeline(argv[0], Context, *M, TM.get(), Out.get(),
-                           PassPipeline, OK, VK)
+                           PassPipeline, OK, VK, PreserveAssemblyUseListOrder,
+                           PreserveBitcodeUseListOrder)
                ? 0
                : 1;
   }
@@ -419,14 +439,10 @@ int main(int argc, char **argv) {
   Passes.add(new TargetLibraryInfoWrapperPass(TLII));
 
   // Add an appropriate DataLayout instance for this module.
-  const DataLayout *DL = M->getDataLayout();
-  if (!DL && !DefaultDataLayout.empty()) {
+  const DataLayout &DL = M->getDataLayout();
+  if (DL.isDefault() && !DefaultDataLayout.empty()) {
     M->setDataLayout(DefaultDataLayout);
-    DL = M->getDataLayout();
   }
-
-  if (DL)
-    Passes.add(new DataLayoutPass());
 
   // Add internal analysis passes from the target machine.
   Passes.add(createTargetTransformInfoWrapperPass(TM ? TM->getTargetIRAnalysis()
@@ -435,8 +451,6 @@ int main(int argc, char **argv) {
   std::unique_ptr<legacy::FunctionPassManager> FPasses;
   if (OptLevelO1 || OptLevelO2 || OptLevelOs || OptLevelOz || OptLevelO3) {
     FPasses.reset(new legacy::FunctionPassManager(M.get()));
-    if (DL)
-      FPasses->add(new DataLayoutPass());
     FPasses->add(createTargetTransformInfoWrapperPass(
         TM ? TM->getTargetIRAnalysis() : TargetIRAnalysis()));
   }
@@ -458,10 +472,6 @@ int main(int argc, char **argv) {
     Passes.add(createBreakpointPrinter(Out->os()));
     NoOutput = true;
   }
-
-  // If the -strip-debug command line option was specified, add it.
-  if (StripDebug)
-    addPass(Passes, createStripSymbolsPass(true));
 
   // Create a new optimization pass for each one specified on the command line
   for (unsigned i = 0; i < PassList.size(); ++i) {
@@ -534,7 +544,8 @@ int main(int argc, char **argv) {
     }
 
     if (PrintEachXForm)
-      Passes.add(createPrintModulePass(errs()));
+      Passes.add(
+          createPrintModulePass(errs(), "", PreserveAssemblyUseListOrder));
   }
 
   if (StandardLinkOpts) {
@@ -565,17 +576,17 @@ int main(int argc, char **argv) {
   }
 
   // Check that the module is well formed on completion of optimization
-  if (!NoVerify && !VerifyEach) {
+  if (!NoVerify && !VerifyEach)
     Passes.add(createVerifierPass());
-    Passes.add(createDebugInfoVerifierPass());
-  }
 
   // Write bitcode or assembly to the output as the last step...
   if (!NoOutput && !AnalyzeOnly) {
     if (OutputAssembly)
-      Passes.add(createPrintModulePass(Out->os()));
+      Passes.add(
+          createPrintModulePass(Out->os(), "", PreserveAssemblyUseListOrder));
     else
-      Passes.add(createBitcodeWriterPass(Out->os()));
+      Passes.add(
+          createBitcodeWriterPass(Out->os(), PreserveBitcodeUseListOrder));
   }
 
   // Before executing passes, print the final values of the LLVM options.

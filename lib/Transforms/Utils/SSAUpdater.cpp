@@ -19,6 +19,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -155,7 +156,8 @@ Value *SSAUpdater::GetValueInMiddleOfBlock(BasicBlock *BB) {
 
   // See if the PHI node can be merged to a single value.  This can happen in
   // loop cases when we get a PHI of itself and one other value.
-  if (Value *V = SimplifyInstruction(InsertedPHI)) {
+  if (Value *V =
+          SimplifyInstruction(InsertedPHI, BB->getModule()->getDataLayout())) {
     InsertedPHI->eraseFromParent();
     return V;
   }
@@ -320,12 +322,12 @@ Value *SSAUpdater::GetValueAtEndOfBlockInternal(BasicBlock *BB) {
 //===----------------------------------------------------------------------===//
 
 LoadAndStorePromoter::
-LoadAndStorePromoter(const SmallVectorImpl<Instruction*> &Insts,
+LoadAndStorePromoter(ArrayRef<const Instruction*> Insts,
                      SSAUpdater &S, StringRef BaseName) : SSA(S) {
   if (Insts.empty()) return;
   
-  Value *SomeVal;
-  if (LoadInst *LI = dyn_cast<LoadInst>(Insts[0]))
+  const Value *SomeVal;
+  if (const LoadInst *LI = dyn_cast<LoadInst>(Insts[0]))
     SomeVal = LI;
   else
     SomeVal = cast<StoreInst>(Insts[0])->getOperand(0);

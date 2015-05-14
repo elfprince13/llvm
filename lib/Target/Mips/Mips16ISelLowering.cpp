@@ -127,7 +127,7 @@ Mips16TargetLowering::Mips16TargetLowering(const MipsTargetMachine &TM,
   // Set up the register classes
   addRegisterClass(MVT::i32, &Mips::CPU16RegsRegClass);
 
-  if (!TM.Options.UseSoftFloat)
+  if (!Subtarget.useSoftFloat())
     setMips16HardFloatLibCalls();
 
   setOperationAction(ISD::ATOMIC_FENCE,       MVT::Other, Expand);
@@ -149,7 +149,7 @@ Mips16TargetLowering::Mips16TargetLowering(const MipsTargetMachine &TM,
   setOperationAction(ISD::BSWAP, MVT::i32, Expand);
   setOperationAction(ISD::BSWAP, MVT::i64, Expand);
 
-  computeRegisterProperties();
+  computeRegisterProperties(STI.getRegisterInfo());
 }
 
 const MipsTargetLowering *

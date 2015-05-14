@@ -59,8 +59,7 @@ public:
     return "ARM Assembly / Object Emitter";
   }
 
-  void printOperand(const MachineInstr *MI, int OpNum, raw_ostream &O,
-                    const char *Modifier = nullptr);
+  void printOperand(const MachineInstr *MI, int OpNum, raw_ostream &O);
 
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
                        unsigned AsmVariant, const char *ExtraCode,
@@ -103,18 +102,21 @@ private:
                                    const MachineInstr *MI);
 
 public:
-  unsigned getISAEncoding(const Function *F) override {
+  unsigned getISAEncoding() override {
     // ARM/Darwin adds ISA to the DWARF info for each function.
     Triple TT(TM.getTargetTriple());
     if (!TT.isOSBinFormatMachO())
       return 0;
-    const ARMSubtarget &STI = TM.getSubtarget<ARMSubtarget>(*F);
-    return STI.isThumb() ? ARM::DW_ISA_ARM_thumb : ARM::DW_ISA_ARM_arm;
+    bool isThumb = TT.getArch() == Triple::thumb ||
+                   TT.getArch() == Triple::thumbeb ||
+                   TT.getSubArch() == Triple::ARMSubArch_v7m ||
+                   TT.getSubArch() == Triple::ARMSubArch_v6m;
+    return isThumb ? ARM::DW_ISA_ARM_thumb : ARM::DW_ISA_ARM_arm;
   }
 
 private:
   MCOperand GetSymbolRef(const MachineOperand &MO, const MCSymbol *Symbol);
-  MCSymbol *GetARMJTIPICJumpTableLabel2(unsigned uid, unsigned uid2) const;
+  MCSymbol *GetARMJTIPICJumpTableLabel(unsigned uid) const;
 
   MCSymbol *GetARMSJLJEHLabel() const;
 

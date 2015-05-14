@@ -164,6 +164,8 @@ public:
 
   bool hasBranchDivergence() { return false; }
 
+  bool isSourceOfDivergence(const Value *V) { return false; }
+
   bool isLoweredToCall(const Function *F) {
     // FIXME: These should almost certainly not be handled here, and instead
     // handled with the help of TLI or the target itself. This was largely
@@ -206,9 +208,9 @@ public:
 
   bool isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV, int64_t BaseOffset,
                              bool HasBaseReg, int64_t Scale) {
-    // Guess that reg+reg addressing is allowed. This heuristic is taken from
-    // the implementation of LSR.
-    return !BaseGV && BaseOffset == 0 && Scale <= 1;
+    // Guess that only reg and reg+reg addressing is allowed. This heuristic is
+    // taken from the implementation of LSR.
+    return !BaseGV && BaseOffset == 0 && (Scale == 0 || Scale == 1);
   }
 
   bool isLegalMaskedStore(Type *DataType, int Consecutive) { return false; }
@@ -235,6 +237,8 @@ public:
 
   bool shouldBuildLookupTables() { return true; }
 
+  bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
+
   TTI::PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) {
     return TTI::PSK_Software;
   }
@@ -259,7 +263,7 @@ public:
 
   unsigned getRegisterBitWidth(bool Vector) { return 32; }
 
-  unsigned getMaxInterleaveFactor() { return 1; }
+  unsigned getMaxInterleaveFactor(unsigned VF) { return 1; }
 
   unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty,
                                   TTI::OperandValueKind Opd1Info,
@@ -298,6 +302,10 @@ public:
 
   unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
                                  ArrayRef<Type *> Tys) {
+    return 1;
+  }
+
+  unsigned getCallInstrCost(Function *F, Type *RetTy, ArrayRef<Type *> Tys) {
     return 1;
   }
 
@@ -402,7 +410,7 @@ public:
           ->getGEPCost(GEP->getPointerOperand(), Indices);
     }
 
-    if (ImmutableCallSite CS = U) {
+    if (auto CS = ImmutableCallSite(U)) {
       const Function *F = CS.getCalledFunction();
       if (!F) {
         // Just use the called value type.

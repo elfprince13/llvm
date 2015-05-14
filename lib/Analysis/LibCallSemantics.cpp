@@ -73,23 +73,11 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
     .Case("__gxx_personality_v0",  EHPersonality::GNU_CXX)
     .Case("__gcc_personality_v0",  EHPersonality::GNU_C)
     .Case("__objc_personality_v0", EHPersonality::GNU_ObjC)
-    .Case("__except_handler3",     EHPersonality::MSVC_X86SEH)
-    .Case("__except_handler4",     EHPersonality::MSVC_X86SEH)
+    .Case("_except_handler3",      EHPersonality::MSVC_X86SEH)
+    .Case("_except_handler4",      EHPersonality::MSVC_X86SEH)
     .Case("__C_specific_handler",  EHPersonality::MSVC_Win64SEH)
     .Case("__CxxFrameHandler3",    EHPersonality::MSVC_CXX)
     .Default(EHPersonality::Unknown);
-}
-
-bool llvm::isAsynchronousEHPersonality(EHPersonality Pers) {
-  // The two SEH personality functions can catch asynch exceptions. We assume
-  // unknown personalities don't catch asynch exceptions.
-  switch (Pers) {
-  case EHPersonality::MSVC_X86SEH:
-  case EHPersonality::MSVC_Win64SEH:
-    return true;
-  default: return false;
-  }
-  llvm_unreachable("invalid enum");
 }
 
 bool llvm::canSimplifyInvokeNoUnwind(const InvokeInst *II) {

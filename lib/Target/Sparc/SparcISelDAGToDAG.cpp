@@ -50,7 +50,7 @@ public:
   /// SelectInlineAsmMemoryOperand - Implement addressing mode selection for
   /// inline asm expressions.
   bool SelectInlineAsmMemoryOperand(const SDValue &Op,
-                                    char ConstraintCode,
+                                    unsigned ConstraintID,
                                     std::vector<SDValue> &OutOps) override;
 
   const char *getPassName() const override {
@@ -74,7 +74,7 @@ bool SparcDAGToDAGISel::SelectADDRri(SDValue Addr,
                                      SDValue &Base, SDValue &Offset) {
   if (FrameIndexSDNode *FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
     Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), TLI->getPointerTy());
-    Offset = CurDAG->getTargetConstant(0, MVT::i32);
+    Offset = CurDAG->getTargetConstant(0, SDLoc(Addr), MVT::i32);
     return true;
   }
   if (Addr.getOpcode() == ISD::TargetExternalSymbol ||
@@ -93,7 +93,8 @@ bool SparcDAGToDAGISel::SelectADDRri(SDValue Addr,
         } else {
           Base = Addr.getOperand(0);
         }
-        Offset = CurDAG->getTargetConstant(CN->getZExtValue(), MVT::i32);
+        Offset = CurDAG->getTargetConstant(CN->getZExtValue(), SDLoc(Addr),
+                                           MVT::i32);
         return true;
       }
     }
@@ -109,7 +110,7 @@ bool SparcDAGToDAGISel::SelectADDRri(SDValue Addr,
     }
   }
   Base = Addr;
-  Offset = CurDAG->getTargetConstant(0, MVT::i32);
+  Offset = CurDAG->getTargetConstant(0, SDLoc(Addr), MVT::i32);
   return true;
 }
 
@@ -162,7 +163,8 @@ SDNode *SparcDAGToDAGISel::Select(SDNode *N) {
     SDValue TopPart;
     if (N->getOpcode() == ISD::SDIV) {
       TopPart = SDValue(CurDAG->getMachineNode(SP::SRAri, dl, MVT::i32, DivLHS,
-                                   CurDAG->getTargetConstant(31, MVT::i32)), 0);
+                                   CurDAG->getTargetConstant(31, dl, MVT::i32)),
+                        0);
     } else {
       TopPart = CurDAG->getRegister(SP::G0, MVT::i32);
     }
@@ -195,12 +197,13 @@ SDNode *SparcDAGToDAGISel::Select(SDNode *N) {
 /// inline asm expressions.
 bool
 SparcDAGToDAGISel::SelectInlineAsmMemoryOperand(const SDValue &Op,
-                                                char ConstraintCode,
+                                                unsigned ConstraintID,
                                                 std::vector<SDValue> &OutOps) {
   SDValue Op0, Op1;
-  switch (ConstraintCode) {
+  switch (ConstraintID) {
   default: return true;
-  case 'm':   // memory
+  case InlineAsm::Constraint_i:
+  case InlineAsm::Constraint_m: // memory
    if (!SelectADDRrr(Op, Op0, Op1))
      SelectADDRri(Op, Op0, Op1);
    break;

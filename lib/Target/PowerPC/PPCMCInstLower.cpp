@@ -66,7 +66,7 @@ static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO, AsmPrinter &AP){
   unsigned OrigLen = Name.size() - PrefixLen;
 
   Name += Suffix;
-  MCSymbol *Sym = Ctx.GetOrCreateSymbol(Name.str());
+  MCSymbol *Sym = Ctx.GetOrCreateSymbol(Name);
   StringRef OrigName = StringRef(Name).substr(PrefixLen, OrigLen);
 
   // If the target flags on the operand changes the name of the symbol, do that
@@ -167,7 +167,7 @@ static MCOperand GetSymbolRef(const MachineOperand &MO, const MCSymbol *Symbol,
       break;
   }
 
-  return MCOperand::CreateExpr(Expr);
+  return MCOperand::createExpr(Expr);
 }
 
 void llvm::LowerPPCMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
@@ -184,13 +184,16 @@ void llvm::LowerPPCMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
       llvm_unreachable("unknown operand type");
     case MachineOperand::MO_Register:
       assert(!MO.getSubReg() && "Subregs should be eliminated!");
-      MCOp = MCOperand::CreateReg(MO.getReg());
+      assert(MO.getReg() > PPC::NoRegister &&
+             MO.getReg() < PPC::NUM_TARGET_REGS &&
+             "Invalid register for this target!");
+      MCOp = MCOperand::createReg(MO.getReg());
       break;
     case MachineOperand::MO_Immediate:
-      MCOp = MCOperand::CreateImm(MO.getImm());
+      MCOp = MCOperand::createImm(MO.getImm());
       break;
     case MachineOperand::MO_MachineBasicBlock:
-      MCOp = MCOperand::CreateExpr(MCSymbolRefExpr::Create(
+      MCOp = MCOperand::createExpr(MCSymbolRefExpr::Create(
                                       MO.getMBB()->getSymbol(), AP.OutContext));
       break;
     case MachineOperand::MO_GlobalAddress:

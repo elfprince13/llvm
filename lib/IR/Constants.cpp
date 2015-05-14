@@ -663,6 +663,17 @@ Constant *ConstantFP::get(Type *Ty, StringRef Str) {
   return C; 
 }
 
+Constant *ConstantFP::getNaN(Type *Ty, bool Negative, unsigned Type) {
+  const fltSemantics &Semantics = *TypeToFloatSemantics(Ty->getScalarType());
+  APFloat NaN = APFloat::getNaN(Semantics, Negative, Type);
+  Constant *C = get(Ty->getContext(), NaN);
+
+  if (VectorType *VTy = dyn_cast<VectorType>(Ty))
+    return ConstantVector::getSplat(VTy->getNumElements(), C);
+
+  return C;
+}
+
 Constant *ConstantFP::getNegativeZero(Type *Ty) {
   const fltSemantics &Semantics = *TypeToFloatSemantics(Ty->getScalarType());
   APFloat NegZero = APFloat::getZero(Semantics, /*Negative=*/true);
@@ -1215,11 +1226,9 @@ ConstantExpr::getWithOperandReplaced(unsigned OpNo, Constant *Op) const {
 Constant *ConstantExpr::getWithOperands(ArrayRef<Constant *> Ops, Type *Ty,
                                         bool OnlyIfReduced) const {
   assert(Ops.size() == getNumOperands() && "Operand count mismatch!");
-  bool AnyChange = Ty != getType();
-  for (unsigned i = 0; i != Ops.size(); ++i)
-    AnyChange |= Ops[i] != getOperand(i);
 
-  if (!AnyChange)  // No operands changed, return self.
+  // If no operands changed return self.
+  if (Ty == getType() && std::equal(Ops.begin(), Ops.end(), op_begin()))
     return const_cast<ConstantExpr*>(this);
 
   Type *OnlyIfReducedTy = OnlyIfReduced ? Ty : nullptr;
@@ -1254,7 +1263,7 @@ Constant *ConstantExpr::getWithOperands(ArrayRef<Constant *> Ops, Type *Ty,
     return ConstantExpr::getShuffleVector(Ops[0], Ops[1], Ops[2],
                                           OnlyIfReducedTy);
   case Instruction::GetElementPtr:
-    return ConstantExpr::getGetElementPtr(Ops[0], Ops.slice(1),
+    return ConstantExpr::getGetElementPtr(nullptr, Ops[0], Ops.slice(1),
                                           cast<GEPOperator>(this)->isInBounds(),
                                           OnlyIfReducedTy);
   case Instruction::ICmp:
@@ -1927,7 +1936,7 @@ Constant *ConstantExpr::getSizeOf(Type* Ty) {
   // Note that a non-inbounds gep is used, as null isn't within any object.
   Constant *GEPIdx = ConstantInt::get(Type::getInt32Ty(Ty->getContext()), 1);
   Constant *GEP = getGetElementPtr(
-                 Constant::getNullValue(PointerType::getUnqual(Ty)), GEPIdx);
+      Ty, Constant::getNullValue(PointerType::getUnqual(Ty)), GEPIdx);
   return getPtrToInt(GEP, 
                      Type::getInt64Ty(Ty->getContext()));
 }
@@ -1941,7 +1950,7 @@ Constant *ConstantExpr::getAlignOf(Type* Ty) {
   Constant *Zero = ConstantInt::get(Type::getInt64Ty(Ty->getContext()), 0);
   Constant *One = ConstantInt::get(Type::getInt32Ty(Ty->getContext()), 1);
   Constant *Indices[2] = { Zero, One };
-  Constant *GEP = getGetElementPtr(NullPtr, Indices);
+  Constant *GEP = getGetElementPtr(AligningTy, NullPtr, Indices);
   return getPtrToInt(GEP,
                      Type::getInt64Ty(Ty->getContext()));
 }
@@ -1959,7 +1968,7 @@ Constant *ConstantExpr::getOffsetOf(Type* Ty, Constant *FieldNo) {
     FieldNo
   };
   Constant *GEP = getGetElementPtr(
-                Constant::getNullValue(PointerType::getUnqual(Ty)), GEPIdx);
+      Ty, Constant::getNullValue(PointerType::getUnqual(Ty)), GEPIdx);
   return getPtrToInt(GEP,
                      Type::getInt64Ty(Ty->getContext()));
 }
@@ -2003,19 +2012,24 @@ Constant *ConstantExpr::getSelect(Constant *C, Constant *V1, Constant *V2,
   return pImpl->ExprConstants.getOrCreate(V1->getType(), Key);
 }
 
-Constant *ConstantExpr::getGetElementPtr(Constant *C, ArrayRef<Value *> Idxs,
-                                         bool InBounds, Type *OnlyIfReducedTy) {
-  assert(C->getType()->isPtrOrPtrVectorTy() &&
-         "Non-pointer type for constant GetElementPtr expression");
+Constant *ConstantExpr::getGetElementPtr(Type *Ty, Constant *C,
+                                         ArrayRef<Value *> Idxs, bool InBounds,
+                                         Type *OnlyIfReducedTy) {
+  if (!Ty)
+    Ty = cast<PointerType>(C->getType()->getScalarType())->getElementType();
+  else
+    assert(
+        Ty ==
+        cast<PointerType>(C->getType()->getScalarType())->getContainedType(0u));
 
-  if (Constant *FC = ConstantFoldGetElementPtr(C, InBounds, Idxs))
+  if (Constant *FC = ConstantFoldGetElementPtr(Ty, C, InBounds, Idxs))
     return FC;          // Fold a few common cases.
 
   // Get the result type of the getelementptr!
-  Type *Ty = GetElementPtrInst::getIndexedType(C->getType(), Idxs);
-  assert(Ty && "GEP indices invalid!");
+  Type *DestTy = GetElementPtrInst::getIndexedType(Ty, Idxs);
+  assert(DestTy && "GEP indices invalid!");
   unsigned AS = C->getType()->getPointerAddressSpace();
-  Type *ReqTy = Ty->getPointerTo(AS);
+  Type *ReqTy = DestTy->getPointerTo(AS);
   if (VectorType *VecTy = dyn_cast<VectorType>(C->getType()))
     ReqTy = VectorType::get(ReqTy, VecTy->getNumElements());
 
@@ -2036,7 +2050,8 @@ Constant *ConstantExpr::getGetElementPtr(Constant *C, ArrayRef<Value *> Idxs,
     ArgVec.push_back(cast<Constant>(Idxs[i]));
   }
   const ConstantExprKeyType Key(Instruction::GetElementPtr, ArgVec, 0,
-                                InBounds ? GEPOperator::IsInBounds : 0);
+                                InBounds ? GEPOperator::IsInBounds : 0, None,
+                                Ty);
 
   LLVMContextImpl *pImpl = C->getContext().pImpl;
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
@@ -2366,17 +2381,20 @@ const char *ConstantExpr::getOpcodeName() const {
   return Instruction::getOpcodeName(getOpcode());
 }
 
-
-
-GetElementPtrConstantExpr::
-GetElementPtrConstantExpr(Constant *C, ArrayRef<Constant*> IdxList,
-                          Type *DestTy)
-  : ConstantExpr(DestTy, Instruction::GetElementPtr,
-                 OperandTraits<GetElementPtrConstantExpr>::op_end(this)
-                 - (IdxList.size()+1), IdxList.size()+1) {
+GetElementPtrConstantExpr::GetElementPtrConstantExpr(
+    Type *SrcElementTy, Constant *C, ArrayRef<Constant *> IdxList, Type *DestTy)
+    : ConstantExpr(DestTy, Instruction::GetElementPtr,
+                   OperandTraits<GetElementPtrConstantExpr>::op_end(this) -
+                       (IdxList.size() + 1),
+                   IdxList.size() + 1),
+      SrcElementTy(SrcElementTy) {
   OperandList[0] = C;
   for (unsigned i = 0, E = IdxList.size(); i != E; ++i)
     OperandList[i+1] = IdxList[i];
+}
+
+Type *GetElementPtrConstantExpr::getSourceElementType() const {
+  return SrcElementTy;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2971,10 +2989,7 @@ void ConstantExpr::replaceUsesOfWithOnConstant(Value *From, Value *ToV,
 }
 
 Instruction *ConstantExpr::getAsInstruction() {
-  SmallVector<Value*,4> ValueOperands;
-  for (op_iterator I = op_begin(), E = op_end(); I != E; ++I)
-    ValueOperands.push_back(cast<Value>(I));
-
+  SmallVector<Value *, 4> ValueOperands(op_begin(), op_end());
   ArrayRef<Value*> Ops(ValueOperands);
 
   switch (getOpcode()) {
@@ -3006,12 +3021,14 @@ Instruction *ConstantExpr::getAsInstruction() {
   case Instruction::ShuffleVector:
     return new ShuffleVectorInst(Ops[0], Ops[1], Ops[2]);
 
-  case Instruction::GetElementPtr:
-    if (cast<GEPOperator>(this)->isInBounds())
-      return GetElementPtrInst::CreateInBounds(Ops[0], Ops.slice(1));
-    else
-      return GetElementPtrInst::Create(Ops[0], Ops.slice(1));
-
+  case Instruction::GetElementPtr: {
+    const auto *GO = cast<GEPOperator>(this);
+    if (GO->isInBounds())
+      return GetElementPtrInst::CreateInBounds(GO->getSourceElementType(),
+                                               Ops[0], Ops.slice(1));
+    return GetElementPtrInst::Create(GO->getSourceElementType(), Ops[0],
+                                     Ops.slice(1));
+  }
   case Instruction::ICmp:
   case Instruction::FCmp:
     return CmpInst::Create((Instruction::OtherOps)getOpcode(),

@@ -27,6 +27,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/DataTypes.h"
+#include <functional>
 
 namespace llvm {
 
@@ -189,11 +190,20 @@ public:
   /// comments for a detailed explanation of the cost values.
   unsigned getUserCost(const User *U) const;
 
-  /// \brief hasBranchDivergence - Return true if branch divergence exists.
+  /// \brief Return true if branch divergence exists.
+  ///
   /// Branch divergence has a significantly negative impact on GPU performance
   /// when threads in the same wavefront take different paths due to conditional
   /// branches.
   bool hasBranchDivergence() const;
+
+  /// \brief Returns whether V is a source of divergence.
+  ///
+  /// This function provides the target-dependent information for
+  /// the target-independent DivergenceAnalysis. DivergenceAnalysis first
+  /// builds the dependency graph, and then runs the reachability algorithm
+  /// starting with the sources of divergence.
+  bool isSourceOfDivergence(const Value *V) const;
 
   /// \brief Test whether calls to a function lower to actual program function
   /// calls.
@@ -251,6 +261,9 @@ public:
     /// loop body even when the number of loop iterations is not known at
     /// compile time).
     bool Runtime;
+    /// Allow emitting expensive instructions (such as divisions) when computing
+    /// the trip count of a loop for runtime unrolling.
+    bool AllowExpensiveTripCount;
   };
 
   /// \brief Get target-customized preferences for the generic loop unrolling
@@ -330,6 +343,9 @@ public:
   /// target.
   bool shouldBuildLookupTables() const;
 
+  /// \brief Don't restrict interleaved unrolling to small loops.
+  bool enableAggressiveInterleaving(bool LoopHasReductions) const;
+
   /// \brief Return hardware support for population count.
   PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) const;
 
@@ -387,7 +403,7 @@ public:
   /// \return The maximum interleave factor that any transform should try to
   /// perform for this target. This number depends on the level of parallelism
   /// and the number of execution units in the CPU.
-  unsigned getMaxInterleaveFactor() const;
+  unsigned getMaxInterleaveFactor(unsigned VF) const;
 
   /// \return The expected cost of arithmetic ops, such as mul, xor, fsub, etc.
   unsigned
@@ -447,6 +463,10 @@ public:
   /// \returns The cost of Intrinsic instructions.
   unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
                                  ArrayRef<Type *> Tys) const;
+
+  /// \returns The cost of Call instructions.
+  unsigned getCallInstrCost(Function *F, Type *RetTy,
+                            ArrayRef<Type *> Tys) const;
 
   /// \returns The number of pieces into which the provided type must be
   /// split during legalization. Zero is returned when the answer is unknown.
@@ -512,6 +532,7 @@ public:
                                     ArrayRef<const Value *> Arguments) = 0;
   virtual unsigned getUserCost(const User *U) = 0;
   virtual bool hasBranchDivergence() = 0;
+  virtual bool isSourceOfDivergence(const Value *V) = 0;
   virtual bool isLoweredToCall(const Function *F) = 0;
   virtual void getUnrollingPreferences(Loop *L, UnrollingPreferences &UP) = 0;
   virtual bool isLegalAddImmediate(int64_t Imm) = 0;
@@ -530,6 +551,7 @@ public:
   virtual unsigned getJumpBufAlignment() = 0;
   virtual unsigned getJumpBufSize() = 0;
   virtual bool shouldBuildLookupTables() = 0;
+  virtual bool enableAggressiveInterleaving(bool LoopHasReductions) = 0;
   virtual PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) = 0;
   virtual bool haveFastSqrt(Type *Ty) = 0;
   virtual unsigned getFPOpCost(Type *Ty) = 0;
@@ -540,7 +562,7 @@ public:
                                  const APInt &Imm, Type *Ty) = 0;
   virtual unsigned getNumberOfRegisters(bool Vector) = 0;
   virtual unsigned getRegisterBitWidth(bool Vector) = 0;
-  virtual unsigned getMaxInterleaveFactor() = 0;
+  virtual unsigned getMaxInterleaveFactor(unsigned VF) = 0;
   virtual unsigned
   getArithmeticInstrCost(unsigned Opcode, Type *Ty, OperandValueKind Opd1Info,
                          OperandValueKind Opd2Info,
@@ -564,6 +586,8 @@ public:
                                     bool IsPairwiseForm) = 0;
   virtual unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
                                          ArrayRef<Type *> Tys) = 0;
+  virtual unsigned getCallInstrCost(Function *F, Type *RetTy,
+                                    ArrayRef<Type *> Tys) = 0;
   virtual unsigned getNumberOfParts(Type *Tp) = 0;
   virtual unsigned getAddressComputationCost(Type *Ty, bool IsComplex) = 0;
   virtual unsigned getCostOfKeepingLiveOverCall(ArrayRef<Type *> Tys) = 0;
@@ -608,6 +632,9 @@ public:
   }
   unsigned getUserCost(const User *U) override { return Impl.getUserCost(U); }
   bool hasBranchDivergence() override { return Impl.hasBranchDivergence(); }
+  bool isSourceOfDivergence(const Value *V) override {
+    return Impl.isSourceOfDivergence(V);
+  }
   bool isLoweredToCall(const Function *F) override {
     return Impl.isLoweredToCall(F);
   }
@@ -647,6 +674,9 @@ public:
   bool shouldBuildLookupTables() override {
     return Impl.shouldBuildLookupTables();
   }
+  bool enableAggressiveInterleaving(bool LoopHasReductions) override {
+    return Impl.enableAggressiveInterleaving(LoopHasReductions);
+  }
   PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) override {
     return Impl.getPopcntSupport(IntTyWidthInBit);
   }
@@ -673,8 +703,8 @@ public:
   unsigned getRegisterBitWidth(bool Vector) override {
     return Impl.getRegisterBitWidth(Vector);
   }
-  unsigned getMaxInterleaveFactor() override {
-    return Impl.getMaxInterleaveFactor();
+  unsigned getMaxInterleaveFactor(unsigned VF) override {
+    return Impl.getMaxInterleaveFactor(VF);
   }
   unsigned
   getArithmeticInstrCost(unsigned Opcode, Type *Ty, OperandValueKind Opd1Info,
@@ -717,6 +747,10 @@ public:
   unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
                                  ArrayRef<Type *> Tys) override {
     return Impl.getIntrinsicInstrCost(ID, RetTy, Tys);
+  }
+  unsigned getCallInstrCost(Function *F, Type *RetTy,
+                            ArrayRef<Type *> Tys) override {
+    return Impl.getCallInstrCost(F, RetTy, Tys);
   }
   unsigned getNumberOfParts(Type *Tp) override {
     return Impl.getNumberOfParts(Tp);

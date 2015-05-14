@@ -73,7 +73,8 @@ static void srcMgrDiagHandler(const SMDiagnostic &Diag, void *diagInfo) {
 }
 
 /// EmitInlineAsm - Emit a blob of inline asm to the output streamer.
-void AsmPrinter::EmitInlineAsm(StringRef Str, const MDNode *LocMDNode,
+void AsmPrinter::EmitInlineAsm(StringRef Str, const MCSubtargetInfo &STI,
+                               const MDNode *LocMDNode,
                                InlineAsm::AsmDialect Dialect) const {
   assert(!Str.empty() && "Can't emit empty inline asm block");
 
@@ -90,20 +91,10 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, const MDNode *LocMDNode,
   const MCAsmInfo *MCAI = TM.getMCAsmInfo();
   assert(MCAI && "No MCAsmInfo");
   if (!MCAI->useIntegratedAssembler() &&
-      !OutStreamer.isIntegratedAssemblerRequired()) {
+      !OutStreamer->isIntegratedAssemblerRequired()) {
     emitInlineAsmStart();
-    OutStreamer.EmitRawText(Str);
-    // If we have a machine function then grab the MCSubtarget off of that,
-    // otherwise we're at the module level and want to construct one from
-    // the default CPU and target triple.
-    if (MF) {
-      emitInlineAsmEnd(MF->getSubtarget<MCSubtargetInfo>(), nullptr);
-    } else {
-      std::unique_ptr<MCSubtargetInfo> STI(TM.getTarget().createMCSubtargetInfo(
-          TM.getTargetTriple(), TM.getTargetCPU(),
-          TM.getTargetFeatureString()));
-      emitInlineAsmEnd(*STI, nullptr);
-    }
+    OutStreamer->EmitRawText(Str);
+    emitInlineAsmEnd(STI, nullptr);
     return;
   }
 
@@ -133,21 +124,13 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, const MDNode *LocMDNode,
   SrcMgr.AddNewSourceBuffer(std::move(Buffer), SMLoc());
 
   std::unique_ptr<MCAsmParser> Parser(
-      createMCAsmParser(SrcMgr, OutContext, OutStreamer, *MAI));
+      createMCAsmParser(SrcMgr, OutContext, *OutStreamer, *MAI));
 
-  // Initialize the parser with a fresh subtarget info. It is better to use a
-  // new STI here because the parser may modify it and we do not want those
-  // modifications to persist after parsing the inlineasm. The modifications
-  // made by the parser will be seen by the code emitters because it passes
-  // the current STI down to the EncodeInstruction() method.
-  std::unique_ptr<MCSubtargetInfo> STI(TM.getTarget().createMCSubtargetInfo(
-      TM.getTargetTriple(), TM.getTargetCPU(), TM.getTargetFeatureString()));
-
-  // Preserve a copy of the original STI because the parser may modify it.  For
-  // example, when switching between arm and thumb mode. If the target needs to
-  // emit code to return to the original state it can do so in
+  // Create a temporary copy of the original STI because the parser may modify
+  // it. For example, when switching between arm and thumb mode. If the target
+  // needs to emit code to return to the original state it can do so in
   // emitInlineAsmEnd().
-  MCSubtargetInfo STIOrig = *STI;
+  MCSubtargetInfo TmpSTI = STI;
 
   // We create a new MCInstrInfo here since we might be at the module level
   // and not have a MachineFunction to initialize the TargetInstrInfo from and
@@ -155,7 +138,7 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, const MDNode *LocMDNode,
   // because it's not subtarget dependent.
   std::unique_ptr<MCInstrInfo> MII(TM.getTarget().createMCInstrInfo());
   std::unique_ptr<MCTargetAsmParser> TAP(TM.getTarget().createMCAsmParser(
-      *STI, *Parser, *MII, TM.Options.MCOptions));
+      TmpSTI, *Parser, *MII, TM.Options.MCOptions));
   if (!TAP)
     report_fatal_error("Inline asm not supported by this streamer because"
                        " we don't have an asm parser for this target\n");
@@ -170,7 +153,7 @@ void AsmPrinter::EmitInlineAsm(StringRef Str, const MDNode *LocMDNode,
   // Don't implicitly switch to the text section before the asm.
   int Res = Parser->Run(/*NoInitialTextSection*/ true,
                         /*NoFinalize*/ true);
-  emitInlineAsmEnd(STIOrig, STI.get());
+  emitInlineAsmEnd(STI, &TmpSTI);
   if (Res && !HasDiagHandler)
     report_fatal_error("Error parsing inline asm\n");
 }
@@ -465,14 +448,14 @@ void AsmPrinter::EmitInlineAsm(const MachineInstr *MI) const {
   // If this asmstr is empty, just print the #APP/#NOAPP markers.
   // These are useful to see where empty asm's wound up.
   if (AsmStr[0] == 0) {
-    OutStreamer.emitRawComment(MAI->getInlineAsmStart());
-    OutStreamer.emitRawComment(MAI->getInlineAsmEnd());
+    OutStreamer->emitRawComment(MAI->getInlineAsmStart());
+    OutStreamer->emitRawComment(MAI->getInlineAsmEnd());
     return;
   }
 
   // Emit the #APP start marker.  This has to happen even if verbose-asm isn't
   // enabled, so we use emitRawComment.
-  OutStreamer.emitRawComment(MAI->getInlineAsmStart());
+  OutStreamer->emitRawComment(MAI->getInlineAsmStart());
 
   // Get the !srcloc metadata node if we have it, and decode the loc cookie from
   // it.
@@ -505,11 +488,11 @@ void AsmPrinter::EmitInlineAsm(const MachineInstr *MI) const {
   else
     EmitMSInlineAsmStr(AsmStr, MI, MMI, InlineAsmVariant, AP, LocCookie, OS);
 
-  EmitInlineAsm(OS.str(), LocMD, MI->getInlineAsmDialect());
+  EmitInlineAsm(OS.str(), getSubtargetInfo(), LocMD, MI->getInlineAsmDialect());
 
   // Emit the #NOAPP end marker.  This has to happen even if verbose-asm isn't
   // enabled, so we use emitRawComment.
-  OutStreamer.emitRawComment(MAI->getInlineAsmEnd());
+  OutStreamer->emitRawComment(MAI->getInlineAsmEnd());
 }
 
 

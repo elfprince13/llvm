@@ -68,6 +68,18 @@ class SDTCisSubVecOfVec<int ThisOp, int OtherOp>
   int OtherOpNum = OtherOp;
 }
 
+// SDTCVecEltisVT - The specified operand is vector type with element type
+// of VT.
+class SDTCVecEltisVT<int OpNum, ValueType vt> : SDTypeConstraint<OpNum> {
+  ValueType VT = vt;
+}
+
+// SDTCisSameNumEltsAs - The two specified operands have identical number
+// of elements.
+class SDTCisSameNumEltsAs<int OpNum, int OtherOp> : SDTypeConstraint<OpNum> {
+  int OtherOperandNum = OtherOp;
+}
+
 //===----------------------------------------------------------------------===//
 // Selection DAG Type Profile definitions.
 //
@@ -196,12 +208,14 @@ def SDTMaskedLoad: SDTypeProfile<1, 3, [       // masked load
   SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisVec<2>, SDTCisSameAs<0, 3>
 ]>;
 
-def SDTMaskedGather: SDTypeProfile<1, 3, [       // masked gather
-  SDTCisVec<0>, SDTCisSameAs<0, 1>, SDTCisVec<2>
+def SDTMaskedGather: SDTypeProfile<2, 3, [       // masked gather
+  SDTCisVec<0>, SDTCisVec<1>, SDTCisSameAs<0, 2>, SDTCisSameAs<1, 3>,
+  SDTCisPtrTy<4>, SDTCVecEltisVT<1, i1>, SDTCisSameNumEltsAs<0, 1>
 ]>;
 
 def SDTMaskedScatter: SDTypeProfile<1, 3, [       // masked scatter
-  SDTCisVec<0>, SDTCisVec<1>, SDTCisSameAs<0, 2>
+  SDTCisVec<0>, SDTCisVec<1>, SDTCisSameAs<0, 2>, SDTCisSameNumEltsAs<0, 1>,
+  SDTCVecEltisVT<0, i1>, SDTCisPtrTy<3>
 ]>;
 
 def SDTVecShuffle : SDTypeProfile<1, 2, [

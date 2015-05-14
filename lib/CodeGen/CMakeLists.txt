@@ -19,7 +19,6 @@ add_llvm_library(LLVMCodeGen
   ExecutionDepsFix.cpp
   ExpandISelPseudos.cpp
   ExpandPostRAPseudos.cpp
-  ForwardControlFlowIntegrity.cpp
   GCMetadata.cpp
   GCMetadataPrinter.cpp
   GCRootLowering.cpp
@@ -29,7 +28,6 @@ add_llvm_library(LLVMCodeGen
   InlineSpiller.cpp
   InterferenceCache.cpp
   IntrinsicLowering.cpp
-  JumpInstrTables.cpp
   LLVMTargetMachine.cpp
   LatencyPriorityQueue.cpp
   LexicalScopes.cpp
@@ -95,6 +93,7 @@ add_llvm_library(LLVMCodeGen
   ScheduleDAGInstrs.cpp
   ScheduleDAGPrinter.cpp
   ScoreboardHazardRecognizer.cpp
+  ShrinkWrap.cpp
   ShadowStackGC.cpp
   ShadowStackGCLowering.cpp
   SjLjEHPrepare.cpp

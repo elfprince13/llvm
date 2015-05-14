@@ -45,14 +45,14 @@ protected:
 public:
   virtual ~MCMachObjectTargetWriter();
 
-  /// @name Lifetime Management
+  /// \name Lifetime Management
   /// @{
 
   virtual void reset() {};
 
   /// @}
 
-  /// @name Accessors
+  /// \name Accessors
   /// @{
 
   bool is64Bit() const { return Is64Bit; }
@@ -65,7 +65,7 @@ public:
 
   /// @}
 
-  /// @name API
+  /// \name API
   /// @{
 
   virtual void RecordRelocation(MachObjectWriter *Writer, MCAssembler &Asm,
@@ -92,7 +92,7 @@ class MachObjectWriter : public MCObjectWriter {
   /// The target specific Mach-O writer instance.
   std::unique_ptr<MCMachObjectTargetWriter> TargetObjectWriter;
 
-  /// @name Relocation Data
+  /// \name Relocation Data
   /// @{
 
   struct RelAndSymbol {
@@ -106,7 +106,7 @@ class MachObjectWriter : public MCObjectWriter {
   llvm::DenseMap<const MCSectionData*, unsigned> IndirectSymBase;
 
   /// @}
-  /// @name Symbol Table Data
+  /// \name Symbol Table Data
   /// @{
 
   StringTableBuilder StringTable;
@@ -119,19 +119,20 @@ class MachObjectWriter : public MCObjectWriter {
   MachSymbolData *findSymbolData(const MCSymbol &Sym);
 
 public:
-  MachObjectWriter(MCMachObjectTargetWriter *MOTW, raw_ostream &_OS,
-                   bool _IsLittleEndian)
-    : MCObjectWriter(_OS, _IsLittleEndian), TargetObjectWriter(MOTW) {
-  }
+  MachObjectWriter(MCMachObjectTargetWriter *MOTW, raw_pwrite_stream &OS,
+                   bool IsLittleEndian)
+      : MCObjectWriter(OS, IsLittleEndian), TargetObjectWriter(MOTW) {}
 
-  /// @name Lifetime management Methods
+  const MCSymbol &findAliasedSymbol(const MCSymbol &Sym) const;
+
+  /// \name Lifetime management Methods
   /// @{
 
   void reset() override;
 
   /// @}
 
-  /// @name Utility Methods
+  /// \name Utility Methods
   /// @{
 
   bool isFixupKindPCRel(const MCAssembler &Asm, unsigned Kind);
@@ -156,7 +157,7 @@ public:
 
   /// @}
 
-  /// @name Target Writer Proxy Accessors
+  /// \name Target Writer Proxy Accessors
   /// @{
 
   bool is64Bit() const { return TargetObjectWriter->is64Bit(); }
@@ -258,8 +259,6 @@ public:
   void computeSectionAddresses(const MCAssembler &Asm,
                                const MCAsmLayout &Layout);
 
-  void markAbsoluteVariableSymbols(MCAssembler &Asm,
-                                   const MCAsmLayout &Layout);
   void ExecutePostLayoutBinding(MCAssembler &Asm,
                                 const MCAsmLayout &Layout) override;
 
@@ -281,7 +280,8 @@ public:
 /// \param OS - The stream to write to.
 /// \returns The constructed object writer.
 MCObjectWriter *createMachObjectWriter(MCMachObjectTargetWriter *MOTW,
-                                       raw_ostream &OS, bool IsLittleEndian);
+                                       raw_pwrite_stream &OS,
+                                       bool IsLittleEndian);
 
 } // End llvm namespace
 

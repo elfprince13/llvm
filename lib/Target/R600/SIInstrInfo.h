@@ -72,6 +72,9 @@ public:
     return RI;
   }
 
+  bool isReallyTriviallyReMaterializable(const MachineInstr *MI,
+                                         AliasAnalysis *AA) const override;
+
   bool areLoadsFromSameBasePtr(SDNode *Load1, SDNode *Load2,
                                int64_t &Offset1,
                                int64_t &Offset2) const override;
@@ -114,7 +117,7 @@ public:
   // register.  If there is no hardware instruction that can store to \p
   // DstRC, then AMDGPU::COPY is returned.
   unsigned getMovOpcode(const TargetRegisterClass *DstRC) const;
-  unsigned commuteOpcode(unsigned Opcode) const;
+  unsigned commuteOpcode(const MachineInstr &MI) const;
 
   MachineInstr *commuteInstruction(MachineInstr *MI,
                                    bool NewMI = false) const override;
@@ -138,6 +141,8 @@ public:
 
   bool FoldImmediate(MachineInstr *UseMI, MachineInstr *DefMI,
                      unsigned Reg, MachineRegisterInfo *MRI) const final;
+
+  unsigned getMachineCSELookAheadLimit() const override { return 500; }
 
   bool isSALU(uint16_t Opcode) const {
     return get(Opcode).TSFlags & SIInstrFlags::SALU;
@@ -211,16 +216,16 @@ public:
     return get(Opcode).TSFlags & SIInstrFlags::WQM;
   }
 
+  bool isVGPRSpill(uint16_t Opcode) const {
+    return get(Opcode).TSFlags & SIInstrFlags::VGPRSpill;
+  }
+
   bool isInlineConstant(const APInt &Imm) const;
   bool isInlineConstant(const MachineOperand &MO, unsigned OpSize) const;
   bool isLiteralConstant(const MachineOperand &MO, unsigned OpSize) const;
 
   bool isImmOperandLegal(const MachineInstr *MI, unsigned OpNo,
                          const MachineOperand &MO) const;
-
-  /// \brief Return true if the given offset Size in bytes can be folded into
-  /// the immediate offsets of a memory instruction for the given address space.
-  bool canFoldOffset(unsigned OffsetSize, unsigned AS) const;
 
   /// \brief Return true if this 64-bit VALU instruction has a 32-bit encoding.
   /// This function will return false if you pass it a 32-bit instruction.

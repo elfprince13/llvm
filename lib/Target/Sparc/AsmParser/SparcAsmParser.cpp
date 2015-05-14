@@ -250,7 +250,7 @@ public:
 
   void addRegOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
-    Inst.addOperand(MCOperand::CreateReg(getReg()));
+    Inst.addOperand(MCOperand::createReg(getReg()));
   }
 
   void addImmOperands(MCInst &Inst, unsigned N) const {
@@ -262,26 +262,26 @@ public:
   void addExpr(MCInst &Inst, const MCExpr *Expr) const{
     // Add as immediate when possible.  Null MCExpr = 0.
     if (!Expr)
-      Inst.addOperand(MCOperand::CreateImm(0));
+      Inst.addOperand(MCOperand::createImm(0));
     else if (const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(Expr))
-      Inst.addOperand(MCOperand::CreateImm(CE->getValue()));
+      Inst.addOperand(MCOperand::createImm(CE->getValue()));
     else
-      Inst.addOperand(MCOperand::CreateExpr(Expr));
+      Inst.addOperand(MCOperand::createExpr(Expr));
   }
 
   void addMEMrrOperands(MCInst &Inst, unsigned N) const {
     assert(N == 2 && "Invalid number of operands!");
 
-    Inst.addOperand(MCOperand::CreateReg(getMemBase()));
+    Inst.addOperand(MCOperand::createReg(getMemBase()));
 
     assert(getMemOffsetReg() != 0 && "Invalid offset");
-    Inst.addOperand(MCOperand::CreateReg(getMemOffsetReg()));
+    Inst.addOperand(MCOperand::createReg(getMemOffsetReg()));
   }
 
   void addMEMriOperands(MCInst &Inst, unsigned N) const {
     assert(N == 2 && "Invalid number of operands!");
 
-    Inst.addOperand(MCOperand::CreateReg(getMemBase()));
+    Inst.addOperand(MCOperand::createReg(getMemBase()));
 
     const MCExpr *Expr = getMemOff();
     addExpr(Inst, Expr);
@@ -360,11 +360,11 @@ public:
   }
 
   static std::unique_ptr<SparcOperand>
-  CreateMEMri(unsigned Base, const MCExpr *Off, SMLoc S, SMLoc E) {
-    auto Op = make_unique<SparcOperand>(k_MemoryImm);
+  CreateMEMr(unsigned Base, SMLoc S, SMLoc E) {
+    auto Op = make_unique<SparcOperand>(k_MemoryReg);
     Op->Mem.Base = Base;
-    Op->Mem.OffsetReg = 0;
-    Op->Mem.Off = Off;
+    Op->Mem.OffsetReg = Sparc::G0;  // always 0
+    Op->Mem.Off = nullptr;
     Op->StartLoc = S;
     Op->EndLoc = E;
     return Op;
@@ -556,7 +556,7 @@ SparcAsmParser::parseMEMOperand(OperandVector &Operands) {
   case AsmToken::Comma:
   case AsmToken::RBrac:
   case AsmToken::EndOfStatement:
-    Operands.push_back(SparcOperand::CreateMEMri(BaseReg, nullptr, S, E));
+    Operands.push_back(SparcOperand::CreateMEMr(BaseReg, S, E));
     return MatchOperand_Success;
 
   case AsmToken:: Plus:
@@ -682,6 +682,7 @@ SparcAsmParser::parseSparcAsmOperand(std::unique_ptr<SparcOperand> &Op,
 
   case AsmToken::Minus:
   case AsmToken::Integer:
+  case AsmToken::LParen:
     if (!getParser().parseExpression(EVal, E))
       Op = SparcOperand::CreateImm(EVal, S, E);
     break;
@@ -906,10 +907,10 @@ bool SparcAsmParser::matchSparcAsmModifiers(const MCExpr *&EVal,
   return true;
 }
 
-
 extern "C" void LLVMInitializeSparcAsmParser() {
   RegisterMCAsmParser<SparcAsmParser> A(TheSparcTarget);
   RegisterMCAsmParser<SparcAsmParser> B(TheSparcV9Target);
+  RegisterMCAsmParser<SparcAsmParser> C(TheSparcelTarget);
 }
 
 #define GET_REGISTER_MATCHER

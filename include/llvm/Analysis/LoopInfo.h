@@ -361,11 +361,11 @@ public:
 
   /// isLoopInvariant - Return true if the specified value is loop invariant
   ///
-  bool isLoopInvariant(Value *V) const;
+  bool isLoopInvariant(const Value *V) const;
 
   /// hasLoopInvariantOperands - Return true if all the operands of the
   /// specified instruction are loop invariant.
-  bool hasLoopInvariantOperands(Instruction *I) const;
+  bool hasLoopInvariantOperands(const Instruction *I) const;
 
   /// makeLoopInvariant - If the given value is an instruction inside of the
   /// loop and it can be hoisted, do so to make it trivially loop-invariant.
@@ -464,23 +464,20 @@ public:
   /// cannot find a terminating instruction with location information,
   /// it returns an unknown location.
   DebugLoc getStartLoc() const {
-    DebugLoc StartLoc;
     BasicBlock *HeadBB;
 
     // Try the pre-header first.
-    if ((HeadBB = getLoopPreheader()) != nullptr) {
-      StartLoc = HeadBB->getTerminator()->getDebugLoc();
-      if (!StartLoc.isUnknown())
-        return StartLoc;
-    }
+    if ((HeadBB = getLoopPreheader()) != nullptr)
+      if (DebugLoc DL = HeadBB->getTerminator()->getDebugLoc())
+        return DL;
 
     // If we have no pre-header or there are no instructions with debug
     // info in it, try the header.
     HeadBB = getHeader();
     if (HeadBB)
-      StartLoc = HeadBB->getTerminator()->getDebugLoc();
+      return HeadBB->getTerminator()->getDebugLoc();
 
-    return StartLoc;
+    return DebugLoc();
   }
 
 private:

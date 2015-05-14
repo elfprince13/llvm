@@ -50,6 +50,7 @@ using namespace llvm;
 namespace llvm {
 void initializeNVVMReflectPass(PassRegistry&);
 void initializeGenericToNVVMPass(PassRegistry&);
+void initializeNVPTXAllocaHoistingPass(PassRegistry &);
 void initializeNVPTXAssignValidGlobalNamesPass(PassRegistry&);
 void initializeNVPTXFavorNonGenericAddrSpacesPass(PassRegistry &);
 void initializeNVPTXLowerStructArgsPass(PassRegistry &);
@@ -64,6 +65,7 @@ extern "C" void LLVMInitializeNVPTXTarget() {
   // but it's very NVPTX-specific.
   initializeNVVMReflectPass(*PassRegistry::getPassRegistry());
   initializeGenericToNVVMPass(*PassRegistry::getPassRegistry());
+  initializeNVPTXAllocaHoistingPass(*PassRegistry::getPassRegistry());
   initializeNVPTXAssignValidGlobalNamesPass(*PassRegistry::getPassRegistry());
   initializeNVPTXFavorNonGenericAddrSpacesPass(
     *PassRegistry::getPassRegistry());
@@ -86,9 +88,10 @@ NVPTXTargetMachine::NVPTXTargetMachine(const Target &T, StringRef TT,
                                        const TargetOptions &Options,
                                        Reloc::Model RM, CodeModel::Model CM,
                                        CodeGenOpt::Level OL, bool is64bit)
-    : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL), is64bit(is64bit),
-      TLOF(make_unique<NVPTXTargetObjectFile>()),
-      DL(computeDataLayout(is64bit)), Subtarget(TT, CPU, FS, *this) {
+    : LLVMTargetMachine(T, computeDataLayout(is64bit), TT, CPU, FS, Options, RM,
+                        CM, OL),
+      is64bit(is64bit), TLOF(make_unique<NVPTXTargetObjectFile>()),
+      Subtarget(TT, CPU, FS, *this) {
   if (Triple(TT).getOS() == Triple::NVCL)
     drvInterface = NVPTX::NVCL;
   else
@@ -161,30 +164,27 @@ void NVPTXPassConfig::addIRPasses() {
   addPass(createNVPTXAssignValidGlobalNamesPass());
   addPass(createGenericToNVVMPass());
   addPass(createNVPTXFavorNonGenericAddrSpacesPass());
-  addPass(createStraightLineStrengthReducePass());
+  // FavorNonGenericAddrSpaces shortcuts unnecessary addrspacecasts, and leave
+  // them unused. We could remove dead code in an ad-hoc manner, but that
+  // requires manual work and might be error-prone.
+  addPass(createDeadCodeEliminationPass());
   addPass(createSeparateConstOffsetFromGEPPass());
-  // The SeparateConstOffsetFromGEP pass creates variadic bases that can be used
-  // by multiple GEPs. Run GVN or EarlyCSE to really reuse them. GVN generates
-  // significantly better code than EarlyCSE for some of our benchmarks.
+  // ReassociateGEPs exposes more opportunites for SLSR. See
+  // the example in reassociate-geps-and-slsr.ll.
+  addPass(createStraightLineStrengthReducePass());
+  // SeparateConstOffsetFromGEP and SLSR creates common expressions which GVN or
+  // EarlyCSE can reuse. GVN generates significantly better code than EarlyCSE
+  // for some of our benchmarks.
   if (getOptLevel() == CodeGenOpt::Aggressive)
     addPass(createGVNPass());
   else
     addPass(createEarlyCSEPass());
-  // Both FavorNonGenericAddrSpaces and SeparateConstOffsetFromGEP may leave
-  // some dead code.  We could remove dead code in an ad-hoc manner, but that
-  // requires manual work and might be error-prone.
-  //
-  // The FavorNonGenericAddrSpaces pass shortcuts unnecessary addrspacecasts,
-  // and leave them unused.
-  //
-  // SeparateConstOffsetFromGEP rebuilds a new index from the old index, and the
-  // old index and some of its intermediate results may become unused.
-  addPass(createDeadCodeEliminationPass());
+  // Run NaryReassociate after EarlyCSE/GVN to be more effective.
+  addPass(createNaryReassociatePass());
 }
 
 bool NVPTXPassConfig::addInstSelector() {
-  const NVPTXSubtarget &ST =
-    getTM<NVPTXTargetMachine>().getSubtarget<NVPTXSubtarget>();
+  const NVPTXSubtarget &ST = *getTM<NVPTXTargetMachine>().getSubtargetImpl();
 
   addPass(createLowerAggrCopies());
   addPass(createAllocaHoisting());

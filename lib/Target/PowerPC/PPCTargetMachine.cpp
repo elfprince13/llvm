@@ -38,6 +38,10 @@ static cl::opt<bool>
 VSXFMAMutateEarly("schedule-ppc-vsx-fma-mutation-early",
   cl::Hidden, cl::desc("Schedule VSX FMA instruction mutation early"));
 
+static cl::
+opt<bool> DisableVSXSwapRemoval("disable-ppc-vsx-swap-removal", cl::Hidden,
+                                cl::desc("Disable VSX Swap Removal for PPC"));
+
 static cl::opt<bool>
 EnableGEPOpt("ppc-gep-opt", cl::Hidden,
              cl::desc("Enable optimizations on complex GEPs"),
@@ -160,11 +164,10 @@ PPCTargetMachine::PPCTargetMachine(const Target &T, StringRef TT, StringRef CPU,
                                    StringRef FS, const TargetOptions &Options,
                                    Reloc::Model RM, CodeModel::Model CM,
                                    CodeGenOpt::Level OL)
-    : LLVMTargetMachine(T, TT, CPU, computeFSAdditions(FS, OL, TT), Options, RM,
-                        CM, OL),
+    : LLVMTargetMachine(T, getDataLayoutString(Triple(TT)), TT, CPU,
+                        computeFSAdditions(FS, OL, TT), Options, RM, CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
-      TargetABI(computeTargetABI(Triple(TT), Options)),
-      DL(getDataLayoutString(Triple(TT))), Subtarget(TT, CPU, TargetFS, *this) {
+      TargetABI(computeTargetABI(Triple(TT), Options)) {
   initAsmInfo();
 }
 
@@ -208,7 +211,15 @@ PPCTargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<PPCSubtarget>(TargetTriple, CPU, FS, *this);
+    I = llvm::make_unique<PPCSubtarget>(
+        TargetTriple, CPU,
+        // FIXME: It would be good to have the subtarget additions here
+        // not necessary. Anything that turns them on/off (overrides) ends
+        // up being put at the end of the feature string, but the defaults
+        // shouldn't require adding them. Fixing this means pulling Feature64Bit
+        // out of most of the target cpus in the .td file and making it set only
+        // as part of initialization via the TargetTriple.
+        computeFSAdditions(FS, getOptLevel(), getTargetTriple()), *this);
   }
   return I.get();
 }
@@ -232,6 +243,7 @@ public:
   bool addPreISel() override;
   bool addILPOpts() override;
   bool addInstSelector() override;
+  void addMachineSSAOptimization() override;
   void addPreRegAlloc() override;
   void addPreSched2() override;
   void addPreEmitPass() override;
@@ -297,6 +309,15 @@ bool PPCPassConfig::addInstSelector() {
 
   addPass(createPPCVSXCopyPass());
   return false;
+}
+
+void PPCPassConfig::addMachineSSAOptimization() {
+  TargetPassConfig::addMachineSSAOptimization();
+  // For little endian, remove where possible the vector swap instructions
+  // introduced at code generation to normalize vector element order.
+  if (Triple(TM->getTargetTriple()).getArch() == Triple::ppc64le &&
+      !DisableVSXSwapRemoval)
+    addPass(createPPCVSXSwapRemovalPass());
 }
 
 void PPCPassConfig::addPreRegAlloc() {

@@ -141,6 +141,28 @@ void MachineOperand::ChangeToFPImmediate(const ConstantFP *FPImm) {
   Contents.CFP = FPImm;
 }
 
+void MachineOperand::ChangeToES(const char *SymName, unsigned char TargetFlags) {
+  assert((!isReg() || !isTied()) &&
+         "Cannot change a tied operand into an external symbol");
+
+  removeRegFromUses();
+
+  OpKind = MO_ExternalSymbol;
+  Contents.OffsetedInfo.Val.SymbolName = SymName;
+  setOffset(0); // Offset is always 0.
+  setTargetFlags(TargetFlags);
+}
+
+void MachineOperand::ChangeToMCSymbol(MCSymbol *Sym) {
+  assert((!isReg() || !isTied()) &&
+         "Cannot change a tied operand into an MCSymbol");
+
+  removeRegFromUses();
+
+  OpKind = MO_MCSymbol;
+  Contents.Sym = Sym;
+}
+
 /// ChangeToRegister - Replace this operand with a new register operand of
 /// the specified value.  If an operand is known to be an register already,
 /// the setReg method should be used.
@@ -276,17 +298,8 @@ hash_code llvm::hash_value(const MachineOperand &MO) {
 
 /// print - Print the specified machine operand.
 ///
-void MachineOperand::print(raw_ostream &OS, const TargetMachine *TM) const {
-  // If the instruction is embedded into a basic block, we can find the
-  // target info for the instruction.
-  if (!TM)
-    if (const MachineInstr *MI = getParent())
-      if (const MachineBasicBlock *MBB = MI->getParent())
-        if (const MachineFunction *MF = MBB->getParent())
-          TM = &MF->getTarget();
-  const TargetRegisterInfo *TRI =
-      TM ? TM->getSubtargetImpl()->getRegisterInfo() : nullptr;
-
+void MachineOperand::print(raw_ostream &OS,
+                           const TargetRegisterInfo *TRI) const {
   switch (getType()) {
   case MachineOperand::MO_Register:
     OS << PrintReg(getReg(), TRI, getSubReg());
@@ -890,8 +903,8 @@ bool MachineInstr::isIdenticalTo(const MachineInstr *Other,
   }
   // If DebugLoc does not match then two dbg.values are not identical.
   if (isDebugValue())
-    if (!getDebugLoc().isUnknown() && !Other->getDebugLoc().isUnknown()
-        && getDebugLoc() != Other->getDebugLoc())
+    if (getDebugLoc() && Other->getDebugLoc() &&
+        getDebugLoc() != Other->getDebugLoc())
       return false;
   return true;
 }
@@ -1512,23 +1525,19 @@ void MachineInstr::dump() const {
 #endif
 }
 
-static void printDebugLoc(DebugLoc DL, const MachineFunction *MF,
-                         raw_ostream &CommentOS) {
-  const LLVMContext &Ctx = MF->getFunction()->getContext();
-  DL.print(Ctx, CommentOS);
-}
-
-void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
-                         bool SkipOpers) const {
-  // We can be a bit tidier if we know the TargetMachine and/or MachineFunction.
+void MachineInstr::print(raw_ostream &OS, bool SkipOpers) const {
+  // We can be a bit tidier if we know the MachineFunction.
   const MachineFunction *MF = nullptr;
+  const TargetRegisterInfo *TRI = nullptr;
   const MachineRegisterInfo *MRI = nullptr;
+  const TargetInstrInfo *TII = nullptr;
   if (const MachineBasicBlock *MBB = getParent()) {
     MF = MBB->getParent();
-    if (!TM && MF)
-      TM = &MF->getTarget();
-    if (MF)
+    if (MF) {
       MRI = &MF->getRegInfo();
+      TRI = MF->getSubtarget().getRegisterInfo();
+      TII = MF->getSubtarget().getInstrInfo();
+    }
   }
 
   // Save a list of virtual registers.
@@ -1541,7 +1550,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
          !getOperand(StartOp).isImplicit();
        ++StartOp) {
     if (StartOp != 0) OS << ", ";
-    getOperand(StartOp).print(OS, TM);
+    getOperand(StartOp).print(OS, TRI);
     unsigned Reg = getOperand(StartOp).getReg();
     if (TargetRegisterInfo::isVirtualRegister(Reg))
       VirtRegs.push_back(Reg);
@@ -1551,8 +1560,8 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
     OS << " = ";
 
   // Print the opcode name.
-  if (TM && TM->getSubtargetImpl()->getInstrInfo())
-    OS << TM->getSubtargetImpl()->getInstrInfo()->getName(getOpcode());
+  if (TII)
+    OS << TII->getName(getOpcode());
   else
     OS << "UNKNOWN";
 
@@ -1568,7 +1577,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
   if (isInlineAsm() && e >= InlineAsm::MIOp_FirstOperand) {
     // Print asm string.
     OS << " ";
-    getOperand(InlineAsm::MIOp_AsmString).print(OS, TM);
+    getOperand(InlineAsm::MIOp_AsmString).print(OS, TRI);
 
     // Print HasSideEffects, MayLoad, MayStore, IsAlignStack
     unsigned ExtraInfo = getOperand(InlineAsm::MIOp_ExtraInfo).getImm();
@@ -1606,9 +1615,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
       if (TargetRegisterInfo::isPhysicalRegister(Reg)) {
         if (MRI->use_empty(Reg)) {
           bool HasAliasLive = false;
-          for (MCRegAliasIterator AI(
-                   Reg, TM->getSubtargetImpl()->getRegisterInfo(), true);
-               AI.isValid(); ++AI) {
+          for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI) {
             unsigned AliasReg = *AI;
             if (!MRI->use_empty(AliasReg)) {
               HasAliasLive = true;
@@ -1634,17 +1641,13 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
     }
     if (isDebugValue() && MO.isMetadata()) {
       // Pretty print DBG_VALUE instructions.
-      const MDNode *MD = MO.getMetadata();
-      DIDescriptor DI(MD);
-      DIVariable DIV(MD);
-
-      if (DI.isVariable() && !DIV.getName().empty())
-        OS << "!\"" << DIV.getName() << '\"';
+      auto *DIV = dyn_cast<DILocalVariable>(MO.getMetadata());
+      if (DIV && !DIV->getName().empty())
+        OS << "!\"" << DIV->getName() << '\"';
       else
-        MO.print(OS, TM);
-    } else if (TM && (isInsertSubreg() || isRegSequence()) && MO.isImm()) {
-      OS << TM->getSubtargetImpl()->getRegisterInfo()->getSubRegIndexName(
-          MO.getImm());
+        MO.print(OS, TRI);
+    } else if (TRI && (isInsertSubreg() || isRegSequence()) && MO.isImm()) {
+      OS << TRI->getSubRegIndexName(MO.getImm());
     } else if (i == AsmDescOp && MO.isImm()) {
       // Pretty print the inline asm operand descriptor.
       OS << '$' << AsmOpCount++;
@@ -1661,11 +1664,8 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
 
       unsigned RCID = 0;
       if (InlineAsm::hasRegClassConstraint(Flag, RCID)) {
-        if (TM) {
-          const TargetRegisterInfo *TRI =
-            TM->getSubtargetImpl()->getRegisterInfo();
-          OS << ':'
-             << TRI->getRegClassName(TRI->getRegClass(RCID));
+        if (TRI) {
+          OS << ':' << TRI->getRegClassName(TRI->getRegClass(RCID));
         } else
           OS << ":RC" << RCID;
       }
@@ -1679,7 +1679,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
       // Compute the index of the next operand descriptor.
       AsmDescOp += 1 + InlineAsm::getNumOperandRegisters(Flag);
     } else
-      MO.print(OS, TM);
+      MO.print(OS, TRI);
   }
 
   // Briefly indicate whether any call clobbers were omitted.
@@ -1715,7 +1715,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
     if (!HaveSemi) OS << ";"; HaveSemi = true;
     for (unsigned i = 0; i != VirtRegs.size(); ++i) {
       const TargetRegisterClass *RC = MRI->getRegClass(VirtRegs[i]);
-      OS << " " << MRI->getTargetRegisterInfo()->getRegClassName(RC)
+      OS << " " << TRI->getRegClassName(RC)
          << ':' << PrintReg(VirtRegs[i]);
       for (unsigned j = i+1; j != VirtRegs.size();) {
         if (MRI->getRegClass(VirtRegs[j]) != RC) {
@@ -1730,24 +1730,24 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM,
   }
 
   // Print debug location information.
-  if (isDebugValue() && getOperand(e - 1).isMetadata()) {
+  if (isDebugValue() && getOperand(e - 2).isMetadata()) {
     if (!HaveSemi) OS << ";";
-    DIVariable DV(getOperand(e - 1).getMetadata());
-    OS << " line no:" <<  DV.getLineNumber();
-    if (MDNode *InlinedAt = DV.getInlinedAt()) {
-      DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(InlinedAt);
-      if (!InlinedAtDL.isUnknown() && MF) {
+    auto *DV = cast<DILocalVariable>(getOperand(e - 2).getMetadata());
+    OS << " line no:" <<  DV->getLine();
+    if (auto *InlinedAt = debugLoc->getInlinedAt()) {
+      DebugLoc InlinedAtDL(InlinedAt);
+      if (InlinedAtDL && MF) {
         OS << " inlined @[ ";
-        printDebugLoc(InlinedAtDL, MF, OS);
+	InlinedAtDL.print(OS);
         OS << " ]";
       }
     }
     if (isIndirectDebugValue())
       OS << " indirect";
-  } else if (!debugLoc.isUnknown() && MF) {
+  } else if (debugLoc && MF) {
     if (!HaveSemi) OS << ";";
     OS << " dbg:";
-    printDebugLoc(debugLoc, MF, OS);
+    debugLoc.print(OS);
   }
 
   OS << '\n';

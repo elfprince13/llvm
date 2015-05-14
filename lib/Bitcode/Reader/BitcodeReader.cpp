@@ -8,33 +8,379 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Bitcode/ReaderWriter.h"
-#include "BitcodeReader.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Bitcode/LLVMBitCodes.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/OperandTraits.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/ValueHandle.h"
 #include "llvm/Support/DataStream.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
-
+#include <deque>
 using namespace llvm;
 
+namespace {
 enum {
   SWITCH_INST_MAGIC = 0x4B5 // May 2012 => 1205 => Hex
 };
+
+class BitcodeReaderValueList {
+  std::vector<WeakVH> ValuePtrs;
+
+  /// ResolveConstants - As we resolve forward-referenced constants, we add
+  /// information about them to this vector.  This allows us to resolve them in
+  /// bulk instead of resolving each reference at a time.  See the code in
+  /// ResolveConstantForwardRefs for more information about this.
+  ///
+  /// The key of this vector is the placeholder constant, the value is the slot
+  /// number that holds the resolved value.
+  typedef std::vector<std::pair<Constant*, unsigned> > ResolveConstantsTy;
+  ResolveConstantsTy ResolveConstants;
+  LLVMContext &Context;
+public:
+  BitcodeReaderValueList(LLVMContext &C) : Context(C) {}
+  ~BitcodeReaderValueList() {
+    assert(ResolveConstants.empty() && "Constants not resolved?");
+  }
+
+  // vector compatibility methods
+  unsigned size() const { return ValuePtrs.size(); }
+  void resize(unsigned N) { ValuePtrs.resize(N); }
+  void push_back(Value *V) {
+    ValuePtrs.push_back(V);
+  }
+
+  void clear() {
+    assert(ResolveConstants.empty() && "Constants not resolved?");
+    ValuePtrs.clear();
+  }
+
+  Value *operator[](unsigned i) const {
+    assert(i < ValuePtrs.size());
+    return ValuePtrs[i];
+  }
+
+  Value *back() const { return ValuePtrs.back(); }
+    void pop_back() { ValuePtrs.pop_back(); }
+  bool empty() const { return ValuePtrs.empty(); }
+  void shrinkTo(unsigned N) {
+    assert(N <= size() && "Invalid shrinkTo request!");
+    ValuePtrs.resize(N);
+  }
+
+  Constant *getConstantFwdRef(unsigned Idx, Type *Ty);
+  Value *getValueFwdRef(unsigned Idx, Type *Ty);
+
+  void AssignValue(Value *V, unsigned Idx);
+
+  /// ResolveConstantForwardRefs - Once all constants are read, this method bulk
+  /// resolves any forward references.
+  void ResolveConstantForwardRefs();
+};
+
+class BitcodeReaderMDValueList {
+  unsigned NumFwdRefs;
+  bool AnyFwdRefs;
+  unsigned MinFwdRef;
+  unsigned MaxFwdRef;
+  std::vector<TrackingMDRef> MDValuePtrs;
+
+  LLVMContext &Context;
+public:
+  BitcodeReaderMDValueList(LLVMContext &C)
+      : NumFwdRefs(0), AnyFwdRefs(false), Context(C) {}
+
+  // vector compatibility methods
+  unsigned size() const       { return MDValuePtrs.size(); }
+  void resize(unsigned N)     { MDValuePtrs.resize(N); }
+  void push_back(Metadata *MD) { MDValuePtrs.emplace_back(MD); }
+  void clear()                { MDValuePtrs.clear();  }
+  Metadata *back() const      { return MDValuePtrs.back(); }
+  void pop_back()             { MDValuePtrs.pop_back(); }
+  bool empty() const          { return MDValuePtrs.empty(); }
+
+  Metadata *operator[](unsigned i) const {
+    assert(i < MDValuePtrs.size());
+    return MDValuePtrs[i];
+  }
+
+  void shrinkTo(unsigned N) {
+    assert(N <= size() && "Invalid shrinkTo request!");
+    MDValuePtrs.resize(N);
+  }
+
+  Metadata *getValueFwdRef(unsigned Idx);
+  void AssignValue(Metadata *MD, unsigned Idx);
+  void tryToResolveCycles();
+};
+
+class BitcodeReader : public GVMaterializer {
+  LLVMContext &Context;
+  DiagnosticHandlerFunction DiagnosticHandler;
+  Module *TheModule;
+  std::unique_ptr<MemoryBuffer> Buffer;
+  std::unique_ptr<BitstreamReader> StreamFile;
+  BitstreamCursor Stream;
+  DataStreamer *LazyStreamer;
+  uint64_t NextUnreadBit;
+  bool SeenValueSymbolTable;
+
+  std::vector<Type*> TypeList;
+  BitcodeReaderValueList ValueList;
+  BitcodeReaderMDValueList MDValueList;
+  std::vector<Comdat *> ComdatList;
+  SmallVector<Instruction *, 64> InstructionList;
+
+  std::vector<std::pair<GlobalVariable*, unsigned> > GlobalInits;
+  std::vector<std::pair<GlobalAlias*, unsigned> > AliasInits;
+  std::vector<std::pair<Function*, unsigned> > FunctionPrefixes;
+  std::vector<std::pair<Function*, unsigned> > FunctionPrologues;
+
+  SmallVector<Instruction*, 64> InstsWithTBAATag;
+
+  /// MAttributes - The set of attributes by index.  Index zero in the
+  /// file is for null, and is thus not represented here.  As such all indices
+  /// are off by one.
+  std::vector<AttributeSet> MAttributes;
+
+  /// \brief The set of attribute groups.
+  std::map<unsigned, AttributeSet> MAttributeGroups;
+
+  /// FunctionBBs - While parsing a function body, this is a list of the basic
+  /// blocks for the function.
+  std::vector<BasicBlock*> FunctionBBs;
+
+  // When reading the module header, this list is populated with functions that
+  // have bodies later in the file.
+  std::vector<Function*> FunctionsWithBodies;
+
+  // When intrinsic functions are encountered which require upgrading they are
+  // stored here with their replacement function.
+  typedef std::vector<std::pair<Function*, Function*> > UpgradedIntrinsicMap;
+  UpgradedIntrinsicMap UpgradedIntrinsics;
+
+  // Map the bitcode's custom MDKind ID to the Module's MDKind ID.
+  DenseMap<unsigned, unsigned> MDKindMap;
+
+  // Several operations happen after the module header has been read, but
+  // before function bodies are processed. This keeps track of whether
+  // we've done this yet.
+  bool SeenFirstFunctionBody;
+
+  /// DeferredFunctionInfo - When function bodies are initially scanned, this
+  /// map contains info about where to find deferred function body in the
+  /// stream.
+  DenseMap<Function*, uint64_t> DeferredFunctionInfo;
+
+  /// When Metadata block is initially scanned when parsing the module, we may
+  /// choose to defer parsing of the metadata. This vector contains info about
+  /// which Metadata blocks are deferred.
+  std::vector<uint64_t> DeferredMetadataInfo;
+
+  /// These are basic blocks forward-referenced by block addresses.  They are
+  /// inserted lazily into functions when they're loaded.  The basic block ID is
+  /// its index into the vector.
+  DenseMap<Function *, std::vector<BasicBlock *>> BasicBlockFwdRefs;
+  std::deque<Function *> BasicBlockFwdRefQueue;
+
+  /// UseRelativeIDs - Indicates that we are using a new encoding for
+  /// instruction operands where most operands in the current
+  /// FUNCTION_BLOCK are encoded relative to the instruction number,
+  /// for a more compact encoding.  Some instruction operands are not
+  /// relative to the instruction ID: basic block numbers, and types.
+  /// Once the old style function blocks have been phased out, we would
+  /// not need this flag.
+  bool UseRelativeIDs;
+
+  /// True if all functions will be materialized, negating the need to process
+  /// (e.g.) blockaddress forward references.
+  bool WillMaterializeAllForwardRefs;
+
+  /// Functions that have block addresses taken.  This is usually empty.
+  SmallPtrSet<const Function *, 4> BlockAddressesTaken;
+
+  /// True if any Metadata block has been materialized.
+  bool IsMetadataMaterialized;
+
+  bool StripDebugInfo = false;
+
+public:
+  std::error_code Error(BitcodeError E, const Twine &Message);
+  std::error_code Error(BitcodeError E);
+  std::error_code Error(const Twine &Message);
+
+  explicit BitcodeReader(MemoryBuffer *buffer, LLVMContext &C,
+                         DiagnosticHandlerFunction DiagnosticHandler);
+  explicit BitcodeReader(DataStreamer *streamer, LLVMContext &C,
+                         DiagnosticHandlerFunction DiagnosticHandler);
+  ~BitcodeReader() override { FreeState(); }
+
+  std::error_code materializeForwardReferencedFunctions();
+
+  void FreeState();
+
+  void releaseBuffer();
+
+  bool isDematerializable(const GlobalValue *GV) const override;
+  std::error_code materialize(GlobalValue *GV) override;
+  std::error_code MaterializeModule(Module *M) override;
+  std::vector<StructType *> getIdentifiedStructTypes() const override;
+  void Dematerialize(GlobalValue *GV) override;
+
+  /// @brief Main interface to parsing a bitcode buffer.
+  /// @returns true if an error occurred.
+  std::error_code ParseBitcodeInto(Module *M,
+                                   bool ShouldLazyLoadMetadata = false);
+
+  /// @brief Cheap mechanism to just extract module triple
+  /// @returns true if an error occurred.
+  ErrorOr<std::string> parseTriple();
+
+  static uint64_t decodeSignRotatedValue(uint64_t V);
+
+  /// Materialize any deferred Metadata block.
+  std::error_code materializeMetadata() override;
+
+  void setStripDebugInfo() override;
+
+private:
+  std::vector<StructType *> IdentifiedStructTypes;
+  StructType *createIdentifiedStructType(LLVMContext &Context, StringRef Name);
+  StructType *createIdentifiedStructType(LLVMContext &Context);
+
+  Type *getTypeByID(unsigned ID);
+  Value *getFnValueByID(unsigned ID, Type *Ty) {
+    if (Ty && Ty->isMetadataTy())
+      return MetadataAsValue::get(Ty->getContext(), getFnMetadataByID(ID));
+    return ValueList.getValueFwdRef(ID, Ty);
+  }
+  Metadata *getFnMetadataByID(unsigned ID) {
+    return MDValueList.getValueFwdRef(ID);
+  }
+  BasicBlock *getBasicBlock(unsigned ID) const {
+    if (ID >= FunctionBBs.size()) return nullptr; // Invalid ID
+    return FunctionBBs[ID];
+  }
+  AttributeSet getAttributes(unsigned i) const {
+    if (i-1 < MAttributes.size())
+      return MAttributes[i-1];
+    return AttributeSet();
+  }
+
+  /// getValueTypePair - Read a value/type pair out of the specified record from
+  /// slot 'Slot'.  Increment Slot past the number of slots used in the record.
+  /// Return true on failure.
+  bool getValueTypePair(SmallVectorImpl<uint64_t> &Record, unsigned &Slot,
+                        unsigned InstNum, Value *&ResVal) {
+    if (Slot == Record.size()) return true;
+    unsigned ValNo = (unsigned)Record[Slot++];
+    // Adjust the ValNo, if it was encoded relative to the InstNum.
+    if (UseRelativeIDs)
+      ValNo = InstNum - ValNo;
+    if (ValNo < InstNum) {
+      // If this is not a forward reference, just return the value we already
+      // have.
+      ResVal = getFnValueByID(ValNo, nullptr);
+      return ResVal == nullptr;
+    }
+    if (Slot == Record.size())
+      return true;
+
+    unsigned TypeNo = (unsigned)Record[Slot++];
+    ResVal = getFnValueByID(ValNo, getTypeByID(TypeNo));
+    return ResVal == nullptr;
+  }
+
+  /// popValue - Read a value out of the specified record from slot 'Slot'.
+  /// Increment Slot past the number of slots used by the value in the record.
+  /// Return true if there is an error.
+  bool popValue(SmallVectorImpl<uint64_t> &Record, unsigned &Slot,
+                unsigned InstNum, Type *Ty, Value *&ResVal) {
+    if (getValue(Record, Slot, InstNum, Ty, ResVal))
+      return true;
+    // All values currently take a single record slot.
+    ++Slot;
+    return false;
+  }
+
+  /// getValue -- Like popValue, but does not increment the Slot number.
+  bool getValue(SmallVectorImpl<uint64_t> &Record, unsigned Slot,
+                unsigned InstNum, Type *Ty, Value *&ResVal) {
+    ResVal = getValue(Record, Slot, InstNum, Ty);
+    return ResVal == nullptr;
+  }
+
+  /// getValue -- Version of getValue that returns ResVal directly,
+  /// or 0 if there is an error.
+  Value *getValue(SmallVectorImpl<uint64_t> &Record, unsigned Slot,
+                  unsigned InstNum, Type *Ty) {
+    if (Slot == Record.size()) return nullptr;
+    unsigned ValNo = (unsigned)Record[Slot];
+    // Adjust the ValNo, if it was encoded relative to the InstNum.
+    if (UseRelativeIDs)
+      ValNo = InstNum - ValNo;
+    return getFnValueByID(ValNo, Ty);
+  }
+
+  /// getValueSigned -- Like getValue, but decodes signed VBRs.
+  Value *getValueSigned(SmallVectorImpl<uint64_t> &Record, unsigned Slot,
+                        unsigned InstNum, Type *Ty) {
+    if (Slot == Record.size()) return nullptr;
+    unsigned ValNo = (unsigned)decodeSignRotatedValue(Record[Slot]);
+    // Adjust the ValNo, if it was encoded relative to the InstNum.
+    if (UseRelativeIDs)
+      ValNo = InstNum - ValNo;
+    return getFnValueByID(ValNo, Ty);
+  }
+
+  /// Converts alignment exponent (i.e. power of two (or zero)) to the
+  /// corresponding alignment to use. If alignment is too large, returns
+  /// a corresponding error code.
+  std::error_code parseAlignmentValue(uint64_t Exponent, unsigned &Alignment);
+  std::error_code ParseAttrKind(uint64_t Code, Attribute::AttrKind *Kind);
+  std::error_code ParseModule(bool Resume, bool ShouldLazyLoadMetadata = false);
+  std::error_code ParseAttributeBlock();
+  std::error_code ParseAttributeGroupBlock();
+  std::error_code ParseTypeTable();
+  std::error_code ParseTypeTableBody();
+
+  std::error_code ParseValueSymbolTable();
+  std::error_code ParseConstants();
+  std::error_code RememberAndSkipFunctionBody();
+  /// Save the positions of the Metadata blocks and skip parsing the blocks.
+  std::error_code rememberAndSkipMetadata();
+  std::error_code ParseFunctionBody(Function *F);
+  std::error_code GlobalCleanup();
+  std::error_code ResolveGlobalAndAliasInits();
+  std::error_code ParseMetadata();
+  std::error_code ParseMetadataAttachment(Function &F);
+  ErrorOr<std::string> parseModuleTriple();
+  std::error_code ParseUseLists();
+  std::error_code InitStream();
+  std::error_code InitStreamFromBuffer();
+  std::error_code InitLazyStream();
+  std::error_code FindFunctionInStream(
+      Function *F,
+      DenseMap<Function *, uint64_t>::iterator DeferredFunctionInfoIterator);
+};
+} // namespace
 
 BitcodeDiagnosticInfo::BitcodeDiagnosticInfo(std::error_code EC,
                                              DiagnosticSeverity Severity,
@@ -81,7 +427,7 @@ BitcodeReader::BitcodeReader(MemoryBuffer *buffer, LLVMContext &C,
       TheModule(nullptr), Buffer(buffer), LazyStreamer(nullptr),
       NextUnreadBit(0), SeenValueSymbolTable(false), ValueList(C),
       MDValueList(C), SeenFirstFunctionBody(false), UseRelativeIDs(false),
-      WillMaterializeAllForwardRefs(false) {}
+      WillMaterializeAllForwardRefs(false), IsMetadataMaterialized(false) {}
 
 BitcodeReader::BitcodeReader(DataStreamer *streamer, LLVMContext &C,
                              DiagnosticHandlerFunction DiagnosticHandler)
@@ -89,7 +435,7 @@ BitcodeReader::BitcodeReader(DataStreamer *streamer, LLVMContext &C,
       TheModule(nullptr), Buffer(nullptr), LazyStreamer(streamer),
       NextUnreadBit(0), SeenValueSymbolTable(false), ValueList(C),
       MDValueList(C), SeenFirstFunctionBody(false), UseRelativeIDs(false),
-      WillMaterializeAllForwardRefs(false) {}
+      WillMaterializeAllForwardRefs(false), IsMetadataMaterialized(false) {}
 
 std::error_code BitcodeReader::materializeForwardReferencedFunctions() {
   if (WillMaterializeAllForwardRefs)
@@ -135,6 +481,7 @@ void BitcodeReader::FreeState() {
   std::vector<BasicBlock*>().swap(FunctionBBs);
   std::vector<Function*>().swap(FunctionsWithBodies);
   DeferredFunctionInfo.clear();
+  DeferredMetadataInfo.clear();
   MDKindMap.clear();
 
   assert(BasicBlockFwdRefs.empty() && "Unresolved blockaddress fwd references");
@@ -260,27 +607,42 @@ static int GetDecodedCastOpcode(unsigned Val) {
   case bitc::CAST_ADDRSPACECAST: return Instruction::AddrSpaceCast;
   }
 }
+
 static int GetDecodedBinaryOpcode(unsigned Val, Type *Ty) {
+  bool IsFP = Ty->isFPOrFPVectorTy();
+  // BinOps are only valid for int/fp or vector of int/fp types
+  if (!IsFP && !Ty->isIntOrIntVectorTy())
+    return -1;
+
   switch (Val) {
-  default: return -1;
+  default:
+    return -1;
   case bitc::BINOP_ADD:
-    return Ty->isFPOrFPVectorTy() ? Instruction::FAdd : Instruction::Add;
+    return IsFP ? Instruction::FAdd : Instruction::Add;
   case bitc::BINOP_SUB:
-    return Ty->isFPOrFPVectorTy() ? Instruction::FSub : Instruction::Sub;
+    return IsFP ? Instruction::FSub : Instruction::Sub;
   case bitc::BINOP_MUL:
-    return Ty->isFPOrFPVectorTy() ? Instruction::FMul : Instruction::Mul;
-  case bitc::BINOP_UDIV: return Instruction::UDiv;
+    return IsFP ? Instruction::FMul : Instruction::Mul;
+  case bitc::BINOP_UDIV:
+    return IsFP ? -1 : Instruction::UDiv;
   case bitc::BINOP_SDIV:
-    return Ty->isFPOrFPVectorTy() ? Instruction::FDiv : Instruction::SDiv;
-  case bitc::BINOP_UREM: return Instruction::URem;
+    return IsFP ? Instruction::FDiv : Instruction::SDiv;
+  case bitc::BINOP_UREM:
+    return IsFP ? -1 : Instruction::URem;
   case bitc::BINOP_SREM:
-    return Ty->isFPOrFPVectorTy() ? Instruction::FRem : Instruction::SRem;
-  case bitc::BINOP_SHL:  return Instruction::Shl;
-  case bitc::BINOP_LSHR: return Instruction::LShr;
-  case bitc::BINOP_ASHR: return Instruction::AShr;
-  case bitc::BINOP_AND:  return Instruction::And;
-  case bitc::BINOP_OR:   return Instruction::Or;
-  case bitc::BINOP_XOR:  return Instruction::Xor;
+    return IsFP ? Instruction::FRem : Instruction::SRem;
+  case bitc::BINOP_SHL:
+    return IsFP ? -1 : Instruction::Shl;
+  case bitc::BINOP_LSHR:
+    return IsFP ? -1 : Instruction::LShr;
+  case bitc::BINOP_ASHR:
+    return IsFP ? -1 : Instruction::AShr;
+  case bitc::BINOP_AND:
+    return IsFP ? -1 : Instruction::And;
+  case bitc::BINOP_OR:
+    return IsFP ? -1 : Instruction::Or;
+  case bitc::BINOP_XOR:
+    return IsFP ? -1 : Instruction::Xor;
   }
 }
 
@@ -428,11 +790,17 @@ Constant *BitcodeReaderValueList::getConstantFwdRef(unsigned Idx,
 }
 
 Value *BitcodeReaderValueList::getValueFwdRef(unsigned Idx, Type *Ty) {
+  // Bail out for a clearly invalid value. This would make us call resize(0)
+  if (Idx == UINT_MAX)
+    return nullptr;
+
   if (Idx >= size())
     resize(Idx + 1);
 
   if (Value *V = ValuePtrs[Idx]) {
-    assert((!Ty || Ty == V->getType()) && "Type mismatch in value table!");
+    // If the types don't match, it's invalid.
+    if (Ty && Ty != V->getType())
+      return nullptr;
     return V;
   }
 
@@ -751,6 +1119,8 @@ static Attribute::AttrKind GetAttrFromCode(uint64_t Code) {
     return Attribute::NonNull;
   case bitc::ATTR_KIND_DEREFERENCEABLE:
     return Attribute::Dereferenceable;
+  case bitc::ATTR_KIND_DEREFERENCEABLE_OR_NULL:
+    return Attribute::DereferenceableOrNull;
   case bitc::ATTR_KIND_NO_RED_ZONE:
     return Attribute::NoRedZone;
   case bitc::ATTR_KIND_NO_RETURN:
@@ -867,6 +1237,8 @@ std::error_code BitcodeReader::ParseAttributeGroupBlock() {
             B.addStackAlignmentAttr(Record[++i]);
           else if (Kind == Attribute::Dereferenceable)
             B.addDereferenceableAttr(Record[++i]);
+          else if (Kind == Attribute::DereferenceableOrNull)
+            B.addDereferenceableOrNullAttr(Record[++i]);
         } else {                     // String attribute
           assert((Record[i] == 3 || Record[i] == 4) &&
                  "Invalid attribute group entry");
@@ -992,7 +1364,8 @@ std::error_code BitcodeReader::ParseTypeTableBody() {
       if (Record.size() == 2)
         AddressSpace = Record[1];
       ResultTy = getTypeByID(Record[0]);
-      if (!ResultTy)
+      if (!ResultTy ||
+          !PointerType::isValidElementType(ResultTy))
         return Error("Invalid type");
       ResultTy = PointerType::get(ResultTy, AddressSpace);
       break;
@@ -1106,18 +1479,18 @@ std::error_code BitcodeReader::ParseTypeTableBody() {
     case bitc::TYPE_CODE_ARRAY:     // ARRAY: [numelts, eltty]
       if (Record.size() < 2)
         return Error("Invalid record");
-      if ((ResultTy = getTypeByID(Record[1])))
-        ResultTy = ArrayType::get(ResultTy, Record[0]);
-      else
+      ResultTy = getTypeByID(Record[1]);
+      if (!ResultTy || !ArrayType::isValidElementType(ResultTy))
         return Error("Invalid type");
+      ResultTy = ArrayType::get(ResultTy, Record[0]);
       break;
     case bitc::TYPE_CODE_VECTOR:    // VECTOR: [numelts, eltty]
       if (Record.size() < 2)
         return Error("Invalid record");
-      if ((ResultTy = getTypeByID(Record[1])))
-        ResultTy = VectorType::get(ResultTy, Record[0]);
-      else
+      ResultTy = getTypeByID(Record[1]);
+      if (!ResultTy || !StructType::isValidElementType(ResultTy))
         return Error("Invalid type");
+      ResultTy = VectorType::get(ResultTy, Record[0]);
       break;
     }
 
@@ -1198,6 +1571,7 @@ std::error_code BitcodeReader::ParseValueSymbolTable() {
 static int64_t unrotateSign(uint64_t U) { return U & 1 ? ~(U >> 1) : U >> 1; }
 
 std::error_code BitcodeReader::ParseMetadata() {
+  IsMetadataMaterialized = true;
   unsigned NextMDValueNo = MDValueList.size();
 
   if (Stream.EnterSubBlock(bitc::METADATA_BLOCK_ID))
@@ -1348,14 +1722,15 @@ std::error_code BitcodeReader::ParseMetadata() {
       if (Record.size() != 5)
         return Error("Invalid record");
 
-      auto get = Record[0] ? MDLocation::getDistinct : MDLocation::get;
       unsigned Line = Record[1];
       unsigned Column = Record[2];
       MDNode *Scope = cast<MDNode>(MDValueList.getValueFwdRef(Record[3]));
       Metadata *InlinedAt =
           Record[4] ? MDValueList.getValueFwdRef(Record[4] - 1) : nullptr;
-      MDValueList.AssignValue(get(Context, Line, Column, Scope, InlinedAt),
-                              NextMDValueNo++);
+      MDValueList.AssignValue(
+          GET_OR_DISTINCT(DILocation, Record[0],
+                          (Context, Line, Column, Scope, InlinedAt)),
+          NextMDValueNo++);
       break;
     }
     case bitc::METADATA_GENERIC_DEBUG: {
@@ -1373,7 +1748,7 @@ std::error_code BitcodeReader::ParseMetadata() {
       for (unsigned I = 4, E = Record.size(); I != E; ++I)
         DwarfOps.push_back(Record[I] ? MDValueList.getValueFwdRef(Record[I] - 1)
                                      : nullptr);
-      MDValueList.AssignValue(GET_OR_DISTINCT(GenericDebugNode, Record[0],
+      MDValueList.AssignValue(GET_OR_DISTINCT(GenericDINode, Record[0],
                                               (Context, Tag, Header, DwarfOps)),
                               NextMDValueNo++);
       break;
@@ -1383,7 +1758,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDSubrange, Record[0],
+          GET_OR_DISTINCT(DISubrange, Record[0],
                           (Context, Record[1], unrotateSign(Record[2]))),
           NextMDValueNo++);
       break;
@@ -1392,7 +1767,7 @@ std::error_code BitcodeReader::ParseMetadata() {
       if (Record.size() != 3)
         return Error("Invalid record");
 
-      MDValueList.AssignValue(GET_OR_DISTINCT(MDEnumerator, Record[0],
+      MDValueList.AssignValue(GET_OR_DISTINCT(DIEnumerator, Record[0],
                                               (Context, unrotateSign(Record[1]),
                                                getMDString(Record[2]))),
                               NextMDValueNo++);
@@ -1403,7 +1778,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDBasicType, Record[0],
+          GET_OR_DISTINCT(DIBasicType, Record[0],
                           (Context, Record[1], getMDString(Record[2]),
                            Record[3], Record[4], Record[5])),
           NextMDValueNo++);
@@ -1414,7 +1789,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDDerivedType, Record[0],
+          GET_OR_DISTINCT(DIDerivedType, Record[0],
                           (Context, Record[1], getMDString(Record[2]),
                            getMDOrNull(Record[3]), Record[4],
                            getMDOrNull(Record[5]), getMDOrNull(Record[6]),
@@ -1428,7 +1803,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDCompositeType, Record[0],
+          GET_OR_DISTINCT(DICompositeType, Record[0],
                           (Context, Record[1], getMDString(Record[2]),
                            getMDOrNull(Record[3]), Record[4],
                            getMDOrNull(Record[5]), getMDOrNull(Record[6]),
@@ -1444,7 +1819,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDSubroutineType, Record[0],
+          GET_OR_DISTINCT(DISubroutineType, Record[0],
                           (Context, Record[1], getMDOrNull(Record[2]))),
           NextMDValueNo++);
       break;
@@ -1454,7 +1829,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDFile, Record[0], (Context, getMDString(Record[1]),
+          GET_OR_DISTINCT(DIFile, Record[0], (Context, getMDString(Record[1]),
                                               getMDString(Record[2]))),
           NextMDValueNo++);
       break;
@@ -1464,7 +1839,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDCompileUnit, Record[0],
+          GET_OR_DISTINCT(DICompileUnit, Record[0],
                           (Context, Record[1], getMDOrNull(Record[2]),
                            getMDString(Record[3]), Record[4],
                            getMDString(Record[5]), Record[6],
@@ -1481,7 +1856,7 @@ std::error_code BitcodeReader::ParseMetadata() {
 
       MDValueList.AssignValue(
           GET_OR_DISTINCT(
-              MDSubprogram, Record[0],
+              DISubprogram, Record[0],
               (Context, getMDOrNull(Record[1]), getMDString(Record[2]),
                getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
                getMDOrNull(Record[6]), Record[7], Record[8], Record[9],
@@ -1496,7 +1871,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDLexicalBlock, Record[0],
+          GET_OR_DISTINCT(DILexicalBlock, Record[0],
                           (Context, getMDOrNull(Record[1]),
                            getMDOrNull(Record[2]), Record[3], Record[4])),
           NextMDValueNo++);
@@ -1507,7 +1882,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDLexicalBlockFile, Record[0],
+          GET_OR_DISTINCT(DILexicalBlockFile, Record[0],
                           (Context, getMDOrNull(Record[1]),
                            getMDOrNull(Record[2]), Record[3])),
           NextMDValueNo++);
@@ -1518,7 +1893,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDNamespace, Record[0],
+          GET_OR_DISTINCT(DINamespace, Record[0],
                           (Context, getMDOrNull(Record[1]),
                            getMDOrNull(Record[2]), getMDString(Record[3]),
                            Record[4])),
@@ -1529,7 +1904,7 @@ std::error_code BitcodeReader::ParseMetadata() {
       if (Record.size() != 3)
         return Error("Invalid record");
 
-      MDValueList.AssignValue(GET_OR_DISTINCT(MDTemplateTypeParameter,
+      MDValueList.AssignValue(GET_OR_DISTINCT(DITemplateTypeParameter,
                                               Record[0],
                                               (Context, getMDString(Record[1]),
                                                getMDOrNull(Record[2]))),
@@ -1541,7 +1916,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDTemplateValueParameter, Record[0],
+          GET_OR_DISTINCT(DITemplateValueParameter, Record[0],
                           (Context, Record[1], getMDString(Record[2]),
                            getMDOrNull(Record[3]), getMDOrNull(Record[4]))),
           NextMDValueNo++);
@@ -1552,7 +1927,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDGlobalVariable, Record[0],
+          GET_OR_DISTINCT(DIGlobalVariable, Record[0],
                           (Context, getMDOrNull(Record[1]),
                            getMDString(Record[2]), getMDString(Record[3]),
                            getMDOrNull(Record[4]), Record[5],
@@ -1562,15 +1937,16 @@ std::error_code BitcodeReader::ParseMetadata() {
       break;
     }
     case bitc::METADATA_LOCAL_VAR: {
-      if (Record.size() != 10)
+      // 10th field is for the obseleted 'inlinedAt:' field.
+      if (Record.size() != 9 && Record.size() != 10)
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDLocalVariable, Record[0],
+          GET_OR_DISTINCT(DILocalVariable, Record[0],
                           (Context, Record[1], getMDOrNull(Record[2]),
                            getMDString(Record[3]), getMDOrNull(Record[4]),
                            Record[5], getMDOrNull(Record[6]), Record[7],
-                           Record[8], getMDOrNull(Record[9]))),
+                           Record[8])),
           NextMDValueNo++);
       break;
     }
@@ -1579,7 +1955,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDExpression, Record[0],
+          GET_OR_DISTINCT(DIExpression, Record[0],
                           (Context, makeArrayRef(Record).slice(1))),
           NextMDValueNo++);
       break;
@@ -1589,7 +1965,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDObjCProperty, Record[0],
+          GET_OR_DISTINCT(DIObjCProperty, Record[0],
                           (Context, getMDString(Record[1]),
                            getMDOrNull(Record[2]), Record[3],
                            getMDString(Record[4]), getMDString(Record[5]),
@@ -1602,7 +1978,7 @@ std::error_code BitcodeReader::ParseMetadata() {
         return Error("Invalid record");
 
       MDValueList.AssignValue(
-          GET_OR_DISTINCT(MDImportedEntity, Record[0],
+          GET_OR_DISTINCT(DIImportedEntity, Record[0],
                           (Context, Record[1], getMDOrNull(Record[2]),
                            getMDOrNull(Record[3]), Record[4],
                            getMDString(Record[5]))),
@@ -1952,19 +2328,29 @@ std::error_code BitcodeReader::ParseConstants() {
     }
     case bitc::CST_CODE_CE_INBOUNDS_GEP:
     case bitc::CST_CODE_CE_GEP: {  // CE_GEP:        [n x operands]
-      if (Record.size() & 1)
-        return Error("Invalid record");
+      unsigned OpNum = 0;
+      Type *PointeeType = nullptr;
+      if (Record.size() % 2)
+        PointeeType = getTypeByID(Record[OpNum++]);
       SmallVector<Constant*, 16> Elts;
-      for (unsigned i = 0, e = Record.size(); i != e; i += 2) {
-        Type *ElTy = getTypeByID(Record[i]);
+      while (OpNum != Record.size()) {
+        Type *ElTy = getTypeByID(Record[OpNum++]);
         if (!ElTy)
           return Error("Invalid record");
-        Elts.push_back(ValueList.getConstantFwdRef(Record[i+1], ElTy));
+        Elts.push_back(ValueList.getConstantFwdRef(Record[OpNum++], ElTy));
       }
+
+      if (PointeeType &&
+          PointeeType !=
+              cast<SequentialType>(Elts[0]->getType()->getScalarType())
+                  ->getElementType())
+        return Error("Explicit gep operator type does not match pointee type "
+                     "of pointer operand");
+
       ArrayRef<Constant *> Indices(Elts.begin() + 1, Elts.end());
-      V = ConstantExpr::getGetElementPtr(Elts[0], Indices,
+      V = ConstantExpr::getGetElementPtr(PointeeType, Elts[0], Indices,
                                          BitCode ==
-                                           bitc::CST_CODE_CE_INBOUNDS_GEP);
+                                             bitc::CST_CODE_CE_INBOUNDS_GEP);
       break;
     }
     case bitc::CST_CODE_CE_SELECT: {  // CE_SELECT: [opval#, opval#, opval#]
@@ -2234,6 +2620,32 @@ std::error_code BitcodeReader::ParseUseLists() {
   }
 }
 
+/// When we see the block for metadata, remember where it is and then skip it.
+/// This lets us lazily deserialize the metadata.
+std::error_code BitcodeReader::rememberAndSkipMetadata() {
+  // Save the current stream state.
+  uint64_t CurBit = Stream.GetCurrentBitNo();
+  DeferredMetadataInfo.push_back(CurBit);
+
+  // Skip over the block for now.
+  if (Stream.SkipBlock())
+    return Error("Invalid record");
+  return std::error_code();
+}
+
+std::error_code BitcodeReader::materializeMetadata() {
+  for (uint64_t BitPos : DeferredMetadataInfo) {
+    // Move the bit stream to the saved position.
+    Stream.JumpToBit(BitPos);
+    if (std::error_code EC = ParseMetadata())
+      return EC;
+  }
+  DeferredMetadataInfo.clear();
+  return std::error_code();
+}
+
+void BitcodeReader::setStripDebugInfo() { StripDebugInfo = true; }
+
 /// RememberAndSkipFunctionBody - When we see the block for a function body,
 /// remember where it is and then skip it.  This lets us lazily deserialize the
 /// functions.
@@ -2284,7 +2696,8 @@ std::error_code BitcodeReader::GlobalCleanup() {
   return std::error_code();
 }
 
-std::error_code BitcodeReader::ParseModule(bool Resume) {
+std::error_code BitcodeReader::ParseModule(bool Resume,
+                                           bool ShouldLazyLoadMetadata) {
   if (Resume)
     Stream.JumpToBit(NextUnreadBit);
   else if (Stream.EnterSubBlock(bitc::MODULE_BLOCK_ID))
@@ -2338,6 +2751,12 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
           return EC;
         break;
       case bitc::METADATA_BLOCK_ID:
+        if (ShouldLazyLoadMetadata && !IsMetadataMaterialized) {
+          if (std::error_code EC = rememberAndSkipMetadata())
+            return EC;
+          break;
+        }
+        assert(DeferredMetadataInfo.empty() && "Unexpected deferred metadata");
         if (std::error_code EC = ParseMetadata())
           return EC;
         break;
@@ -2464,12 +2883,18 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
       Type *Ty = getTypeByID(Record[0]);
       if (!Ty)
         return Error("Invalid record");
-      if (!Ty->isPointerTy())
-        return Error("Invalid type for value");
-      unsigned AddressSpace = cast<PointerType>(Ty)->getAddressSpace();
-      Ty = cast<PointerType>(Ty)->getElementType();
+      bool isConstant = Record[1] & 1;
+      bool explicitType = Record[1] & 2;
+      unsigned AddressSpace;
+      if (explicitType) {
+        AddressSpace = Record[1] >> 2;
+      } else {
+        if (!Ty->isPointerTy())
+          return Error("Invalid type for value");
+        AddressSpace = cast<PointerType>(Ty)->getAddressSpace();
+        Ty = cast<PointerType>(Ty)->getElementType();
+      }
 
-      bool isConstant = Record[1];
       uint64_t RawLinkage = Record[3];
       GlobalValue::LinkageTypes Linkage = getDecodedLinkage(RawLinkage);
       unsigned Alignment;
@@ -2538,10 +2963,9 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
       Type *Ty = getTypeByID(Record[0]);
       if (!Ty)
         return Error("Invalid record");
-      if (!Ty->isPointerTy())
-        return Error("Invalid type for value");
-      FunctionType *FTy =
-        dyn_cast<FunctionType>(cast<PointerType>(Ty)->getElementType());
+      if (auto *PTy = dyn_cast<PointerType>(Ty))
+        Ty = PTy->getElementType();
+      auto *FTy = dyn_cast<FunctionType>(Ty);
       if (!FTy)
         return Error("Invalid type for value");
 
@@ -2568,7 +2992,7 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
         // FIXME: Change to an error if non-default in 4.0.
         Func->setVisibility(GetDecodedVisibility(Record[7]));
       if (Record.size() > 8 && Record[8]) {
-        if (Record[8]-1 > GCTable.size())
+        if (Record[8]-1 >= GCTable.size())
           return Error("Invalid ID");
         Func->setGC(GCTable[Record[8]-1].c_str());
       }
@@ -2621,8 +3045,7 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
         return Error("Invalid type for value");
 
       auto *NewGA =
-          GlobalAlias::create(PTy->getElementType(), PTy->getAddressSpace(),
-                              getDecodedLinkage(Record[2]), "", TheModule);
+          GlobalAlias::create(PTy, getDecodedLinkage(Record[2]), "", TheModule);
       // Old bitcode files didn't have visibility field.
       // Local linkage must have default visibility.
       if (Record.size() > 3 && !NewGA->hasLocalLinkage())
@@ -2652,7 +3075,8 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
   }
 }
 
-std::error_code BitcodeReader::ParseBitcodeInto(Module *M) {
+std::error_code BitcodeReader::ParseBitcodeInto(Module *M,
+                                                bool ShouldLazyLoadMetadata) {
   TheModule = nullptr;
 
   if (std::error_code EC = InitStream())
@@ -2670,8 +3094,12 @@ std::error_code BitcodeReader::ParseBitcodeInto(Module *M) {
   // We expect a number of well-defined blocks, though we don't necessarily
   // need to understand them all.
   while (1) {
-    if (Stream.AtEndOfStream())
-      return std::error_code();
+    if (Stream.AtEndOfStream()) {
+      if (TheModule)
+        return std::error_code();
+      // We didn't really read a proper Module.
+      return Error("Malformed IR file");
+    }
 
     BitstreamEntry Entry =
       Stream.advance(BitstreamCursor::AF_DontAutoprocessAbbrevs);
@@ -2693,7 +3121,7 @@ std::error_code BitcodeReader::ParseBitcodeInto(Module *M) {
         if (TheModule)
           return Error("Invalid multiple blocks");
         TheModule = M;
-        if (std::error_code EC = ParseModule(false))
+        if (std::error_code EC = ParseModule(false, ShouldLazyLoadMetadata))
           return EC;
         if (LazyStreamer)
           return std::error_code();
@@ -2799,7 +3227,7 @@ ErrorOr<std::string> BitcodeReader::parseTriple() {
 }
 
 /// ParseMetadataAttachment - Parse metadata attachments.
-std::error_code BitcodeReader::ParseMetadataAttachment() {
+std::error_code BitcodeReader::ParseMetadataAttachment(Function &F) {
   if (Stream.EnterSubBlock(bitc::METADATA_ATTACHMENT_ID))
     return Error("Invalid record");
 
@@ -2825,8 +3253,21 @@ std::error_code BitcodeReader::ParseMetadataAttachment() {
       break;
     case bitc::METADATA_ATTACHMENT: {
       unsigned RecordLength = Record.size();
-      if (Record.empty() || (RecordLength - 1) % 2 == 1)
+      if (Record.empty())
         return Error("Invalid record");
+      if (RecordLength % 2 == 0) {
+        // A function attachment.
+        for (unsigned I = 0; I != RecordLength; I += 2) {
+          auto K = MDKindMap.find(Record[I]);
+          if (K == MDKindMap.end())
+            return Error("Invalid ID");
+          Metadata *MD = MDValueList.getValueFwdRef(Record[I + 1]);
+          F.setMetadata(K->second, cast<MDNode>(MD));
+        }
+        continue;
+      }
+
+      // An instruction attachment.
       Instruction *Inst = InstructionList[Record[0]];
       for (unsigned i = 1; i != RecordLength; i = i+2) {
         unsigned Kind = Record[i];
@@ -2903,7 +3344,7 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
           return EC;
         break;
       case bitc::METADATA_ATTACHMENT_ID:
-        if (std::error_code EC = ParseMetadataAttachment())
+        if (std::error_code EC = ParseMetadataAttachment(*F))
           return EC;
         break;
       case bitc::METADATA_BLOCK_ID:
@@ -3082,6 +3523,15 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       if (getValueTypePair(Record, OpNum, NextValueNo, BasePtr))
         return Error("Invalid record");
 
+      if (!Ty)
+        Ty = cast<SequentialType>(BasePtr->getType()->getScalarType())
+                 ->getElementType();
+      else if (Ty !=
+               cast<SequentialType>(BasePtr->getType()->getScalarType())
+                   ->getElementType())
+        return Error(
+            "Explicit gep type does not match pointee type of pointer operand");
+
       SmallVector<Value*, 16> GEPIdx;
       while (OpNum != Record.size()) {
         Value *Op;
@@ -3090,8 +3540,8 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
         GEPIdx.push_back(Op);
       }
 
-      I = GetElementPtrInst::Create(BasePtr, GEPIdx);
-      assert(!Ty || Ty == cast<GetElementPtrInst>(I)->getSourceElementType());
+      I = GetElementPtrInst::Create(Ty, BasePtr, GEPIdx);
+
       InstructionList.push_back(I);
       if (InBounds)
         cast<GetElementPtrInst>(I)->setIsInBounds(true);
@@ -3223,6 +3673,8 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       if (getValueTypePair(Record, OpNum, NextValueNo, Vec) ||
           getValueTypePair(Record, OpNum, NextValueNo, Idx))
         return Error("Invalid record");
+      if (!Vec->getType()->isVectorTy())
+        return Error("Invalid type for value");
       I = ExtractElementInst::Create(Vec, Idx);
       InstructionList.push_back(I);
       break;
@@ -3231,8 +3683,11 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
     case bitc::FUNC_CODE_INST_INSERTELT: { // INSERTELT: [ty, opval,opval,opval]
       unsigned OpNum = 0;
       Value *Vec, *Elt, *Idx;
-      if (getValueTypePair(Record, OpNum, NextValueNo, Vec) ||
-          popValue(Record, OpNum, NextValueNo,
+      if (getValueTypePair(Record, OpNum, NextValueNo, Vec))
+        return Error("Invalid record");
+      if (!Vec->getType()->isVectorTy())
+        return Error("Invalid type for value");
+      if (popValue(Record, OpNum, NextValueNo,
                    cast<VectorType>(Vec->getType())->getElementType(), Elt) ||
           getValueTypePair(Record, OpNum, NextValueNo, Idx))
         return Error("Invalid record");
@@ -3250,6 +3705,8 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
 
       if (getValueTypePair(Record, OpNum, NextValueNo, Mask))
         return Error("Invalid record");
+      if (!Vec1->getType()->isVectorTy() || !Vec2->getType()->isVectorTy())
+        return Error("Invalid type for value");
       I = new ShuffleVectorInst(Vec1, Vec2, Mask);
       InstructionList.push_back(I);
       break;
@@ -3433,24 +3890,33 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       // INVOKE: [attrs, cc, normBB, unwindBB, fnty, op0,op1,op2, ...]
       if (Record.size() < 4)
         return Error("Invalid record");
-      AttributeSet PAL = getAttributes(Record[0]);
-      unsigned CCInfo = Record[1];
-      BasicBlock *NormalBB = getBasicBlock(Record[2]);
-      BasicBlock *UnwindBB = getBasicBlock(Record[3]);
+      unsigned OpNum = 0;
+      AttributeSet PAL = getAttributes(Record[OpNum++]);
+      unsigned CCInfo = Record[OpNum++];
+      BasicBlock *NormalBB = getBasicBlock(Record[OpNum++]);
+      BasicBlock *UnwindBB = getBasicBlock(Record[OpNum++]);
 
-      unsigned OpNum = 4;
+      FunctionType *FTy = nullptr;
+      if (CCInfo >> 13 & 1 &&
+          !(FTy = dyn_cast<FunctionType>(getTypeByID(Record[OpNum++]))))
+        return Error("Explicit invoke type is not a function type");
+
       Value *Callee;
       if (getValueTypePair(Record, OpNum, NextValueNo, Callee))
         return Error("Invalid record");
 
       PointerType *CalleeTy = dyn_cast<PointerType>(Callee->getType());
-      FunctionType *FTy = !CalleeTy ? nullptr :
-        dyn_cast<FunctionType>(CalleeTy->getElementType());
-
-      // Check that the right number of fixed parameters are here.
-      if (!FTy || !NormalBB || !UnwindBB ||
-          Record.size() < OpNum+FTy->getNumParams())
-        return Error("Invalid record");
+      if (!CalleeTy)
+        return Error("Callee is not a pointer");
+      if (!FTy) {
+        FTy = dyn_cast<FunctionType>(CalleeTy->getElementType());
+        if (!FTy)
+          return Error("Callee is not of pointer to function type");
+      } else if (CalleeTy->getElementType() != FTy)
+        return Error("Explicit invoke type does not match pointee type of "
+                     "callee operand");
+      if (Record.size() < FTy->getNumParams() + OpNum)
+        return Error("Insufficient operands to call");
 
       SmallVector<Value*, 16> Ops;
       for (unsigned i = 0, e = FTy->getNumParams(); i != e; ++i, ++OpNum) {
@@ -3475,8 +3941,8 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
 
       I = InvokeInst::Create(Callee, NormalBB, UnwindBB, Ops);
       InstructionList.push_back(I);
-      cast<InvokeInst>(I)->setCallingConv(
-        static_cast<CallingConv::ID>(CCInfo));
+      cast<InvokeInst>(I)
+          ->setCallingConv(static_cast<CallingConv::ID>(~(1U << 13) & CCInfo));
       cast<InvokeInst>(I)->setAttributes(PAL);
       break;
     }
@@ -3564,21 +4030,28 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
     case bitc::FUNC_CODE_INST_ALLOCA: { // ALLOCA: [instty, opty, op, align]
       if (Record.size() != 4)
         return Error("Invalid record");
-      PointerType *Ty =
-        dyn_cast_or_null<PointerType>(getTypeByID(Record[0]));
-      Type *OpTy = getTypeByID(Record[1]);
-      Value *Size = getFnValueByID(Record[2], OpTy);
       uint64_t AlignRecord = Record[3];
       const uint64_t InAllocaMask = uint64_t(1) << 5;
+      const uint64_t ExplicitTypeMask = uint64_t(1) << 6;
+      const uint64_t FlagMask = InAllocaMask | ExplicitTypeMask;
       bool InAlloca = AlignRecord & InAllocaMask;
+      Type *Ty = getTypeByID(Record[0]);
+      if ((AlignRecord & ExplicitTypeMask) == 0) {
+        auto *PTy = dyn_cast_or_null<PointerType>(Ty);
+        if (!PTy)
+          return Error("Old-style alloca with a non-pointer type");
+        Ty = PTy->getElementType();
+      }
+      Type *OpTy = getTypeByID(Record[1]);
+      Value *Size = getFnValueByID(Record[2], OpTy);
       unsigned Align;
       if (std::error_code EC =
-          parseAlignmentValue(AlignRecord & ~InAllocaMask, Align)) {
+              parseAlignmentValue(AlignRecord & ~FlagMask, Align)) {
         return EC;
       }
       if (!Ty || !Size)
         return Error("Invalid record");
-      AllocaInst *AI = new AllocaInst(Ty->getElementType(), Size, Align);
+      AllocaInst *AI = new AllocaInst(Ty, Size, Align);
       AI->setUsedWithInAlloca(InAlloca);
       I = AI;
       InstructionList.push_back(I);
@@ -3594,14 +4067,18 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       Type *Ty = nullptr;
       if (OpNum + 3 == Record.size())
         Ty = getTypeByID(Record[OpNum++]);
+      if (!isa<PointerType>(Op->getType()))
+        return Error("Load operand is not a pointer type");
+      if (!Ty)
+        Ty = cast<PointerType>(Op->getType())->getElementType();
+      else if (Ty != cast<PointerType>(Op->getType())->getElementType())
+        return Error("Explicit load type does not match pointee type of "
+                     "pointer operand");
 
       unsigned Align;
       if (std::error_code EC = parseAlignmentValue(Record[OpNum], Align))
         return EC;
-      I = new LoadInst(Op, "", Record[OpNum+1], Align);
-
-      assert((!Ty || Ty == I->getType()) &&
-             "Explicit type doesn't match pointee type of the first operand");
+      I = new LoadInst(Ty, Op, "", Record[OpNum + 1], Align);
 
       InstructionList.push_back(I);
       break;
@@ -3631,19 +4108,24 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
         return EC;
       I = new LoadInst(Op, "", Record[OpNum+1], Align, Ordering, SynchScope);
 
+      (void)Ty;
       assert((!Ty || Ty == I->getType()) &&
              "Explicit type doesn't match pointee type of the first operand");
 
       InstructionList.push_back(I);
       break;
     }
-    case bitc::FUNC_CODE_INST_STORE: { // STORE2:[ptrty, ptr, val, align, vol]
+    case bitc::FUNC_CODE_INST_STORE:
+    case bitc::FUNC_CODE_INST_STORE_OLD: { // STORE2:[ptrty, ptr, val, align, vol]
       unsigned OpNum = 0;
       Value *Val, *Ptr;
       if (getValueTypePair(Record, OpNum, NextValueNo, Ptr) ||
-          popValue(Record, OpNum, NextValueNo,
-                    cast<PointerType>(Ptr->getType())->getElementType(), Val) ||
-          OpNum+2 != Record.size())
+          (BitCode == bitc::FUNC_CODE_INST_STORE
+               ? getValueTypePair(Record, OpNum, NextValueNo, Val)
+               : popValue(Record, OpNum, NextValueNo,
+                          cast<PointerType>(Ptr->getType())->getElementType(),
+                          Val)) ||
+          OpNum + 2 != Record.size())
         return Error("Invalid record");
       unsigned Align;
       if (std::error_code EC = parseAlignmentValue(Record[OpNum], Align))
@@ -3652,14 +4134,18 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       InstructionList.push_back(I);
       break;
     }
-    case bitc::FUNC_CODE_INST_STOREATOMIC: {
+    case bitc::FUNC_CODE_INST_STOREATOMIC:
+    case bitc::FUNC_CODE_INST_STOREATOMIC_OLD: {
       // STOREATOMIC: [ptrty, ptr, val, align, vol, ordering, synchscope]
       unsigned OpNum = 0;
       Value *Val, *Ptr;
       if (getValueTypePair(Record, OpNum, NextValueNo, Ptr) ||
-          popValue(Record, OpNum, NextValueNo,
-                    cast<PointerType>(Ptr->getType())->getElementType(), Val) ||
-          OpNum+4 != Record.size())
+          (BitCode == bitc::FUNC_CODE_INST_STOREATOMIC
+               ? getValueTypePair(Record, OpNum, NextValueNo, Val)
+               : popValue(Record, OpNum, NextValueNo,
+                          cast<PointerType>(Ptr->getType())->getElementType(),
+                          Val)) ||
+          OpNum + 4 != Record.size())
         return Error("Invalid record");
 
       AtomicOrdering Ordering = GetDecodedOrdering(Record[OpNum+2]);
@@ -3677,17 +4163,20 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       InstructionList.push_back(I);
       break;
     }
+    case bitc::FUNC_CODE_INST_CMPXCHG_OLD:
     case bitc::FUNC_CODE_INST_CMPXCHG: {
       // CMPXCHG:[ptrty, ptr, cmp, new, vol, successordering, synchscope,
       //          failureordering?, isweak?]
       unsigned OpNum = 0;
       Value *Ptr, *Cmp, *New;
       if (getValueTypePair(Record, OpNum, NextValueNo, Ptr) ||
-          popValue(Record, OpNum, NextValueNo,
-                    cast<PointerType>(Ptr->getType())->getElementType(), Cmp) ||
-          popValue(Record, OpNum, NextValueNo,
-                    cast<PointerType>(Ptr->getType())->getElementType(), New) ||
-          (Record.size() < OpNum + 3 || Record.size() > OpNum + 5))
+          (BitCode == bitc::FUNC_CODE_INST_CMPXCHG
+               ? getValueTypePair(Record, OpNum, NextValueNo, Cmp)
+               : popValue(Record, OpNum, NextValueNo,
+                          cast<PointerType>(Ptr->getType())->getElementType(),
+                          Cmp)) ||
+          popValue(Record, OpNum, NextValueNo, Cmp->getType(), New) ||
+          Record.size() < OpNum + 3 || Record.size() > OpNum + 5)
         return Error("Invalid record");
       AtomicOrdering SuccessOrdering = GetDecodedOrdering(Record[OpNum+1]);
       if (SuccessOrdering == NotAtomic || SuccessOrdering == Unordered)
@@ -3757,19 +4246,31 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
       if (Record.size() < 3)
         return Error("Invalid record");
 
-      AttributeSet PAL = getAttributes(Record[0]);
-      unsigned CCInfo = Record[1];
+      unsigned OpNum = 0;
+      AttributeSet PAL = getAttributes(Record[OpNum++]);
+      unsigned CCInfo = Record[OpNum++];
 
-      unsigned OpNum = 2;
+      FunctionType *FTy = nullptr;
+      if (CCInfo >> 15 & 1 &&
+          !(FTy = dyn_cast<FunctionType>(getTypeByID(Record[OpNum++]))))
+        return Error("Explicit call type is not a function type");
+
       Value *Callee;
       if (getValueTypePair(Record, OpNum, NextValueNo, Callee))
         return Error("Invalid record");
 
       PointerType *OpTy = dyn_cast<PointerType>(Callee->getType());
-      FunctionType *FTy = nullptr;
-      if (OpTy) FTy = dyn_cast<FunctionType>(OpTy->getElementType());
-      if (!FTy || Record.size() < FTy->getNumParams()+OpNum)
-        return Error("Invalid record");
+      if (!OpTy)
+        return Error("Callee is not a pointer type");
+      if (!FTy) {
+        FTy = dyn_cast<FunctionType>(OpTy->getElementType());
+        if (!FTy)
+          return Error("Callee is not of pointer to function type");
+      } else if (OpTy->getElementType() != FTy)
+        return Error("Explicit call type does not match pointee type of "
+                     "callee operand");
+      if (Record.size() < FTy->getNumParams() + OpNum)
+        return Error("Insufficient operands to call");
 
       SmallVector<Value*, 16> Args;
       // Read the fixed params.
@@ -3796,7 +4297,7 @@ std::error_code BitcodeReader::ParseFunctionBody(Function *F) {
         }
       }
 
-      I = CallInst::Create(Callee, Args);
+      I = CallInst::Create(FTy, Callee, Args);
       InstructionList.push_back(I);
       cast<CallInst>(I)->setCallingConv(
           static_cast<CallingConv::ID>((~(1U << 14) & CCInfo) >> 1));
@@ -3890,6 +4391,9 @@ std::error_code BitcodeReader::FindFunctionInStream(
 void BitcodeReader::releaseBuffer() { Buffer.release(); }
 
 std::error_code BitcodeReader::materialize(GlobalValue *GV) {
+  if (std::error_code EC = materializeMetadata())
+    return EC;
+
   Function *F = dyn_cast<Function>(GV);
   // If it's not a function or is already material, ignore the request.
   if (!F || !F->isMaterializable())
@@ -3909,6 +4413,9 @@ std::error_code BitcodeReader::materialize(GlobalValue *GV) {
   if (std::error_code EC = ParseFunctionBody(F))
     return EC;
   F->setIsMaterializable(false);
+
+  if (StripDebugInfo)
+    stripDebugInfo(*F);
 
   // Upgrade any old intrinsic calls in the function.
   for (UpgradedIntrinsicMap::iterator I = UpgradedIntrinsics.begin(),
@@ -3956,6 +4463,9 @@ void BitcodeReader::Dematerialize(GlobalValue *GV) {
 std::error_code BitcodeReader::MaterializeModule(Module *M) {
   assert(M == TheModule &&
          "Can only Materialize the Module this BitcodeReader is attached to.");
+
+  if (std::error_code EC = materializeMetadata())
+    return EC;
 
   // Promise to materialize all forward references.
   WillMaterializeAllForwardRefs = true;
@@ -4097,7 +4607,8 @@ const std::error_category &llvm::BitcodeErrorCategory() {
 static ErrorOr<Module *>
 getLazyBitcodeModuleImpl(std::unique_ptr<MemoryBuffer> &&Buffer,
                          LLVMContext &Context, bool WillMaterializeAll,
-                         DiagnosticHandlerFunction DiagnosticHandler) {
+                         DiagnosticHandlerFunction DiagnosticHandler,
+                         bool ShouldLazyLoadMetadata = false) {
   Module *M = new Module(Buffer->getBufferIdentifier(), Context);
   BitcodeReader *R =
       new BitcodeReader(Buffer.get(), Context, DiagnosticHandler);
@@ -4109,7 +4620,8 @@ getLazyBitcodeModuleImpl(std::unique_ptr<MemoryBuffer> &&Buffer,
     return EC;
   };
 
-  if (std::error_code EC = R->ParseBitcodeInto(M))
+  // Delay parsing Metadata if ShouldLazyLoadMetadata is true.
+  if (std::error_code EC = R->ParseBitcodeInto(M, ShouldLazyLoadMetadata))
     return cleanupOnError(EC);
 
   if (!WillMaterializeAll)
@@ -4124,9 +4636,10 @@ getLazyBitcodeModuleImpl(std::unique_ptr<MemoryBuffer> &&Buffer,
 ErrorOr<Module *>
 llvm::getLazyBitcodeModule(std::unique_ptr<MemoryBuffer> &&Buffer,
                            LLVMContext &Context,
-                           DiagnosticHandlerFunction DiagnosticHandler) {
+                           DiagnosticHandlerFunction DiagnosticHandler,
+                           bool ShouldLazyLoadMetadata) {
   return getLazyBitcodeModuleImpl(std::move(Buffer), Context, false,
-                                  DiagnosticHandler);
+                                  DiagnosticHandler, ShouldLazyLoadMetadata);
 }
 
 ErrorOr<std::unique_ptr<Module>>

@@ -287,9 +287,8 @@ def BFE_INT_eg : R600_3OP <0x5, "BFE_INT",
   VecALU
 >;
 
-// XXX: This pattern is broken, disabling for now.  See comment in
-// AMDGPUInstructions.td for more info.
-//  def : BFEPattern <BFE_UINT_eg>;
+def : BFEPattern <BFE_UINT_eg, MOV_IMM_I32>;
+
 def BFI_INT_eg : R600_3OP <0x06, "BFI_INT",
   [(set i32:$dst, (AMDGPUbfi i32:$src0, i32:$src1, i32:$src2))],
   VecALU
@@ -335,6 +334,9 @@ def DOT4_eg : DOT4_Common<0xBE>;
 defm CUBE_eg : CUBE_Common<0xC0>;
 
 def BCNT_INT : R600_1OP_Helper <0xAA, "BCNT_INT", ctpop, VecALU>;
+
+def ADDC_UINT : R600_2OP_Helper <0x52, "ADDC_UINT", AMDGPUcarry>;
+def SUBB_UINT : R600_2OP_Helper <0x53, "SUBB_UINT", AMDGPUborrow>;
 
 def FFBH_UINT : R600_1OP_Helper <0xAB, "FFBH_UINT", ctlz_zero_undef, VecALU>;
 def FFBL_INT : R600_1OP_Helper <0xAC, "FFBL_INT", cttz_zero_undef, VecALU>;

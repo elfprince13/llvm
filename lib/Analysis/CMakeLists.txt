@@ -20,6 +20,7 @@ add_llvm_library(LLVMAnalysis
   ConstantFolding.cpp
   Delinearization.cpp
   DependenceAnalysis.cpp
+  DivergenceAnalysis.cpp
   DomPrinter.cpp
   DominanceFrontier.cpp
   IVUsers.cpp
@@ -27,7 +28,7 @@ add_llvm_library(LLVMAnalysis
   InstructionSimplify.cpp
   Interval.cpp
   IntervalPartition.cpp
-  JumpInstrTableInfo.cpp
+  IteratedDominanceFrontier.cpp
   LazyCallGraph.cpp
   LazyValueInfo.cpp
   LibCallAliasAnalysis.cpp

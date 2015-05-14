@@ -32,6 +32,7 @@ set(sources
   X86TargetTransformInfo.cpp
   X86VZeroUpper.cpp
   X86FixupLEAs.cpp
+  X86WinEHState.cpp
   )
 
 if( CMAKE_CL_64 )
@@ -39,7 +40,7 @@ if( CMAKE_CL_64 )
   ADD_CUSTOM_COMMAND(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/X86CompilationCallback_Win64.obj
     MAIN_DEPENDENCY X86CompilationCallback_Win64.asm
-    COMMAND ${CMAKE_ASM_MASM_COMPILER} /Fo ${CMAKE_CURRENT_BINARY_DIR}/X86CompilationCallback_Win64.obj /c ${CMAKE_CURRENT_SOURCE_DIR}/X86CompilationCallback_Win64.asm
+    COMMAND ${CMAKE_ASM_MASM_COMPILER} /nologo /Fo ${CMAKE_CURRENT_BINARY_DIR}/X86CompilationCallback_Win64.obj /c ${CMAKE_CURRENT_SOURCE_DIR}/X86CompilationCallback_Win64.asm
    )
    set(sources ${sources} ${CMAKE_CURRENT_BINARY_DIR}/X86CompilationCallback_Win64.obj)
 endif()

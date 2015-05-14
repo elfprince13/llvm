@@ -45,6 +45,7 @@ public:
   virtual void emitDirectiveNaNLegacy();
   virtual void emitDirectiveOptionPic0();
   virtual void emitDirectiveOptionPic2();
+  virtual void emitDirectiveInsn();
   virtual void emitFrame(unsigned StackReg, unsigned StackSize,
                          unsigned ReturnReg);
   virtual void emitMask(unsigned CPUBitmask, int CPUTopSavedRegOff);
@@ -92,9 +93,9 @@ public:
   }
 
   virtual void emitDirectiveModuleOddSPReg(bool Enabled, bool IsO32ABI);
-  virtual void emitDirectiveSetFp(MipsABIFlagsSection::FpABIKind Value){};
-  virtual void emitMipsAbiFlags(){};
+  virtual void emitDirectiveSetFp(MipsABIFlagsSection::FpABIKind Value);
   void forbidModuleDirective() { ModuleDirectiveAllowed = false; }
+  void reallowModuleDirective() { ModuleDirectiveAllowed = true; }
   bool isModuleDirectiveAllowed() { return ModuleDirectiveAllowed; }
 
   // This method enables template classes to set internal abi flags
@@ -160,6 +161,7 @@ public:
   void emitDirectiveNaNLegacy() override;
   void emitDirectiveOptionPic0() override;
   void emitDirectiveOptionPic2() override;
+  void emitDirectiveInsn() override;
   void emitFrame(unsigned StackReg, unsigned StackSize,
                  unsigned ReturnReg) override;
   void emitMask(unsigned CPUBitmask, int CPUTopSavedRegOff) override;
@@ -197,7 +199,6 @@ public:
                              bool Is32BitABI) override;
   void emitDirectiveModuleOddSPReg(bool Enabled, bool IsO32ABI) override;
   void emitDirectiveSetFp(MipsABIFlagsSection::FpABIKind Value) override;
-  void emitMipsAbiFlags() override;
 };
 
 // This part is for ELF object output
@@ -228,6 +229,7 @@ public:
   void emitDirectiveNaNLegacy() override;
   void emitDirectiveOptionPic0() override;
   void emitDirectiveOptionPic2() override;
+  void emitDirectiveInsn() override;
   void emitFrame(unsigned StackReg, unsigned StackSize,
                  unsigned ReturnReg) override;
   void emitMask(unsigned CPUBitmask, int CPUTopSavedRegOff) override;
@@ -240,7 +242,7 @@ public:
 
   // ABI Flags
   void emitDirectiveModuleOddSPReg(bool Enabled, bool IsO32ABI) override;
-  void emitMipsAbiFlags() override;
+  void emitMipsAbiFlags();
 };
 }
 #endif

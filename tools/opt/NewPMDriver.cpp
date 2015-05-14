@@ -14,7 +14,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "NewPMDriver.h"
-#include "Passes.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
@@ -24,6 +23,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -39,17 +39,19 @@ static cl::opt<bool>
 bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
                            TargetMachine *TM, tool_output_file *Out,
                            StringRef PassPipeline, OutputKind OK,
-                           VerifierKind VK) {
-  Passes P(TM);
+                           VerifierKind VK,
+                           bool ShouldPreserveAssemblyUseListOrder,
+                           bool ShouldPreserveBitcodeUseListOrder) {
+  PassBuilder PB(TM);
 
   FunctionAnalysisManager FAM(DebugPM);
   CGSCCAnalysisManager CGAM(DebugPM);
   ModuleAnalysisManager MAM(DebugPM);
 
   // Register all the basic analyses with the managers.
-  P.registerModuleAnalyses(MAM);
-  P.registerCGSCCAnalyses(CGAM);
-  P.registerFunctionAnalyses(FAM);
+  PB.registerModuleAnalyses(MAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerFunctionAnalyses(FAM);
 
   // Cross register the analysis managers through their proxies.
   MAM.registerPass(FunctionAnalysisManagerModuleProxy(FAM));
@@ -63,8 +65,8 @@ bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
   if (VK > VK_NoVerifier)
     MPM.addPass(VerifierPass());
 
-  if (!P.parsePassPipeline(MPM, PassPipeline, VK == VK_VerifyEachPass,
-                           DebugPM)) {
+  if (!PB.parsePassPipeline(MPM, PassPipeline, VK == VK_VerifyEachPass,
+                            DebugPM)) {
     errs() << Arg0 << ": unable to parse pass pipeline description.\n";
     return false;
   }
@@ -77,10 +79,12 @@ bool llvm::runPassPipeline(StringRef Arg0, LLVMContext &Context, Module &M,
   case OK_NoOutput:
     break; // No output pass needed.
   case OK_OutputAssembly:
-    MPM.addPass(PrintModulePass(Out->os()));
+    MPM.addPass(
+        PrintModulePass(Out->os(), "", ShouldPreserveAssemblyUseListOrder));
     break;
   case OK_OutputBitcode:
-    MPM.addPass(BitcodeWriterPass(Out->os()));
+    MPM.addPass(
+        BitcodeWriterPass(Out->os(), ShouldPreserveBitcodeUseListOrder));
     break;
   }
 

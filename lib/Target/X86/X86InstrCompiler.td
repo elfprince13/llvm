@@ -17,12 +17,12 @@
 
 def GetLo32XForm : SDNodeXForm<imm, [{
   // Transformation function: get the low 32 bits.
-  return getI32Imm((unsigned)N->getZExtValue());
+  return getI32Imm((unsigned)N->getZExtValue(), SDLoc(N));
 }]>;
 
 def GetLo8XForm : SDNodeXForm<imm, [{
   // Transformation function: get the low 8 bits.
-  return getI8Imm((uint8_t)N->getZExtValue());
+  return getI8Imm((uint8_t)N->getZExtValue(), SDLoc(N));
 }]>;
 
 
@@ -518,6 +518,10 @@ let usesCustomInserter = 1, Uses = [EFLAGS] in {
   defm _V8I64  : CMOVrr_PSEUDO<VR512, v8i64>;
   defm _V8F64  : CMOVrr_PSEUDO<VR512, v8f64>;
   defm _V16F32 : CMOVrr_PSEUDO<VR512, v16f32>;
+  defm _V8I1   : CMOVrr_PSEUDO<VK8,  v8i1>;
+  defm _V16I1  : CMOVrr_PSEUDO<VK16, v16i1>;
+  defm _V32I1  : CMOVrr_PSEUDO<VK32, v32i1>;
+  defm _V64I1  : CMOVrr_PSEUDO<VK64, v64i1>;
 } // usesCustomInserter = 1, Uses = [EFLAGS]
 
 //===----------------------------------------------------------------------===//
@@ -1232,7 +1236,11 @@ def : Pat<(store (add (loadi64 addr:$dst), 0x00000000800000000), addr:$dst),
 // with implicit zero-extension instead of a 64-bit and if the immediate has at
 // least 32 bits of leading zeros. If in addition the last 32 bits can be
 // represented with a sign extension of a 8 bit constant, use that.
+// This can also reduce instruction size by eliminating the need for the REX
+// prefix.
 
+// AddedComplexity is needed to give priority over i64immSExt8 and i64immSExt32.
+let AddedComplexity = 1 in {
 def : Pat<(and GR64:$src, i64immZExt32SExt8:$imm),
           (SUBREG_TO_REG
             (i64 0),
@@ -1248,8 +1256,13 @@ def : Pat<(and GR64:$src, i64immZExt32:$imm),
               (EXTRACT_SUBREG GR64:$src, sub_32bit),
               (i32 (GetLo32XForm imm:$imm))),
             sub_32bit)>;
+} // AddedComplexity = 1
 
 
+// AddedComplexity is needed due to the increased complexity on the
+// i64immZExt32SExt8 and i64immZExt32 patterns above. Applying this to all
+// the MOVZX patterns keeps thems together in DAGIsel tables.
+let AddedComplexity = 1 in {
 // r & (2^16-1) ==> movz
 def : Pat<(and GR32:$src1, 0xffff),
           (MOVZX32rr16 (EXTRACT_SUBREG GR32:$src1, sub_16bit))>;
@@ -1272,6 +1285,7 @@ def : Pat<(and GR64:$src, 0x00000000FFFFFFFF),
                          (MOV32rr (EXTRACT_SUBREG GR64:$src, sub_32bit)),
                          sub_32bit)>;
 // r & (2^16-1) ==> movz
+let AddedComplexity = 1 in // Give priority over i64immZExt32.
 def : Pat<(and GR64:$src, 0xffff),
           (SUBREG_TO_REG (i64 0),
                       (MOVZX32rr16 (i16 (EXTRACT_SUBREG GR64:$src, sub_16bit))),
@@ -1290,6 +1304,7 @@ def : Pat<(and GR16:$src1, 0xff),
            (EXTRACT_SUBREG (MOVZX32rr8 (i8
             (EXTRACT_SUBREG GR16:$src1, sub_8bit))), sub_16bit)>,
       Requires<[In64BitMode]>;
+} // AddedComplexity = 1
 
 
 // sext_inreg patterns

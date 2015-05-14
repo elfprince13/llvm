@@ -21,6 +21,7 @@ class PDBSymbol;
 
 class IPDBDataStream;
 template <class T> class IPDBEnumChildren;
+class IPDBLineNumber;
 class IPDBRawSymbol;
 class IPDBSession;
 class IPDBSourceFile;
@@ -28,6 +29,7 @@ class IPDBSourceFile;
 typedef IPDBEnumChildren<PDBSymbol> IPDBEnumSymbols;
 typedef IPDBEnumChildren<IPDBSourceFile> IPDBEnumSourceFiles;
 typedef IPDBEnumChildren<IPDBDataStream> IPDBEnumDataStreams;
+typedef IPDBEnumChildren<IPDBLineNumber> IPDBEnumLineNumbers;
 
 class PDBSymbolExe;
 class PDBSymbolCompiland;
@@ -418,6 +420,18 @@ enum class PDB_RegisterId {
 
 enum class PDB_MemberAccess { Private = 1, Protected = 2, Public = 3 };
 
+enum class PDB_ErrorCode {
+  Success,
+  NoPdbImpl,
+  InvalidPath,
+  InvalidFileFormat,
+  InvalidParameter,
+  AlreadyLoaded,
+  UnknownError,
+  NoMemory,
+  DebugInfoMismatch
+};
+
 struct VersionInfo {
   uint32_t Major;
   uint32_t Minor;
@@ -459,8 +473,31 @@ struct Variant {
     uint16_t UInt16;
     uint32_t UInt32;
     uint64_t UInt64;
-    void* Pointer;
   };
+#define VARIANT_EQUAL_CASE(Enum)                                               \
+  case PDB_VariantType::Enum:                                                  \
+    return Enum == Other.Enum;
+  bool operator==(const Variant &Other) const {
+    if (Type != Other.Type)
+      return false;
+    switch (Type) {
+      VARIANT_EQUAL_CASE(Bool)
+      VARIANT_EQUAL_CASE(Int8)
+      VARIANT_EQUAL_CASE(Int16)
+      VARIANT_EQUAL_CASE(Int32)
+      VARIANT_EQUAL_CASE(Int64)
+      VARIANT_EQUAL_CASE(Single)
+      VARIANT_EQUAL_CASE(Double)
+      VARIANT_EQUAL_CASE(UInt8)
+      VARIANT_EQUAL_CASE(UInt16)
+      VARIANT_EQUAL_CASE(UInt32)
+      VARIANT_EQUAL_CASE(UInt64)
+    default:
+      return true;
+    }
+  }
+#undef VARIANT_EQUAL_CASE
+  bool operator!=(const Variant &Other) const { return !(*this == Other); }
 };
 
 } // namespace llvm
