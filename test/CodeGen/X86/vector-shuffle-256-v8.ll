@@ -2088,18 +2088,42 @@ entry:
 }
 
 define <8 x i32> @insert_mem_and_zero_v8i32(i32* %ptr) {
-; AVX1-LABEL: insert_mem_and_zero_v8i32:
-; AVX1:       # BB#0:
-; AVX1-NEXT:    vmovd {{.*#+}} xmm0 = mem[0],zero,zero,zero
-; AVX1-NEXT:    retq
-;
-; AVX2-LABEL: insert_mem_and_zero_v8i32:
-; AVX2:       # BB#0:
-; AVX2-NEXT:    vmovd {{.*#+}} xmm0 = mem[0],zero,zero,zero
-; AVX2-NEXT:    retq
+; ALL-LABEL: insert_mem_and_zero_v8i32:
+; ALL:       # BB#0:
+; ALL-NEXT:    vmovd {{.*#+}} xmm0 = mem[0],zero,zero,zero
+; ALL-NEXT:    retq
   %a = load i32, i32* %ptr
   %v = insertelement <8 x i32> undef, i32 %a, i32 0
   %shuffle = shufflevector <8 x i32> %v, <8 x i32> zeroinitializer, <8 x i32> <i32 0, i32 9, i32 10, i32 11, i32 12, i32 13, i32 14, i32 15>
   ret <8 x i32> %shuffle
 }
 
+define <8 x i32> @concat_v8i32_0123CDEF(<8 x i32> %a, <8 x i32> %b) {
+; AVX1-LABEL: concat_v8i32_0123CDEF:
+; AVX1:       # BB#0:
+; AVX1-NEXT:    vblendpd {{.*#+}} ymm0 = ymm0[0,1],ymm1[2,3]
+; AVX1-NEXT:    retq
+;
+; AVX2-LABEL: concat_v8i32_0123CDEF:
+; AVX2:       # BB#0:
+; AVX2-NEXT:    vpblendd {{.*#+}} ymm0 = ymm0[0,1,2,3],ymm1[4,5,6,7]
+; AVX2-NEXT:    retq
+  %alo = shufflevector <8 x i32> %a, <8 x i32> undef, <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+  %bhi = shufflevector <8 x i32> %b, <8 x i32> undef, <4 x i32> <i32 4, i32 5, i32 6, i32 7>
+  %shuf = shufflevector <4 x i32> %alo, <4 x i32> %bhi, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+  ret <8 x i32> %shuf
+}
+
+define <8 x i32> @concat_v8i32_4567CDEF_bc(<8 x i32> %a0, <8 x i32> %a1) {
+; ALL-LABEL: concat_v8i32_4567CDEF_bc:
+; ALL:       # BB#0:
+; ALL-NEXT:    vperm2f128 {{.*#+}} ymm0 = ymm0[2,3],ymm1[2,3]
+; ALL-NEXT:    retq
+  %a0hi = shufflevector <8 x i32> %a0, <8 x i32> %a1, <4 x i32> <i32 4, i32 5, i32 6, i32 7>
+  %a1hi = shufflevector <8 x i32> %a0, <8 x i32> %a1, <4 x i32> <i32 12, i32 13, i32 14, i32 15>
+  %bc0hi = bitcast <4 x i32> %a0hi to <2 x i64>
+  %bc1hi = bitcast <4 x i32> %a1hi to <2 x i64>
+  %shuffle64 = shufflevector <2 x i64> %bc0hi, <2 x i64> %bc1hi, <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+  %shuffle32 = bitcast <4 x i64> %shuffle64 to <8 x i32>
+  ret <8 x i32> %shuffle32
+}

@@ -394,15 +394,15 @@ std::error_code Module::materialize(GlobalValue *GV) {
   return Materializer->materialize(GV);
 }
 
-void Module::Dematerialize(GlobalValue *GV) {
+void Module::dematerialize(GlobalValue *GV) {
   if (Materializer)
-    return Materializer->Dematerialize(GV);
+    return Materializer->dematerialize(GV);
 }
 
 std::error_code Module::materializeAll() {
   if (!Materializer)
     return std::error_code();
-  return Materializer->MaterializeModule(this);
+  return Materializer->materializeModule(this);
 }
 
 std::error_code Module::materializeAllPermanently() {
@@ -458,7 +458,14 @@ void Module::dropAllReferences() {
 unsigned Module::getDwarfVersion() const {
   auto *Val = cast_or_null<ConstantAsMetadata>(getModuleFlag("Dwarf Version"));
   if (!Val)
-    return dwarf::DWARF_VERSION;
+    return 0;
+  return cast<ConstantInt>(Val->getValue())->getZExtValue();
+}
+
+unsigned Module::getCodeViewFlag() const {
+  auto *Val = cast_or_null<ConstantAsMetadata>(getModuleFlag("CodeView"));
+  if (!Val)
+    return 0;
   return cast<ConstantInt>(Val->getValue())->getZExtValue();
 }
 

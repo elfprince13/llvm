@@ -142,7 +142,7 @@ static bool CouldBecomeSafePoint(Instruction *I) {
   // llvm.gcroot is safe because it doesn't do anything at runtime.
   if (CallInst *CI = dyn_cast<CallInst>(I))
     if (Function *F = CI->getCalledFunction())
-      if (unsigned IID = F->getIntrinsicID())
+      if (Intrinsic::ID IID = F->getIntrinsicID())
         if (IID == Intrinsic::gcroot)
           return false;
 
@@ -272,7 +272,7 @@ void GCMachineCodeAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 MCSymbol *GCMachineCodeAnalysis::InsertLabel(MachineBasicBlock &MBB,
                                              MachineBasicBlock::iterator MI,
                                              DebugLoc DL) const {
-  MCSymbol *Label = MBB.getParent()->getContext().CreateTempSymbol();
+  MCSymbol *Label = MBB.getParent()->getContext().createTempSymbol();
   BuildMI(MBB, MI, DL, TII->get(TargetOpcode::GC_LABEL)).addSym(Label);
   return Label;
 }
@@ -320,7 +320,9 @@ void GCMachineCodeAnalysis::FindStackOffsets(MachineFunction &MF) {
     if (MF.getFrameInfo()->isDeadObjectIndex(RI->Num)) {
       RI = FI->removeStackRoot(RI);
     } else {
-      RI->StackOffset = TFI->getFrameIndexOffset(MF, RI->Num);
+      unsigned FrameReg; // FIXME: surely GCRoot ought to store the
+                         // register that the offset is from?
+      RI->StackOffset = TFI->getFrameIndexReference(MF, RI->Num, FrameReg);
       ++RI;
     }
   }

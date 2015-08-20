@@ -456,7 +456,7 @@ inline unsigned countPopulation(T Value) {
 /// Log2 - This function returns the log base 2 of the specified value
 inline double Log2(double Value) {
 #if defined(__ANDROID_API__) && __ANDROID_API__ < 18
-  return (double)__builtin_log2l(Value);
+  return __builtin_log(Value) / __builtin_log(2.0);
 #else
   return log2(Value);
 #endif
@@ -552,7 +552,7 @@ inline uint32_t FloatToBits(float Float) {
 inline uint64_t MinAlign(uint64_t A, uint64_t B) {
   // The largest power of 2 that divides both A and B.
   //
-  // Replace "-Value" by "1+~Value" in the following commented code to avoid 
+  // Replace "-Value" by "1+~Value" in the following commented code to avoid
   // MSVC warning C4146
   //    return (A | B) & -(A | B);
   return (A | B) & (1 + ~(A | B));
@@ -562,7 +562,7 @@ inline uint64_t MinAlign(uint64_t A, uint64_t B) {
 ///
 /// Alignment should be a power of two.  This method rounds up, so
 /// alignAddr(7, 4) == 8 and alignAddr(8, 4) == 8.
-inline uintptr_t alignAddr(void *Addr, size_t Alignment) {
+inline uintptr_t alignAddr(const void *Addr, size_t Alignment) {
   assert(Alignment && isPowerOf2_64((uint64_t)Alignment) &&
          "Alignment is not a power of two!");
 
@@ -573,7 +573,7 @@ inline uintptr_t alignAddr(void *Addr, size_t Alignment) {
 
 /// \brief Returns the necessary adjustment for aligning \c Ptr to \c Alignment
 /// bytes, rounding up.
-inline size_t alignmentAdjustment(void *Ptr, size_t Alignment) {
+inline size_t alignmentAdjustment(const void *Ptr, size_t Alignment) {
   return alignAddr(Ptr, Alignment) - (uintptr_t)Ptr;
 }
 

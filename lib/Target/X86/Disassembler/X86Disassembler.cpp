@@ -80,20 +80,19 @@ X86GenericDisassembler::X86GenericDisassembler(
                                          MCContext &Ctx,
                                          std::unique_ptr<const MCInstrInfo> MII)
   : MCDisassembler(STI, Ctx), MII(std::move(MII)) {
-  switch (STI.getFeatureBits() &
-          (X86::Mode16Bit | X86::Mode32Bit | X86::Mode64Bit)) {
-  case X86::Mode16Bit:
+  const FeatureBitset &FB = STI.getFeatureBits();
+  if (FB[X86::Mode16Bit]) {
     fMode = MODE_16BIT;
-    break;
-  case X86::Mode32Bit:
+    return;
+  } else if (FB[X86::Mode32Bit]) {
     fMode = MODE_32BIT;
-    break;
-  case X86::Mode64Bit:
+    return;
+  } else if (FB[X86::Mode64Bit]) {
     fMode = MODE_64BIT;
-    break;
-  default:
-    llvm_unreachable("Invalid CPU mode");
+    return;
   }
+
+  llvm_unreachable("Invalid CPU mode");
 }
 
 struct Region {
@@ -547,11 +546,19 @@ static void translateImmediate(MCInst &mcInst, uint64_t immediate,
   case TYPE_XMM512:
     mcInst.addOperand(MCOperand::createReg(X86::ZMM0 + (immediate >> 4)));
     return;
+  case TYPE_BNDR:
+    mcInst.addOperand(MCOperand::createReg(X86::BND0 + (immediate >> 4)));
   case TYPE_REL8:
     isBranch = true;
     pcrel = insn.startLocation + insn.immediateOffset + insn.immediateSize;
-    if(immediate & 0x80)
+    if (immediate & 0x80)
       immediate |= ~(0xffull);
+    break;
+  case TYPE_REL16:
+    isBranch = true;
+    pcrel = insn.startLocation + insn.immediateOffset + insn.immediateSize;
+    if (immediate & 0x8000)
+      immediate |= ~(0xffffull);
     break;
   case TYPE_REL32:
   case TYPE_REL64:
@@ -828,6 +835,7 @@ static bool translateRM(MCInst &mcInst, const OperandSpecifier &operand,
   case TYPE_VK16:
   case TYPE_DEBUGREG:
   case TYPE_CONTROLREG:
+  case TYPE_BNDR:
     return translateRMRegister(mcInst, insn);
   case TYPE_M:
   case TYPE_M8:
@@ -954,6 +962,7 @@ static bool translateInstruction(MCInst &mcInst,
     return true;
   }
 
+  mcInst.clear();
   mcInst.setOpcode(insn.instructionID);
   // If when reading the prefix bytes we determined the overlapping 0xf2 or 0xf3
   // prefix bytes should be disassembled as xrelease and xacquire then set the

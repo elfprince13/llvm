@@ -22,9 +22,9 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/Atomic.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Regex.h"
+#include <atomic>
 #include <string>
 
 using namespace llvm;
@@ -49,7 +49,7 @@ struct PassRemarksOpt {
                                "' in -pass-remarks: " + RegexError,
                            false);
     }
-  };
+  }
 };
 
 static PassRemarksOpt PassRemarksOptLoc;
@@ -87,9 +87,11 @@ PassRemarksAnalysis(
 }
 
 int llvm::getNextAvailablePluginDiagnosticKind() {
-  static sys::cas_flag PluginKindID = DK_FirstPluginKind;
-  return (int)sys::AtomicIncrement(&PluginKindID);
+  static std::atomic<int> PluginKindID(DK_FirstPluginKind);
+  return ++PluginKindID;
 }
+
+const char *DiagnosticInfo::AlwaysPrint = "";
 
 DiagnosticInfoInlineAsm::DiagnosticInfoInlineAsm(const Instruction &I,
                                                  const Twine &MsgStr,
@@ -166,8 +168,13 @@ bool DiagnosticInfoOptimizationRemarkMissed::isEnabled() const {
 }
 
 bool DiagnosticInfoOptimizationRemarkAnalysis::isEnabled() const {
-  return PassRemarksAnalysisOptLoc.Pattern &&
-         PassRemarksAnalysisOptLoc.Pattern->match(getPassName());
+  return getPassName() == DiagnosticInfo::AlwaysPrint ||
+         (PassRemarksAnalysisOptLoc.Pattern &&
+          PassRemarksAnalysisOptLoc.Pattern->match(getPassName()));
+}
+
+void DiagnosticInfoMIRParser::print(DiagnosticPrinter &DP) const {
+  DP << Diagnostic;
 }
 
 void llvm::emitOptimizationRemark(LLVMContext &Ctx, const char *PassName,
@@ -190,6 +197,24 @@ void llvm::emitOptimizationRemarkAnalysis(LLVMContext &Ctx,
                                           const Twine &Msg) {
   Ctx.diagnose(
       DiagnosticInfoOptimizationRemarkAnalysis(PassName, Fn, DLoc, Msg));
+}
+
+void llvm::emitOptimizationRemarkAnalysisFPCommute(LLVMContext &Ctx,
+                                                   const char *PassName,
+                                                   const Function &Fn,
+                                                   const DebugLoc &DLoc,
+                                                   const Twine &Msg) {
+  Ctx.diagnose(DiagnosticInfoOptimizationRemarkAnalysisFPCommute(PassName, Fn,
+                                                                 DLoc, Msg));
+}
+
+void llvm::emitOptimizationRemarkAnalysisAliasing(LLVMContext &Ctx,
+                                                  const char *PassName,
+                                                  const Function &Fn,
+                                                  const DebugLoc &DLoc,
+                                                  const Twine &Msg) {
+  Ctx.diagnose(DiagnosticInfoOptimizationRemarkAnalysisAliasing(PassName, Fn,
+                                                                DLoc, Msg));
 }
 
 bool DiagnosticInfoOptimizationFailure::isEnabled() const {

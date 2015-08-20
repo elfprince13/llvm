@@ -22,6 +22,7 @@
 #include "MCTargetDesc/AArch64MCTargetDesc.h" // For AArch64::X0 and friends.
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/ErrorHandling.h"
 
 namespace llvm {
@@ -280,16 +281,22 @@ struct AArch64NamedImmMapper {
   struct Mapping {
     const char *Name;
     uint32_t Value;
-    uint64_t FeatureBitSet;  // Set of features this mapping is available for
+    // Set of features this mapping is available for
     // Zero value of FeatureBitSet means the mapping is always available
+    FeatureBitset FeatureBitSet;
 
-    bool isNameEqual(std::string Other, uint64_t FeatureBits=~0ULL) const {
-      if (FeatureBitSet && !(FeatureBitSet & FeatureBits))
+    bool isNameEqual(std::string Other, 
+                     const FeatureBitset& FeatureBits) const {
+      if (FeatureBitSet.any() && 
+          (FeatureBitSet & FeatureBits).none())
         return false;
       return Name == Other;
     }
-    bool isValueEqual(uint32_t Other, uint64_t FeatureBits=~0ULL) const {
-      if (FeatureBitSet && !(FeatureBitSet & FeatureBits))
+
+    bool isValueEqual(uint32_t Other, 
+                      const FeatureBitset& FeatureBits) const {
+      if (FeatureBitSet.any() && 
+          (FeatureBitSet & FeatureBits).none())
         return false;
       return Value == Other;
     }
@@ -300,9 +307,11 @@ struct AArch64NamedImmMapper {
     : Mappings(&Mappings[0]), NumMappings(N), TooBigImm(TooBigImm) {}
 
   // Maps value to string, depending on availability for FeatureBits given
-  StringRef toString(uint32_t Value, uint64_t FeatureBits, bool &Valid) const;
+  StringRef toString(uint32_t Value, const FeatureBitset& FeatureBits,
+                     bool &Valid) const;
   // Maps string to value, depending on availability for FeatureBits given
-  uint32_t fromString(StringRef Name, uint64_t FeatureBits, bool &Valid) const;
+  uint32_t fromString(StringRef Name, const FeatureBitset& FeatureBits, 
+                     bool &Valid) const;
 
   /// Many of the instructions allow an alternative assembly form consisting of
   /// a simple immediate. Currently the only valid forms are ranges [0, N) where
@@ -594,6 +603,7 @@ namespace AArch64SysReg {
     ISR_EL1           = 0xc608, // 11  000  1100  0001  000
     CNTPCT_EL0        = 0xdf01, // 11  011  1110  0000  001
     CNTVCT_EL0        = 0xdf02,  // 11  011  1110  0000  010
+    ID_MMFR4_EL1      = 0xc016,  // 11  000  0000  0010  110
 
     // Trace registers
     TRCSTATR          = 0x8818, // 10  001  0000  0011  000
@@ -1195,8 +1205,9 @@ namespace AArch64SysReg {
     size_t NumInstMappings;
 
     SysRegMapper() { }
-    uint32_t fromString(StringRef Name, uint64_t FeatureBits, bool &Valid) const;
-    std::string toString(uint32_t Bits, uint64_t FeatureBits) const;
+    uint32_t fromString(StringRef Name, const FeatureBitset& FeatureBits,
+                        bool &Valid) const;
+    std::string toString(uint32_t Bits, const FeatureBitset& FeatureBits) const;
   };
 
   struct MSRMapper : SysRegMapper {

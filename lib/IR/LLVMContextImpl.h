@@ -458,65 +458,6 @@ template <> struct MDNodeKeyImpl<DIFile> {
   unsigned getHashValue() const { return hash_combine(Filename, Directory); }
 };
 
-template <> struct MDNodeKeyImpl<DICompileUnit> {
-  unsigned SourceLanguage;
-  Metadata *File;
-  StringRef Producer;
-  bool IsOptimized;
-  StringRef Flags;
-  unsigned RuntimeVersion;
-  StringRef SplitDebugFilename;
-  unsigned EmissionKind;
-  Metadata *EnumTypes;
-  Metadata *RetainedTypes;
-  Metadata *Subprograms;
-  Metadata *GlobalVariables;
-  Metadata *ImportedEntities;
-
-  MDNodeKeyImpl(unsigned SourceLanguage, Metadata *File, StringRef Producer,
-                bool IsOptimized, StringRef Flags, unsigned RuntimeVersion,
-                StringRef SplitDebugFilename, unsigned EmissionKind,
-                Metadata *EnumTypes, Metadata *RetainedTypes,
-                Metadata *Subprograms, Metadata *GlobalVariables,
-                Metadata *ImportedEntities)
-      : SourceLanguage(SourceLanguage), File(File), Producer(Producer),
-        IsOptimized(IsOptimized), Flags(Flags), RuntimeVersion(RuntimeVersion),
-        SplitDebugFilename(SplitDebugFilename), EmissionKind(EmissionKind),
-        EnumTypes(EnumTypes), RetainedTypes(RetainedTypes),
-        Subprograms(Subprograms), GlobalVariables(GlobalVariables),
-        ImportedEntities(ImportedEntities) {}
-  MDNodeKeyImpl(const DICompileUnit *N)
-      : SourceLanguage(N->getSourceLanguage()), File(N->getRawFile()),
-        Producer(N->getProducer()), IsOptimized(N->isOptimized()),
-        Flags(N->getFlags()), RuntimeVersion(N->getRuntimeVersion()),
-        SplitDebugFilename(N->getSplitDebugFilename()),
-        EmissionKind(N->getEmissionKind()), EnumTypes(N->getRawEnumTypes()),
-        RetainedTypes(N->getRawRetainedTypes()),
-        Subprograms(N->getRawSubprograms()),
-        GlobalVariables(N->getRawGlobalVariables()),
-        ImportedEntities(N->getRawImportedEntities()) {}
-
-  bool isKeyOf(const DICompileUnit *RHS) const {
-    return SourceLanguage == RHS->getSourceLanguage() &&
-           File == RHS->getRawFile() && Producer == RHS->getProducer() &&
-           IsOptimized == RHS->isOptimized() && Flags == RHS->getFlags() &&
-           RuntimeVersion == RHS->getRuntimeVersion() &&
-           SplitDebugFilename == RHS->getSplitDebugFilename() &&
-           EmissionKind == RHS->getEmissionKind() &&
-           EnumTypes == RHS->getRawEnumTypes() &&
-           RetainedTypes == RHS->getRawRetainedTypes() &&
-           Subprograms == RHS->getRawSubprograms() &&
-           GlobalVariables == RHS->getRawGlobalVariables() &&
-           ImportedEntities == RHS->getRawImportedEntities();
-  }
-  unsigned getHashValue() const {
-    return hash_combine(SourceLanguage, File, Producer, IsOptimized, Flags,
-                        RuntimeVersion, SplitDebugFilename, EmissionKind,
-                        EnumTypes, RetainedTypes, Subprograms, GlobalVariables,
-                        ImportedEntities);
-  }
-};
-
 template <> struct MDNodeKeyImpl<DISubprogram> {
   Metadata *Scope;
   StringRef Name;
@@ -649,6 +590,35 @@ template <> struct MDNodeKeyImpl<DINamespace> {
   }
 };
 
+template <> struct MDNodeKeyImpl<DIModule> {
+  Metadata *Scope;
+  StringRef Name;
+  StringRef ConfigurationMacros;
+  StringRef IncludePath;
+  StringRef ISysRoot;
+  MDNodeKeyImpl(Metadata *Scope, StringRef Name,
+                StringRef ConfigurationMacros,
+                StringRef IncludePath,
+                StringRef ISysRoot)
+    : Scope(Scope), Name(Name), ConfigurationMacros(ConfigurationMacros),
+      IncludePath(IncludePath), ISysRoot(ISysRoot) {}
+  MDNodeKeyImpl(const DIModule *N)
+    : Scope(N->getRawScope()), Name(N->getName()),
+      ConfigurationMacros(N->getConfigurationMacros()),
+      IncludePath(N->getIncludePath()), ISysRoot(N->getISysRoot()) {}
+
+  bool isKeyOf(const DIModule *RHS) const {
+    return Scope == RHS->getRawScope() && Name == RHS->getName() &&
+           ConfigurationMacros == RHS->getConfigurationMacros() &&
+           IncludePath == RHS->getIncludePath() &&
+           ISysRoot == RHS->getISysRoot();
+  }
+  unsigned getHashValue() const {
+    return hash_combine(Scope, Name,
+                        ConfigurationMacros, IncludePath, ISysRoot);
+  }
+};
+
 template <> struct MDNodeKeyImpl<DITemplateTypeParameter> {
   StringRef Name;
   Metadata *Type;
@@ -728,7 +698,6 @@ template <> struct MDNodeKeyImpl<DIGlobalVariable> {
 };
 
 template <> struct MDNodeKeyImpl<DILocalVariable> {
-  unsigned Tag;
   Metadata *Scope;
   StringRef Name;
   Metadata *File;
@@ -737,23 +706,23 @@ template <> struct MDNodeKeyImpl<DILocalVariable> {
   unsigned Arg;
   unsigned Flags;
 
-  MDNodeKeyImpl(unsigned Tag, Metadata *Scope, StringRef Name, Metadata *File,
-                unsigned Line, Metadata *Type, unsigned Arg, unsigned Flags)
-      : Tag(Tag), Scope(Scope), Name(Name), File(File), Line(Line), Type(Type),
-        Arg(Arg), Flags(Flags) {}
+  MDNodeKeyImpl(Metadata *Scope, StringRef Name, Metadata *File, unsigned Line,
+                Metadata *Type, unsigned Arg, unsigned Flags)
+      : Scope(Scope), Name(Name), File(File), Line(Line), Type(Type), Arg(Arg),
+        Flags(Flags) {}
   MDNodeKeyImpl(const DILocalVariable *N)
-      : Tag(N->getTag()), Scope(N->getRawScope()), Name(N->getName()),
-        File(N->getRawFile()), Line(N->getLine()), Type(N->getRawType()),
-        Arg(N->getArg()), Flags(N->getFlags()) {}
+      : Scope(N->getRawScope()), Name(N->getName()), File(N->getRawFile()),
+        Line(N->getLine()), Type(N->getRawType()), Arg(N->getArg()),
+        Flags(N->getFlags()) {}
 
   bool isKeyOf(const DILocalVariable *RHS) const {
-    return Tag == RHS->getTag() && Scope == RHS->getRawScope() &&
-           Name == RHS->getName() && File == RHS->getRawFile() &&
-           Line == RHS->getLine() && Type == RHS->getRawType() &&
-           Arg == RHS->getArg() && Flags == RHS->getFlags();
+    return Scope == RHS->getRawScope() && Name == RHS->getName() &&
+           File == RHS->getRawFile() && Line == RHS->getLine() &&
+           Type == RHS->getRawType() && Arg == RHS->getArg() &&
+           Flags == RHS->getFlags();
   }
   unsigned getHashValue() const {
-    return hash_combine(Tag, Scope, Name, File, Line, Type, Arg, Flags);
+    return hash_combine(Scope, Name, File, Line, Type, Arg, Flags);
   }
 };
 
@@ -920,7 +889,10 @@ public:
   DenseMap<Value *, ValueAsMetadata *> ValuesAsMetadata;
   DenseMap<Metadata *, MetadataAsValue *> MetadataAsValues;
 
-#define HANDLE_MDNODE_LEAF(CLASS) DenseSet<CLASS *, CLASS##Info> CLASS##s;
+  DenseMap<const Value*, ValueName*> ValueNames;
+
+#define HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)                                    \
+  DenseSet<CLASS *, CLASS##Info> CLASS##s;
 #include "llvm/IR/Metadata.def"
 
   // MDNodes may be uniqued or not uniqued.  When they're not uniqued, they
@@ -956,7 +928,7 @@ public:
   ConstantInt *TheFalseVal;
 
   // Basic type instances.
-  Type VoidTy, LabelTy, HalfTy, FloatTy, DoubleTy, MetadataTy;
+  Type VoidTy, LabelTy, HalfTy, FloatTy, DoubleTy, MetadataTy, TokenTy;
   Type X86_FP80Ty, FP128Ty, PPC_FP128Ty, X86_MMXTy;
   IntegerType Int1Ty, Int8Ty, Int16Ty, Int32Ty, Int64Ty, Int128Ty;
 
@@ -999,11 +971,6 @@ public:
   /// integer representing the next DWARF path discriminator to assign to
   /// instructions in different blocks at the same location.
   DenseMap<std::pair<const char *, unsigned>, unsigned> DiscriminatorTable;
-
-  /// IntrinsicIDCache - Cache of intrinsic name (string) to numeric ID mappings
-  /// requested in this context
-  typedef DenseMap<const Function*, unsigned> IntrinsicIDCacheTy;
-  IntrinsicIDCacheTy IntrinsicIDCache;
 
   /// \brief Mapping from a function to its prefix data, which is stored as the
   /// operand of an unparented ReturnInst so that the prefix data has a Use.

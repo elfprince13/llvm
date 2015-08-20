@@ -159,7 +159,7 @@ findLoopInstr(MachineBasicBlock *BB, int EndLoopOp,
 
 unsigned HexagonInstrInfo::InsertBranch(
     MachineBasicBlock &MBB,MachineBasicBlock *TBB, MachineBasicBlock *FBB,
-    const SmallVectorImpl<MachineOperand> &Cond, DebugLoc DL) const {
+    ArrayRef<MachineOperand> Cond, DebugLoc DL) const {
 
   Opcode_t BOpc   = Hexagon::J2_jump;
   Opcode_t BccOpc = Hexagon::J2_jumpt;
@@ -615,12 +615,9 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   MachineFrameInfo &MFI = *MF.getFrameInfo();
   unsigned Align = MFI.getObjectAlignment(FI);
 
-  MachineMemOperand *MMO =
-      MF.getMachineMemOperand(
-                      MachinePointerInfo(PseudoSourceValue::getFixedStack(FI)),
-                      MachineMemOperand::MOStore,
-                      MFI.getObjectSize(FI),
-                      Align);
+  MachineMemOperand *MMO = MF.getMachineMemOperand(
+      MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOStore,
+      MFI.getObjectSize(FI), Align);
 
   if (Hexagon::IntRegsRegClass.hasSubClassEq(RC)) {
     BuildMI(MBB, I, DL, get(Hexagon::S2_storeri_io))
@@ -661,12 +658,9 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   MachineFrameInfo &MFI = *MF.getFrameInfo();
   unsigned Align = MFI.getObjectAlignment(FI);
 
-  MachineMemOperand *MMO =
-      MF.getMachineMemOperand(
-                      MachinePointerInfo(PseudoSourceValue::getFixedStack(FI)),
-                      MachineMemOperand::MOLoad,
-                      MFI.getObjectSize(FI),
-                      Align);
+  MachineMemOperand *MMO = MF.getMachineMemOperand(
+      MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOLoad,
+      MFI.getObjectSize(FI), Align);
   if (RC == &Hexagon::IntRegsRegClass) {
     BuildMI(MBB, I, DL, get(Hexagon::L2_loadri_io), DestReg)
           .addFrameIndex(FI).addImm(0).addMemOperand(MMO);
@@ -779,10 +773,9 @@ HexagonInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   return false;
 }
 
-MachineInstr *HexagonInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
-                                                      MachineInstr *MI,
-                                                      ArrayRef<unsigned> Ops,
-                                                      int FI) const {
+MachineInstr *HexagonInstrInfo::foldMemoryOperandImpl(
+    MachineFunction &MF, MachineInstr *MI, ArrayRef<unsigned> Ops,
+    MachineBasicBlock::iterator InsertPt, int FI) const {
   // Hexagon_TODO: Implement.
   return nullptr;
 }
@@ -1014,7 +1007,7 @@ int HexagonInstrInfo::getCondOpcode(int Opc, bool invertPredicate) const {
 
 bool HexagonInstrInfo::
 PredicateInstruction(MachineInstr *MI,
-                     const SmallVectorImpl<MachineOperand> &Cond) const {
+                     ArrayRef<MachineOperand> Cond) const {
   if (Cond.empty() || isEndLoopN(Cond[0].getImm())) {
     DEBUG(dbgs() << "\nCannot predicate:"; MI->dump(););
     return false;
@@ -1163,8 +1156,8 @@ HexagonInstrInfo::DefinesPredicate(MachineInstr *MI,
 
 bool
 HexagonInstrInfo::
-SubsumesPredicate(const SmallVectorImpl<MachineOperand> &Pred1,
-                  const SmallVectorImpl<MachineOperand> &Pred2) const {
+SubsumesPredicate(ArrayRef<MachineOperand> Pred1,
+                  ArrayRef<MachineOperand> Pred2) const {
   // TODO: Fix this
   return false;
 }
@@ -1983,8 +1976,7 @@ bool HexagonInstrInfo::PredOpcodeHasJMP_c(Opcode_t Opcode) const {
          (Opcode == Hexagon::J2_jumpf);
 }
 
-bool HexagonInstrInfo::predOpcodeHasNot(
-    const SmallVectorImpl<MachineOperand> &Cond) const {
+bool HexagonInstrInfo::predOpcodeHasNot(ArrayRef<MachineOperand> Cond) const {
   if (Cond.empty() || !isPredicated(Cond[0].getImm()))
     return false;
   return !isPredicatedTrue(Cond[0].getImm());
@@ -1995,7 +1987,7 @@ bool HexagonInstrInfo::isEndLoopN(Opcode_t Opcode) const {
           Opcode == Hexagon::ENDLOOP1);
 }
 
-bool HexagonInstrInfo::getPredReg(const SmallVectorImpl<MachineOperand> &Cond,
+bool HexagonInstrInfo::getPredReg(ArrayRef<MachineOperand> Cond,
                                   unsigned &PredReg, unsigned &PredRegPos,
                                   unsigned &PredRegFlags) const {
   if (Cond.empty())

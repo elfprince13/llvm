@@ -53,10 +53,10 @@ $_TI1H = comdat any
 
 ; CHECK-LABEL: define void @"\01?test1@@YAXXZ"()
 ; CHECK: entry:
-; CHECK:   call void (...) @llvm.frameescape
+; CHECK:   call void (...) @llvm.localescape
 
 ; Function Attrs: nounwind uwtable
-define void @"\01?test1@@YAXXZ"() #0 {
+define void @"\01?test1@@YAXXZ"() #0 personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*) {
 entry:
   %tmp = alloca i32, align 4
   %exn.slot = alloca i8*
@@ -67,7 +67,7 @@ entry:
           to label %unreachable unwind label %lpad
 
 lpad:                                             ; preds = %entry
-  %1 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*)
+  %1 = landingpad { i8*, i32 }
           catch i8* null
   %2 = extractvalue { i8*, i32 } %1, 0
   store i8* %2, i8** %exn.slot
@@ -82,7 +82,7 @@ catch:                                            ; preds = %lpad
           to label %unreachable unwind label %lpad1
 
 lpad1:                                            ; preds = %catch
-  %4 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*)
+  %4 = landingpad { i8*, i32 }
           catch i8* null
   %5 = extractvalue { i8*, i32 } %4, 0
   store i8* %5, i8** %exn.slot
@@ -121,10 +121,10 @@ declare void @llvm.eh.endcatch() #1
 
 ; CHECK-LABEL: define void @"\01?test2@@YAXXZ"()
 ; CHECK: entry:
-; CHECK:   call void (...) @llvm.frameescape
+; CHECK:   call void (...) @llvm.localescape
 
 ; Function Attrs: nounwind uwtable
-define void @"\01?test2@@YAXXZ"() #0 {
+define void @"\01?test2@@YAXXZ"() #0 personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*) {
 entry:
   %tmp = alloca i32, align 4
   %exn.slot = alloca i8*
@@ -135,7 +135,7 @@ entry:
           to label %unreachable unwind label %lpad
 
 lpad:                                             ; preds = %entry
-  %1 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*)
+  %1 = landingpad { i8*, i32 }
           catch i8* null
   %2 = extractvalue { i8*, i32 } %1, 0
   store i8* %2, i8** %exn.slot
@@ -150,7 +150,7 @@ catch:                                            ; preds = %lpad
           to label %unreachable unwind label %lpad1
 
 lpad1:                                            ; preds = %catch
-  %4 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__CxxFrameHandler3 to i8*)
+  %4 = landingpad { i8*, i32 }
           catch i8* null
   %5 = extractvalue { i8*, i32 } %4, 0
   store i8* %5, i8** %exn.slot
@@ -180,26 +180,24 @@ unreachable:                                      ; preds = %catch, %entry
 ; CHECK: }
 }
 
-; The outlined test1.catch handler should not contain a return instruction.
+; The outlined test1.catch handler should return to a valid block address.
 ; CHECK-LABEL: define internal i8* @"\01?test1@@YAXXZ.catch"(i8*, i8*)
-; CHECK-NOT: ret
+; CHECK-NOT:  ret i8* inttoptr (i32 1 to i8*)
 ; CHECK: }
 
-; The outlined test1.catch1 handler should return to a valid block address.
+; The outlined test1.catch1 handler should not contain a return instruction.
 ; CHECK-LABEL: define internal i8* @"\01?test1@@YAXXZ.catch.1"(i8*, i8*)
-; WILL-CHECK:  ret i8* inttoptr (
-; CHECK-NOT:  ret i8* inttoptr (i32 1 to i8*)
-; CHECK: }
-
-; The outlined test2.catch handler should not contain a return instruction.
-; CHECK-LABEL: define internal i8* @"\01?test2@@YAXXZ.catch"(i8*, i8*)
 ; CHECK-NOT: ret
 ; CHECK: }
 
-; The outlined test2.catch1 handler should return to a valid block address.
-; CHECK-LABEL: define internal i8* @"\01?test2@@YAXXZ.catch.2"(i8*, i8*)
-; WILL-CHECK:  ret i8* inttoptr (
+; The outlined test2.catch handler should return to a valid block address.
+; CHECK-LABEL: define internal i8* @"\01?test2@@YAXXZ.catch"(i8*, i8*)
 ; CHECK-NOT:  ret i8* inttoptr (i32 1 to i8*)
+; CHECK: }
+
+; The outlined test2.catch2 handler should not contain a return instruction.
+; CHECK-LABEL: define internal i8* @"\01?test2@@YAXXZ.catch.2"(i8*, i8*)
+; CHECK-NOT: ret
 ; CHECK: }
 
 

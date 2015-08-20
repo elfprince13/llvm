@@ -16,7 +16,7 @@ define void @foo() {
   ret void
 }
 
-define void @bar() {
+define void @bar() personality i8* bitcast (void ()* @foo to i8*) {
   invoke void @foo()
           to label %invoke.cont unwind label %lpad
 
@@ -24,7 +24,7 @@ invoke.cont:                                      ; preds = %0
   ret void
 
 lpad:                                             ; preds = %0
-  %tmp1 = landingpad { i8*, i32 } personality i8* bitcast (void ()* @foo to i8*)
+  %tmp1 = landingpad { i8*, i32 }
           filter [1 x i8*] [i8* bitcast (i8** @_ZTId to i8*)]
   ret void
 }
@@ -32,7 +32,7 @@ lpad:                                             ; preds = %0
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!17, !18}
 
-!0 = !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.7.0 (trunk 234308) (llvm/trunk 234310)", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !10, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.7.0 (trunk 234308) (llvm/trunk 234310)", isOptimized: false, runtimeVersion: 0, emissionKind: 1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !10, imports: !2)
 !1 = !DIFile(filename: "/Users/espindola/llvm/<stdin>", directory: "/Users/espindola/llvm/build")
 !2 = !{}
 !3 = !{!4, !9}

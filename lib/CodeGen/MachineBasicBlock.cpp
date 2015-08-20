@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/Support/Debug.h"
@@ -46,14 +47,13 @@ MachineBasicBlock::MachineBasicBlock(MachineFunction &mf, const BasicBlock *bb)
 MachineBasicBlock::~MachineBasicBlock() {
 }
 
-/// getSymbol - Return the MCSymbol for this basic block.
-///
+/// Return the MCSymbol for this basic block.
 MCSymbol *MachineBasicBlock::getSymbol() const {
   if (!CachedMCSymbol) {
     const MachineFunction *MF = getParent();
     MCContext &Ctx = MF->getContext();
     const char *Prefix = Ctx.getAsmInfo()->getPrivateLabelPrefix();
-    CachedMCSymbol = Ctx.GetOrCreateSymbol(Twine(Prefix) + "BB" +
+    CachedMCSymbol = Ctx.getOrCreateSymbol(Twine(Prefix) + "BB" +
                                            Twine(MF->getFunctionNumber()) +
                                            "_" + Twine(getNumber()));
   }
@@ -67,9 +67,9 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const MachineBasicBlock &MBB) {
   return OS;
 }
 
-/// addNodeToList (MBB) - When an MBB is added to an MF, we need to update the
-/// parent pointer of the MBB, the MBB numbering, and any instructions in the
-/// MBB to be on the right operand list for registers.
+/// When an MBB is added to an MF, we need to update the parent pointer of the
+/// MBB, the MBB numbering, and any instructions in the MBB to be on the right
+/// operand list for registers.
 ///
 /// MBBs start out as #-1. When a MBB is added to a MachineFunction, it
 /// gets the next available unique MBB number. If it is removed from a
@@ -90,10 +90,8 @@ void ilist_traits<MachineBasicBlock>::removeNodeFromList(MachineBasicBlock *N) {
   N->Number = -1;
 }
 
-
-/// addNodeToList (MI) - When we add an instruction to a basic block
-/// list, we update its parent pointer and add its operands from reg use/def
-/// lists if appropriate.
+/// When we add an instruction to a basic block list, we update its parent
+/// pointer and add its operands from reg use/def lists if appropriate.
 void ilist_traits<MachineInstr>::addNodeToList(MachineInstr *N) {
   assert(!N->getParent() && "machine instruction already in a basic block");
   N->setParent(Parent);
@@ -104,9 +102,8 @@ void ilist_traits<MachineInstr>::addNodeToList(MachineInstr *N) {
   N->AddRegOperandsToUseLists(MF->getRegInfo());
 }
 
-/// removeNodeFromList (MI) - When we remove an instruction from a basic block
-/// list, we update its parent pointer and remove its operands from reg use/def
-/// lists if appropriate.
+/// When we remove an instruction from a basic block list, we update its parent
+/// pointer and remove its operands from reg use/def lists if appropriate.
 void ilist_traits<MachineInstr>::removeNodeFromList(MachineInstr *N) {
   assert(N->getParent() && "machine instruction not in a basic block");
 
@@ -117,9 +114,8 @@ void ilist_traits<MachineInstr>::removeNodeFromList(MachineInstr *N) {
   N->setParent(nullptr);
 }
 
-/// transferNodesFromList (MI) - When moving a range of instructions from one
-/// MBB list to another, we need to update the parent pointers and the use/def
-/// lists.
+/// When moving a range of instructions from one MBB list to another, we need to
+/// update the parent pointers and the use/def lists.
 void ilist_traits<MachineInstr>::
 transferNodesFromList(ilist_traits<MachineInstr> &fromList,
                       ilist_iterator<MachineInstr> first,
@@ -171,16 +167,6 @@ MachineBasicBlock::iterator MachineBasicBlock::getFirstTerminator() {
   return I;
 }
 
-MachineBasicBlock::const_iterator
-MachineBasicBlock::getFirstTerminator() const {
-  const_iterator B = begin(), E = end(), I = E;
-  while (I != B && ((--I)->isTerminator() || I->isDebugValue()))
-    ; /*noop */
-  while (I != E && !I->isTerminator())
-    ++I;
-  return I;
-}
-
 MachineBasicBlock::instr_iterator MachineBasicBlock::getFirstInstrTerminator() {
   instr_iterator B = instr_begin(), E = instr_end(), I = E;
   while (I != B && ((--I)->isTerminator() || I->isDebugValue()))
@@ -190,24 +176,17 @@ MachineBasicBlock::instr_iterator MachineBasicBlock::getFirstInstrTerminator() {
   return I;
 }
 
+MachineBasicBlock::iterator MachineBasicBlock::getFirstNonDebugInstr() {
+  // Skip over begin-of-block dbg_value instructions.
+  iterator I = begin(), E = end();
+  while (I != E && I->isDebugValue())
+    ++I;
+  return I;
+}
+
 MachineBasicBlock::iterator MachineBasicBlock::getLastNonDebugInstr() {
   // Skip over end-of-block dbg_value instructions.
   instr_iterator B = instr_begin(), I = instr_end();
-  while (I != B) {
-    --I;
-    // Return instruction that starts a bundle.
-    if (I->isDebugValue() || I->isInsideBundle())
-      continue;
-    return I;
-  }
-  // The block is all debug values.
-  return end();
-}
-
-MachineBasicBlock::const_iterator
-MachineBasicBlock::getLastNonDebugInstr() const {
-  // Skip over end-of-block dbg_value instructions.
-  const_instr_iterator B = instr_begin(), I = instr_end();
   while (I != B) {
     --I;
     // Return instruction that starts a bundle.
@@ -261,6 +240,20 @@ void MachineBasicBlock::print(raw_ostream &OS, SlotIndexes *Indexes) const {
        << " is null\n";
     return;
   }
+  const Function *F = MF->getFunction();
+  const Module *M = F ? F->getParent() : nullptr;
+  ModuleSlotTracker MST(M);
+  print(OS, MST, Indexes);
+}
+
+void MachineBasicBlock::print(raw_ostream &OS, ModuleSlotTracker &MST,
+                              SlotIndexes *Indexes) const {
+  const MachineFunction *MF = getParent();
+  if (!MF) {
+    OS << "Can't print out MachineBasicBlock because parent MachineFunction"
+       << " is null\n";
+    return;
+  }
 
   if (Indexes)
     OS << Indexes->getMBBStartIdx(this) << '\t';
@@ -270,7 +263,7 @@ void MachineBasicBlock::print(raw_ostream &OS, SlotIndexes *Indexes) const {
   const char *Comma = "";
   if (const BasicBlock *LBB = getBasicBlock()) {
     OS << Comma << "derived from LLVM BB ";
-    LBB->printAsOperand(OS, /*PrintType=*/false);
+    LBB->printAsOperand(OS, /*PrintType=*/false, MST);
     Comma = ", ";
   }
   if (isLandingPad()) { OS << Comma << "EH LANDING PAD"; Comma = ", "; }
@@ -307,7 +300,7 @@ void MachineBasicBlock::print(raw_ostream &OS, SlotIndexes *Indexes) const {
     OS << '\t';
     if (I->isInsideBundle())
       OS << "  * ";
-    I->print(OS);
+    I->print(OS, MST);
   }
 
   // Print the successors of this block according to the CFG.
@@ -323,7 +316,8 @@ void MachineBasicBlock::print(raw_ostream &OS, SlotIndexes *Indexes) const {
   }
 }
 
-void MachineBasicBlock::printAsOperand(raw_ostream &OS, bool /*PrintType*/) const {
+void MachineBasicBlock::printAsOperand(raw_ostream &OS,
+                                       bool /*PrintType*/) const {
   OS << "BB#" << getNumber();
 }
 
@@ -447,8 +441,8 @@ void MachineBasicBlock::updateTerminator() {
         // We fallthrough to the same basic block as the conditional jump
         // targets. Remove the conditional jump, leaving unconditional
         // fallthrough.
-        // FIXME: This does not seem like a reasonable pattern to support, but it
-        // has been seen in the wild coming out of degenerate ARM test cases.
+        // FIXME: This does not seem like a reasonable pattern to support, but
+        // it has been seen in the wild coming out of degenerate ARM test cases.
         TII->RemoveBranch(*this);
 
         // Finally update the unconditional successor to be reached via a branch
@@ -486,9 +480,9 @@ void MachineBasicBlock::addSuccessor(MachineBasicBlock *succ, uint32_t weight) {
   if (weight != 0 || !Weights.empty())
     Weights.push_back(weight);
 
-   Successors.push_back(succ);
-   succ->addPredecessor(this);
- }
+  Successors.push_back(succ);
+  succ->addPredecessor(this);
+}
 
 void MachineBasicBlock::removeSuccessor(MachineBasicBlock *succ) {
   succ->removePredecessor(this);
@@ -836,10 +830,10 @@ MachineBasicBlock::SplitCriticalEdge(MachineBasicBlock *Succ, Pass *P) {
   if (LIS) {
     // After splitting the edge and updating SlotIndexes, live intervals may be
     // in one of two situations, depending on whether this block was the last in
-    // the function. If the original block was the last in the function, all live
-    // intervals will end prior to the beginning of the new split block. If the
-    // original block was not at the end of the function, all live intervals will
-    // extend to the end of the new split block.
+    // the function. If the original block was the last in the function, all
+    // live intervals will end prior to the beginning of the new split block. If
+    // the original block was not at the end of the function, all live intervals
+    // will extend to the end of the new split block.
 
     bool isLastMBB =
       std::next(MachineFunction::iterator(NMBB)) == getParent()->end();
@@ -863,7 +857,8 @@ MachineBasicBlock::SplitCriticalEdge(MachineBasicBlock *Succ, Pass *P) {
 
           LiveInterval &LI = LIS->getInterval(Reg);
           VNInfo *VNI = LI.getVNInfoAt(PrevIndex);
-          assert(VNI && "PHI sources should be live out of their predecessors.");
+          assert(VNI &&
+                 "PHI sources should be live out of their predecessors.");
           LI.addSegment(LiveInterval::Segment(StartIndex, EndIndex, VNI));
         }
       }
@@ -966,25 +961,22 @@ MachineBasicBlock::insert(instr_iterator I, MachineInstr *MI) {
   return Insts.insert(I, MI);
 }
 
-/// removeFromParent - This method unlinks 'this' from the containing function,
-/// and returns it, but does not delete it.
+/// This method unlinks 'this' from the containing function, and returns it, but
+/// does not delete it.
 MachineBasicBlock *MachineBasicBlock::removeFromParent() {
   assert(getParent() && "Not embedded in a function!");
   getParent()->remove(this);
   return this;
 }
 
-
-/// eraseFromParent - This method unlinks 'this' from the containing function,
-/// and deletes it.
+/// This method unlinks 'this' from the containing function, and deletes it.
 void MachineBasicBlock::eraseFromParent() {
   assert(getParent() && "Not embedded in a function!");
   getParent()->erase(this);
 }
 
-
-/// ReplaceUsesOfBlockWith - Given a machine basic block that branched to
-/// 'Old', change the code and CFG so that it branches to 'New' instead.
+/// Given a machine basic block that branched to 'Old', change the code and CFG
+/// so that it branches to 'New' instead.
 void MachineBasicBlock::ReplaceUsesOfBlockWith(MachineBasicBlock *Old,
                                                MachineBasicBlock *New) {
   assert(Old != New && "Cannot replace self with self!");
@@ -1006,10 +998,9 @@ void MachineBasicBlock::ReplaceUsesOfBlockWith(MachineBasicBlock *Old,
   replaceSuccessor(Old, New);
 }
 
-/// CorrectExtraCFGEdges - Various pieces of code can cause excess edges in the
-/// CFG to be inserted.  If we have proven that MBB can only branch to DestA and
-/// DestB, remove any other MBB successors from the CFG.  DestA and DestB can be
-/// null.
+/// Various pieces of code can cause excess edges in the CFG to be inserted.  If
+/// we have proven that MBB can only branch to DestA and DestB, remove any other
+/// MBB successors from the CFG.  DestA and DestB can be null.
 ///
 /// Besides DestA and DestB, retain other edges leading to LandingPads
 /// (currently there can be only one; we don't check or require that here).
@@ -1068,8 +1059,8 @@ bool MachineBasicBlock::CorrectExtraCFGEdges(MachineBasicBlock *DestA,
   return Changed;
 }
 
-/// findDebugLoc - find the next valid DebugLoc starting at MBBI, skipping
-/// any DBG_VALUE instructions.  Return UnknownLoc if there is none.
+/// Find the next valid DebugLoc starting at MBBI, skipping any DBG_VALUE
+/// instructions.  Return UnknownLoc if there is none.
 DebugLoc
 MachineBasicBlock::findDebugLoc(instr_iterator MBBI) {
   DebugLoc DL;
@@ -1085,8 +1076,7 @@ MachineBasicBlock::findDebugLoc(instr_iterator MBBI) {
   return DL;
 }
 
-/// getSuccWeight - Return weight of the edge from this block to MBB.
-///
+/// Return weight of the edge from this block to MBB.
 uint32_t MachineBasicBlock::getSuccWeight(const_succ_iterator Succ) const {
   if (Weights.empty())
     return 0;
@@ -1101,8 +1091,7 @@ void MachineBasicBlock::setSuccWeight(succ_iterator I, uint32_t weight) {
   *getWeightIterator(I) = weight;
 }
 
-/// getWeightIterator - Return wight iterator corresonding to the I successor
-/// iterator
+/// Return wight iterator corresonding to the I successor iterator.
 MachineBasicBlock::weight_iterator MachineBasicBlock::
 getWeightIterator(MachineBasicBlock::succ_iterator I) {
   assert(Weights.size() == Successors.size() && "Async weight list!");
@@ -1111,8 +1100,7 @@ getWeightIterator(MachineBasicBlock::succ_iterator I) {
   return Weights.begin() + index;
 }
 
-/// getWeightIterator - Return wight iterator corresonding to the I successor
-/// iterator
+/// Return wight iterator corresonding to the I successor iterator.
 MachineBasicBlock::const_weight_iterator MachineBasicBlock::
 getWeightIterator(MachineBasicBlock::const_succ_iterator I) const {
   assert(Weights.size() == Successors.size() && "Async weight list!");
@@ -1129,21 +1117,19 @@ getWeightIterator(MachineBasicBlock::const_succ_iterator I) const {
 /// instructions after (searching just for defs) MI.
 MachineBasicBlock::LivenessQueryResult
 MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
-                                           unsigned Reg, MachineInstr *MI,
-                                           unsigned Neighborhood) {
+                                           unsigned Reg, const_iterator Before,
+                                           unsigned Neighborhood) const {
   unsigned N = Neighborhood;
-  MachineBasicBlock *MBB = MI->getParent();
 
-  // Start by searching backwards from MI, looking for kills, reads or defs.
-
-  MachineBasicBlock::iterator I(MI);
+  // Start by searching backwards from Before, looking for kills, reads or defs.
+  const_iterator I(Before);
   // If this is the first insn in the block, don't search backwards.
-  if (I != MBB->begin()) {
+  if (I != begin()) {
     do {
       --I;
 
       MachineOperandIteratorBase::PhysRegInfo Analysis =
-        MIOperands(I).analyzePhysReg(Reg, TRI);
+        ConstMIOperands(I).analyzePhysReg(Reg, TRI);
 
       if (Analysis.Defines)
         // Outputs happen after inputs so they take precedence if both are
@@ -1158,15 +1144,15 @@ MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
         // Defined or read without a previous kill - live.
         return Analysis.Reads ? LQR_Live : LQR_OverlappingLive;
 
-    } while (I != MBB->begin() && --N > 0);
+    } while (I != begin() && --N > 0);
   }
 
   // Did we get to the start of the block?
-  if (I == MBB->begin()) {
+  if (I == begin()) {
     // If so, the register's state is definitely defined by the live-in state.
     for (MCRegAliasIterator RAI(Reg, TRI, /*IncludeSelf=*/true);
          RAI.isValid(); ++RAI) {
-      if (MBB->isLiveIn(*RAI))
+      if (isLiveIn(*RAI))
         return (*RAI == Reg) ? LQR_Live : LQR_OverlappingLive;
     }
 
@@ -1175,13 +1161,13 @@ MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
 
   N = Neighborhood;
 
-  // Try searching forwards from MI, looking for reads or defs.
-  I = MachineBasicBlock::iterator(MI);
+  // Try searching forwards from Before, looking for reads or defs.
+  I = const_iterator(Before);
   // If this is the last insn in the block, don't search forwards.
-  if (I != MBB->end()) {
-    for (++I; I != MBB->end() && N > 0; ++I, --N) {
+  if (I != end()) {
+    for (++I; I != end() && N > 0; ++I, --N) {
       MachineOperandIteratorBase::PhysRegInfo Analysis =
-        MIOperands(I).analyzePhysReg(Reg, TRI);
+        ConstMIOperands(I).analyzePhysReg(Reg, TRI);
 
       if (Analysis.ReadsOverlap)
         // Used, therefore must have been live.

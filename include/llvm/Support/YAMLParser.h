@@ -145,11 +145,12 @@ public:
   unsigned int getType() const { return TypeID; }
 
   void *operator new(size_t Size, BumpPtrAllocator &Alloc,
-                     size_t Alignment = 16) throw() {
+                     size_t Alignment = 16) LLVM_NOEXCEPT {
     return Alloc.Allocate(Size, Alignment);
   }
 
-  void operator delete(void *Ptr, BumpPtrAllocator &Alloc, size_t Size) throw() {
+  void operator delete(void *Ptr, BumpPtrAllocator &Alloc,
+                       size_t Size) LLVM_NOEXCEPT {
     Alloc.Deallocate(Ptr, Size);
   }
 
@@ -157,9 +158,9 @@ protected:
   std::unique_ptr<Document> &Doc;
   SMRange SourceRange;
 
-  void operator delete(void *) throw() {}
+  void operator delete(void *) LLVM_NOEXCEPT {}
 
-  virtual ~Node() {}
+  ~Node() = default;
 
 private:
   unsigned int TypeID;
@@ -172,7 +173,7 @@ private:
 ///
 /// Example:
 ///   !!null null
-class NullNode : public Node {
+class NullNode final : public Node {
   void anchor() override;
 
 public:
@@ -187,7 +188,7 @@ public:
 ///
 /// Example:
 ///   Adena
-class ScalarNode : public Node {
+class ScalarNode final : public Node {
   void anchor() override;
 
 public:
@@ -230,13 +231,13 @@ private:
 ///   |
 ///     Hello
 ///     World
-class BlockScalarNode : public Node {
+class BlockScalarNode final : public Node {
   void anchor() override;
 
 public:
   BlockScalarNode(std::unique_ptr<Document> &D, StringRef Anchor, StringRef Tag,
-                  std::string &Value, StringRef RawVal)
-      : Node(NK_BlockScalar, D, Anchor, Tag), Value(std::move(Value)) {
+                  StringRef Value, StringRef RawVal)
+      : Node(NK_BlockScalar, D, Anchor, Tag), Value(Value) {
     SMLoc Start = SMLoc::getFromPointer(RawVal.begin());
     SMLoc End = SMLoc::getFromPointer(RawVal.end());
     SourceRange = SMRange(Start, End);
@@ -250,7 +251,7 @@ public:
   }
 
 private:
-  std::string Value;
+  StringRef Value;
 };
 
 /// \brief A key and value pair. While not technically a Node under the YAML
@@ -260,7 +261,7 @@ private:
 ///
 /// Example:
 ///   Section: .text
-class KeyValueNode : public Node {
+class KeyValueNode final : public Node {
   void anchor() override;
 
 public:
@@ -371,7 +372,7 @@ template <class CollectionType> void skip(CollectionType &C) {
 /// Example:
 ///   Name: _main
 ///   Scope: Global
-class MappingNode : public Node {
+class MappingNode final : public Node {
   void anchor() override;
 
 public:
@@ -418,7 +419,7 @@ private:
 /// Example:
 ///   - Hello
 ///   - World
-class SequenceNode : public Node {
+class SequenceNode final : public Node {
   void anchor() override;
 
 public:
@@ -471,7 +472,7 @@ private:
 ///
 /// Example:
 ///   *AnchorName
-class AliasNode : public Node {
+class AliasNode final : public Node {
   void anchor() override;
 
 public:

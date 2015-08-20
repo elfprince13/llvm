@@ -124,7 +124,7 @@ entry:
 }
 
 ; Function Attrs: uwtable
-define i32 @main(i32 %argc, i8** %argv) #2 {
+define i32 @main(i32 %argc, i8** %argv) #2 personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) {
 entry:
   %retval = alloca i32, align 4
   %argc.addr = alloca i32, align 4
@@ -161,7 +161,7 @@ invoke.cont:                                      ; preds = %entry
   ret i32 %1, !dbg !116
 
 lpad:                                             ; preds = %entry
-  %2 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  %2 = landingpad { i8*, i32 }
           cleanup, !dbg !116
   %3 = extractvalue { i8*, i32 } %2, 0, !dbg !116
   store i8* %3, i8** %exn.slot, !dbg !116
@@ -181,7 +181,7 @@ eh.resume:                                        ; preds = %invoke.cont1
   resume { i8*, i32 } %lpad.val2, !dbg !119
 
 terminate.lpad:                                   ; preds = %lpad
-  %5 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  %5 = landingpad { i8*, i32 }
           catch i8* null, !dbg !121
   %6 = extractvalue { i8*, i32 } %5, 0, !dbg !121
   call void @__clang_call_terminate(i8* %6) #5, !dbg !121
@@ -212,7 +212,7 @@ declare i8* @__cxa_begin_catch(i8*)
 declare void @_ZSt9terminatev()
 
 ; Function Attrs: uwtable
-define linkonce_odr void @_ZN1AD0Ev(%class.A* %this) unnamed_addr #2 align 2 {
+define linkonce_odr void @_ZN1AD0Ev(%class.A* %this) unnamed_addr #2 align 2 personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) {
 entry:
   %this.addr = alloca %class.A*, align 8
   %exn.slot = alloca i8*
@@ -229,7 +229,7 @@ invoke.cont:                                      ; preds = %entry
   ret void, !dbg !129
 
 lpad:                                             ; preds = %entry
-  %1 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  %1 = landingpad { i8*, i32 }
           cleanup, !dbg !131
   %2 = extractvalue { i8*, i32 } %1, 0, !dbg !131
   store i8* %2, i8** %exn.slot, !dbg !131
@@ -263,7 +263,7 @@ attributes #7 = { builtin nounwind }
 !llvm.module.flags = !{!64, !65}
 !llvm.ident = !{!66}
 
-!0 = !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0 (trunk 203283) (llvm/trunk 203307)", isOptimized: false, splitDebugFilename: "sret.dwo", emissionKind: 1, file: !1, enums: !2, retainedTypes: !3, subprograms: !48, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.5.0 (trunk 203283) (llvm/trunk 203307)", isOptimized: false, splitDebugFilename: "sret.dwo", emissionKind: 1, file: !1, enums: !2, retainedTypes: !3, subprograms: !48, globals: !2, imports: !2)
 !1 = !DIFile(filename: "sret.cpp", directory: "/usr/local/google/home/echristo/tmp")
 !2 = !{}
 !3 = !{!4, !37}
@@ -323,33 +323,33 @@ attributes #7 = { builtin nounwind }
 !64 = !{i32 2, !"Dwarf Version", i32 4}
 !65 = !{i32 1, !"Debug Info Version", i32 3}
 !66 = !{!"clang version 3.5.0 (trunk 203283) (llvm/trunk 203307)"}
-!67 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !49, type: !68)
+!67 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !49, type: !68)
 !68 = !DIDerivedType(tag: DW_TAG_pointer_type, size: 64, align: 64, baseType: !"_ZTS1A")
 !69 = !DILocation(line: 0, scope: !49)
-!70 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "i", line: 16, arg: 2, scope: !49, file: !7, type: !12)
+!70 = !DILocalVariable(name: "i", line: 16, arg: 2, scope: !49, file: !7, type: !12)
 !71 = !DILocation(line: 16, scope: !49)
 !72 = !DILocation(line: 18, scope: !49)
 !73 = !DILocation(line: 19, scope: !49)
-!74 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !50, type: !68)
+!74 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !50, type: !68)
 !75 = !DILocation(line: 0, scope: !50)
-!76 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "rhs", line: 21, arg: 2, scope: !50, file: !7, type: !22)
+!76 = !DILocalVariable(name: "rhs", line: 21, arg: 2, scope: !50, file: !7, type: !22)
 !77 = !DILocation(line: 21, scope: !50)
 !78 = !DILocation(line: 23, scope: !50)
 !79 = !DILocation(line: 24, scope: !50)
-!80 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !51, type: !68)
+!80 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !51, type: !68)
 !81 = !DILocation(line: 0, scope: !51)
-!82 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "rhs", line: 27, arg: 2, scope: !51, file: !7, type: !22)
+!82 = !DILocalVariable(name: "rhs", line: 27, arg: 2, scope: !51, file: !7, type: !22)
 !83 = !DILocation(line: 27, scope: !51)
 !84 = !DILocation(line: 29, scope: !51)
 !85 = !DILocation(line: 30, scope: !51)
-!86 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !52, type: !68)
+!86 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !52, type: !68)
 !87 = !DILocation(line: 0, scope: !52)
 !88 = !DILocation(line: 35, scope: !52)
-!89 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !53, type: !90)
+!89 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !53, type: !90)
 !90 = !DIDerivedType(tag: DW_TAG_pointer_type, size: 64, align: 64, baseType: !"_ZTS1B")
 !91 = !DILocation(line: 0, scope: !53)
 !92 = !DILocation(line: 49, scope: !53)
-!93 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "a", line: 49, scope: !53, file: !7, type: !4)
+!93 = !DILocalVariable(name: "a", line: 49, scope: !53, file: !7, type: !4)
 !94 = !DILocation(line: 50, scope: !53)
 !95 = !DILocation(line: 51, scope: !53)
 !96 = !DILocation(line: 51, scope: !97)
@@ -357,19 +357,19 @@ attributes #7 = { builtin nounwind }
 !98 = !DILocation(line: 51, scope: !99)
 !99 = distinct !DILexicalBlock(line: 51, column: 0, file: !1, scope: !100)
 !100 = distinct !DILexicalBlock(line: 51, column: 0, file: !1, scope: !53)
-!101 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !63, type: !68)
+!101 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !63, type: !68)
 !102 = !DILocation(line: 0, scope: !63)
 !103 = !DILocation(line: 8, scope: !63)
-!104 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "argc", line: 53, arg: 1, scope: !54, file: !7, type: !12)
+!104 = !DILocalVariable(name: "argc", line: 53, arg: 1, scope: !54, file: !7, type: !12)
 !105 = !DILocation(line: 53, scope: !54)
-!106 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "argv", line: 53, arg: 2, scope: !54, file: !7, type: !57)
-!107 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "b", line: 55, scope: !54, file: !7, type: !37)
+!106 = !DILocalVariable(name: "argv", line: 53, arg: 2, scope: !54, file: !7, type: !57)
+!107 = !DILocalVariable(name: "b", line: 55, scope: !54, file: !7, type: !37)
 !108 = !DILocation(line: 55, scope: !54)
-!109 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "return_val", line: 56, scope: !54, file: !7, type: !12)
+!109 = !DILocalVariable(name: "return_val", line: 56, scope: !54, file: !7, type: !12)
 !110 = !DILocation(line: 56, scope: !54)
 !111 = !DILocation(line: 56, scope: !112)
 !112 = distinct !DILexicalBlock(line: 56, column: 0, file: !1, scope: !54)
-!113 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "a", line: 58, scope: !54, file: !7, type: !4)
+!113 = !DILocalVariable(name: "a", line: 58, scope: !54, file: !7, type: !4)
 !114 = !DILocation(line: 58, scope: !54)
 !115 = !DILocation(line: 59, scope: !54)
 !116 = !DILocation(line: 60, scope: !54)
@@ -379,10 +379,10 @@ attributes #7 = { builtin nounwind }
 !120 = distinct !DILexicalBlock(line: 60, column: 0, file: !1, scope: !54)
 !121 = !DILocation(line: 60, scope: !122)
 !122 = distinct !DILexicalBlock(line: 60, column: 0, file: !1, scope: !54)
-!123 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !62, type: !90)
+!123 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !62, type: !90)
 !124 = !DILocation(line: 0, scope: !62)
 !125 = !DILocation(line: 41, scope: !62)
-!126 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !61, type: !68)
+!126 = !DILocalVariable(name: "this", arg: 1, flags: DIFlagArtificial | DIFlagObjectPointer, scope: !61, type: !68)
 !127 = !DILocation(line: 0, scope: !61)
 !128 = !DILocation(line: 8, scope: !61)
 !129 = !DILocation(line: 8, scope: !130)

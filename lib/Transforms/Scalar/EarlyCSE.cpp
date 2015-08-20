@@ -461,6 +461,30 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
   if (!BB->getSinglePredecessor())
     ++CurrentGeneration;
 
+  // If this node has a single predecessor which ends in a conditional branch,
+  // we can infer the value of the branch condition given that we took this
+  // path.  We need the single predeccesor to ensure there's not another path
+  // which reaches this block where the condition might hold a different
+  // value.  Since we're adding this to the scoped hash table (like any other
+  // def), it will have been popped if we encounter a future merge block.
+  if (BasicBlock *Pred = BB->getSinglePredecessor())
+    if (auto *BI = dyn_cast<BranchInst>(Pred->getTerminator()))
+      if (BI->isConditional())
+        if (auto *CondInst = dyn_cast<Instruction>(BI->getCondition()))
+          if (SimpleValue::canHandle(CondInst)) {
+            assert(BI->getSuccessor(0) == BB || BI->getSuccessor(1) == BB);
+            auto *ConditionalConstant = (BI->getSuccessor(0) == BB) ?
+              ConstantInt::getTrue(BB->getContext()) :
+              ConstantInt::getFalse(BB->getContext());
+            AvailableValues.insert(CondInst, ConditionalConstant);
+            DEBUG(dbgs() << "EarlyCSE CVP: Add conditional value for '"
+                  << CondInst->getName() << "' as " << *ConditionalConstant
+                  << " in " << BB->getName() << "\n");
+            // Replace all dominated uses with the known value
+            replaceDominatedUsesWith(CondInst, ConditionalConstant, DT,
+                                     BasicBlockEdge(Pred, BB));
+          }
+
   /// LastStore - Keep track of the last non-volatile store that we saw... for
   /// as long as there in no instruction that reads memory.  If we see a store
   /// to the same location, we delete the dead store.  This zaps trivial dead
@@ -634,7 +658,7 @@ bool EarlyCSE::run() {
   // gains over vector when the container becomes very large due to the
   // specific access patterns. For more information see the mailing list
   // discussion on this:
-  // http://lists.cs.uiuc.edu/pipermail/llvm-commits/Week-of-Mon-20120116/135228.html
+  // http://lists.llvm.org/pipermail/llvm-commits/Week-of-Mon-20120116/135228.html
   std::deque<StackNode *> nodesToProcess;
 
   bool Changed = false;

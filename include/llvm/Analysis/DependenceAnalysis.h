@@ -41,6 +41,7 @@
 #define LLVM_ANALYSIS_DEPENDENCEANALYSIS_H
 
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Pass.h"
 
@@ -68,6 +69,15 @@ namespace llvm {
   /// as singly-linked lists, with the "next" fields stored in the dependence
   /// itelf.
   class Dependence {
+  protected:
+    Dependence(const Dependence &) = default;
+    
+    // FIXME: When we move to MSVC 2015 as the base compiler for Visual Studio
+    // support, uncomment this line to allow a defaulted move constructor for
+    // Dependence. Currently, FullDependence relies on the copy constructor, but
+    // that is acceptable given the triviality of the class.
+    // Dependence(Dependence &&) = default;
+
   public:
     Dependence(Instruction *Source,
                Instruction *Destination) :
@@ -215,11 +225,15 @@ namespace llvm {
   /// (for output, flow, and anti dependences), the dependence implies an
   /// ordering, where the source must precede the destination; in contrast,
   /// input dependences are unordered.
-  class FullDependence : public Dependence {
+  class FullDependence final : public Dependence {
   public:
     FullDependence(Instruction *Src, Instruction *Dst, bool LoopIndependent,
                    unsigned Levels);
-    ~FullDependence() override { delete[] DV; }
+
+    FullDependence(FullDependence &&RHS)
+        : Dependence(std::move(RHS)), Levels(RHS.Levels),
+          LoopIndependent(RHS.LoopIndependent), Consistent(RHS.Consistent),
+          DV(std::move(RHS.DV)) {}
 
     /// isLoopIndependent - Returns true if this is a loop-independent
     /// dependence.
@@ -267,7 +281,7 @@ namespace llvm {
     unsigned short Levels;
     bool LoopIndependent;
     bool Consistent; // Init to true, then refine.
-    DVEntry *DV;
+    std::unique_ptr<DVEntry[]> DV;
     friend class DependenceAnalysis;
   };
 
@@ -520,11 +534,11 @@ namespace llvm {
     /// in LoopNest.
     bool isLoopInvariant(const SCEV *Expression, const Loop *LoopNest) const;
 
-    /// Makes sure both subscripts (i.e. Pair->Src and Pair->Dst) share the same
-    /// integer type by sign-extending one of them when necessary.
+    /// Makes sure all subscript pairs share the same integer type by 
+    /// sign-extending as necessary.
     /// Sign-extending a subscript is safe because getelementptr assumes the
-    /// array subscripts are signed.
-    void unifySubscriptType(Subscript *Pair);
+    /// array subscripts are signed. 
+    void unifySubscriptType(ArrayRef<Subscript *> Pairs);
 
     /// removeMatchingExtensions - Examines a subscript pair.
     /// If the source and destination are identically sign (or zero)
@@ -912,9 +926,8 @@ namespace llvm {
     void updateDirection(Dependence::DVEntry &Level,
                          const Constraint &CurConstraint) const;
 
-    bool tryDelinearize(const SCEV *SrcSCEV, const SCEV *DstSCEV,
-                        SmallVectorImpl<Subscript> &Pair,
-                        const SCEV *ElementSize);
+    bool tryDelinearize(Instruction *Src, Instruction *Dst,
+                        SmallVectorImpl<Subscript> &Pair);
 
   public:
     static char ID; // Class identification, replacement for typeinfo

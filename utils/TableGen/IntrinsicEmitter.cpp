@@ -260,7 +260,8 @@ enum IIT_Info {
   IIT_HALF_VEC_ARG = 29,
   IIT_SAME_VEC_WIDTH_ARG = 30,
   IIT_PTR_TO_ARG = 31,
-  IIT_VEC_OF_PTRS_TO_ELT = 32
+  IIT_VEC_OF_PTRS_TO_ELT = 32,
+  IIT_I128 = 33
 };
 
 
@@ -275,6 +276,7 @@ static void EncodeFixedValueType(MVT::SimpleValueType VT,
     case 16: return Sig.push_back(IIT_I16);
     case 32: return Sig.push_back(IIT_I32);
     case 64: return Sig.push_back(IIT_I64);
+    case 128: return Sig.push_back(IIT_I128);
     }
   }
 
@@ -501,28 +503,6 @@ void IntrinsicEmitter::EmitGenerator(const std::vector<CodeGenIntrinsic> &Ints,
 }
 
 namespace {
-enum ModRefKind {
-  MRK_none,
-  MRK_readonly,
-  MRK_readnone
-};
-}
-
-static ModRefKind getModRefKind(const CodeGenIntrinsic &intrinsic) {
-  switch (intrinsic.ModRef) {
-  case CodeGenIntrinsic::NoMem:
-    return MRK_readnone;
-  case CodeGenIntrinsic::ReadArgMem:
-  case CodeGenIntrinsic::ReadMem:
-    return MRK_readonly;
-  case CodeGenIntrinsic::ReadWriteArgMem:
-  case CodeGenIntrinsic::ReadWriteMem:
-    return MRK_none;
-  }
-  llvm_unreachable("bad mod-ref kind");
-}
-
-namespace {
 struct AttributeComparator {
   bool operator()(const CodeGenIntrinsic *L, const CodeGenIntrinsic *R) const {
     // Sort throwing intrinsics after non-throwing intrinsics.
@@ -535,9 +515,12 @@ struct AttributeComparator {
     if (L->isNoReturn != R->isNoReturn)
       return R->isNoReturn;
 
+    if (L->isConvergent != R->isConvergent)
+      return R->isConvergent;
+
     // Try to order by readonly/readnone attribute.
-    ModRefKind LK = getModRefKind(*L);
-    ModRefKind RK = getModRefKind(*R);
+    CodeGenIntrinsic::ModRefKind LK = L->ModRef;
+    CodeGenIntrinsic::ModRefKind RK = R->ModRef;
     if (LK != RK) return (LK > RK);
 
     // Order by argument attributes.
@@ -631,7 +614,7 @@ EmitAttributes(const std::vector<CodeGenIntrinsic> &Ints, raw_ostream &OS) {
           case CodeGenIntrinsic::ReadNone:
             if (addComma)
               OS << ",";
-            OS << "Attributes::ReadNone";
+            OS << "Attribute::ReadNone";
             addComma = true;
             break;
           }
@@ -644,10 +627,10 @@ EmitAttributes(const std::vector<CodeGenIntrinsic> &Ints, raw_ostream &OS) {
       }
     }
 
-    ModRefKind modRef = getModRefKind(intrinsic);
-
-    if (!intrinsic.canThrow || modRef || intrinsic.isNoReturn ||
-        intrinsic.isNoDuplicate) {
+    if (!intrinsic.canThrow ||
+        intrinsic.ModRef != CodeGenIntrinsic::ReadWriteMem ||
+        intrinsic.isNoReturn || intrinsic.isNoDuplicate ||
+        intrinsic.isConvergent) {
       OS << "      const Attribute::AttrKind Atts[] = {";
       bool addComma = false;
       if (!intrinsic.canThrow) {
@@ -666,18 +649,36 @@ EmitAttributes(const std::vector<CodeGenIntrinsic> &Ints, raw_ostream &OS) {
         OS << "Attribute::NoDuplicate";
         addComma = true;
       }
+      if (intrinsic.isConvergent) {
+        if (addComma)
+          OS << ",";
+        OS << "Attribute::Convergent";
+        addComma = true;
+      }
 
-      switch (modRef) {
-      case MRK_none: break;
-      case MRK_readonly:
+      switch (intrinsic.ModRef) {
+      case CodeGenIntrinsic::NoMem:
+        if (addComma)
+          OS << ",";
+        OS << "Attribute::ReadNone";
+        break;
+      case CodeGenIntrinsic::ReadArgMem:
+        if (addComma)
+          OS << ",";
+        OS << "Attribute::ReadOnly,";
+        OS << "Attribute::ArgMemOnly";
+        break;
+      case CodeGenIntrinsic::ReadMem:
         if (addComma)
           OS << ",";
         OS << "Attribute::ReadOnly";
         break;
-      case MRK_readnone:
+      case CodeGenIntrinsic::ReadWriteArgMem:
         if (addComma)
           OS << ",";
-        OS << "Attribute::ReadNone";
+        OS << "Attribute::ArgMemOnly";
+        break;
+      case CodeGenIntrinsic::ReadWriteMem:
         break;
       }
       OS << "};\n";
@@ -711,29 +712,30 @@ EmitModRefBehavior(const std::vector<CodeGenIntrinsic> &Ints, raw_ostream &OS){
      << "\"Unknown intrinsic.\");\n\n";
 
   OS << "static const uint8_t IntrinsicModRefBehavior[] = {\n"
-     << "  /* invalid */ UnknownModRefBehavior,\n";
+     << "  /* invalid */ FMRB_UnknownModRefBehavior,\n";
   for (unsigned i = 0, e = Ints.size(); i != e; ++i) {
     OS << "  /* " << TargetPrefix << Ints[i].EnumName << " */ ";
     switch (Ints[i].ModRef) {
     case CodeGenIntrinsic::NoMem:
-      OS << "DoesNotAccessMemory,\n";
+      OS << "FMRB_DoesNotAccessMemory,\n";
       break;
     case CodeGenIntrinsic::ReadArgMem:
-      OS << "OnlyReadsArgumentPointees,\n";
+      OS << "FMRB_OnlyReadsArgumentPointees,\n";
       break;
     case CodeGenIntrinsic::ReadMem:
-      OS << "OnlyReadsMemory,\n";
+      OS << "FMRB_OnlyReadsMemory,\n";
       break;
     case CodeGenIntrinsic::ReadWriteArgMem:
-      OS << "OnlyAccessesArgumentPointees,\n";
+      OS << "FMRB_OnlyAccessesArgumentPointees,\n";
       break;
     case CodeGenIntrinsic::ReadWriteMem:
-      OS << "UnknownModRefBehavior,\n";
+      OS << "FMRB_UnknownModRefBehavior,\n";
       break;
     }
   }
   OS << "};\n\n"
-     << "return static_cast<ModRefBehavior>(IntrinsicModRefBehavior[iid]);\n"
+     << "return "
+        "static_cast<FunctionModRefBehavior>(IntrinsicModRefBehavior[iid]);\n"
      << "#endif // GET_INTRINSIC_MODREF_BEHAVIOR\n\n";
 }
 
@@ -749,7 +751,7 @@ static void EmitTargetBuiltins(const std::map<std::string, std::string> &BIM,
        E = BIM.end(); I != E; ++I) {
     std::string ResultCode =
     "return " + TargetPrefix + "Intrinsic::" + I->second + ";";
-    Results.push_back(StringMatcher::StringPair(I->first, ResultCode));
+    Results.emplace_back(I->first, ResultCode);
   }
 
   StringMatcher("BuiltinName", Results, OS).Emit();

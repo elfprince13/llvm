@@ -457,22 +457,34 @@ let Uses = [RM] in {
 
   defm XVCMPEQDP : XX3Form_Rcr<60, 99,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpeqdp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpeqdp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v2i64:$XT,
+                                (int_ppc_vsx_xvcmpeqdp v2f64:$XA, v2f64:$XB))]>;
   defm XVCMPEQSP : XX3Form_Rcr<60, 67,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpeqsp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpeqsp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v4i32:$XT,
+                                (int_ppc_vsx_xvcmpeqsp v4f32:$XA, v4f32:$XB))]>;
   defm XVCMPGEDP : XX3Form_Rcr<60, 115,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpgedp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpgedp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v2i64:$XT,
+                                (int_ppc_vsx_xvcmpgedp v2f64:$XA, v2f64:$XB))]>;
   defm XVCMPGESP : XX3Form_Rcr<60, 83,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpgesp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpgesp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v4i32:$XT,
+                                (int_ppc_vsx_xvcmpgesp v4f32:$XA, v4f32:$XB))]>;
   defm XVCMPGTDP : XX3Form_Rcr<60, 107,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpgtdp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpgtdp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v2i64:$XT,
+                                (int_ppc_vsx_xvcmpgtdp v2f64:$XA, v2f64:$XB))]>;
   defm XVCMPGTSP : XX3Form_Rcr<60, 75,
                              (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                             "xvcmpgtsp", "$XT, $XA, $XB", IIC_VecFPCompare, []>;
+                             "xvcmpgtsp", "$XT, $XA, $XB", IIC_VecFPCompare,
+                             [(set v4i32:$XT,
+                                (int_ppc_vsx_xvcmpgtsp v4f32:$XA, v4f32:$XB))]>;
 
   // Move Instructions
   def XSABSDP : XX2Form<60, 345,
@@ -977,6 +989,18 @@ def : Pat<(int_ppc_vsx_xvdivsp v4f32:$A, v4f32:$B),
 def : Pat<(int_ppc_vsx_xvdivdp v2f64:$A, v2f64:$B),
           (XVDIVDP $A, $B)>;
 
+// Reciprocal estimate
+def : Pat<(int_ppc_vsx_xvresp v4f32:$A),
+          (XVRESP $A)>;
+def : Pat<(int_ppc_vsx_xvredp v2f64:$A),
+          (XVREDP $A)>;
+
+// Recip. square root estimate
+def : Pat<(int_ppc_vsx_xvrsqrtesp v4f32:$A),
+          (XVRSQRTESP $A)>;
+def : Pat<(int_ppc_vsx_xvrsqrtedp v2f64:$A),
+          (XVRSQRTEDP $A)>;
+
 } // AddedComplexity
 } // HasVSX
 
@@ -989,21 +1013,26 @@ def HasP8Vector : Predicate<"PPCSubTarget->hasP8Vector()">;
 def HasDirectMove : Predicate<"PPCSubTarget->hasDirectMove()">;
 let Predicates = [HasP8Vector] in {
 let AddedComplexity = 400 in { // Prefer VSX patterns over non-VSX patterns.
-let isCommutable = 1 in {
-  def XXLEQV : XX3Form<60, 186,
-                       (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                       "xxleqv $XT, $XA, $XB", IIC_VecGeneral,
-                       [(set v4i32:$XT, (vnot_ppc (xor v4i32:$XA, v4i32:$XB)))]>;
-  def XXLNAND : XX3Form<60, 178,
-                        (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                        "xxlnand $XT, $XA, $XB", IIC_VecGeneral,
-                        [(set v4i32:$XT, (vnot_ppc (and v4i32:$XA,
+  let isCommutable = 1 in {
+    def XXLEQV : XX3Form<60, 186,
+                         (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                         "xxleqv $XT, $XA, $XB", IIC_VecGeneral,
+                         [(set v4i32:$XT, (vnot_ppc (xor v4i32:$XA, v4i32:$XB)))]>;
+    def XXLNAND : XX3Form<60, 178,
+                          (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                          "xxlnand $XT, $XA, $XB", IIC_VecGeneral,
+                          [(set v4i32:$XT, (vnot_ppc (and v4i32:$XA,
                                                     v4i32:$XB)))]>;
   } // isCommutable
-def XXLORC : XX3Form<60, 170,
-                     (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
-                     "xxlorc $XT, $XA, $XB", IIC_VecGeneral,
-                     [(set v4i32:$XT, (or v4i32:$XA, (vnot_ppc v4i32:$XB)))]>;
+
+  def : Pat<(int_ppc_vsx_xxleqv v4i32:$A, v4i32:$B),
+            (XXLEQV $A, $B)>;
+
+  def XXLORC : XX3Form<60, 170,
+                       (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                       "xxlorc $XT, $XA, $XB", IIC_VecGeneral,
+                       [(set v4i32:$XT, (or v4i32:$XA, (vnot_ppc v4i32:$XB)))]>;
+
   // VSX scalar loads introduced in ISA 2.07
   let mayLoad = 1 in {
     def LXSSPX : XX1Form<31, 524, (outs vssrc:$XT), (ins memrr:$src),
@@ -1026,42 +1055,226 @@ def XXLORC : XX3Form<60, 170,
                           "stxsiwx $XT, $dst", IIC_LdStSTFD,
                           [(PPCstfiwx f64:$XT, xoaddr:$dst)]>;
   } // mayStore
-def : Pat<(f64 (extloadf32 xoaddr:$src)),
-          (COPY_TO_REGCLASS (LXSSPX xoaddr:$src), VSFRC)>;
-def : Pat<(f64 (fextend f32:$src)),
-          (COPY_TO_REGCLASS $src, VSFRC)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETLT)),
-          (SELECT_VSSRC (CRANDC $rhs, $lhs), $tval, $fval)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETLE)),
-          (SELECT_VSSRC (CRORC  $rhs, $lhs), $tval, $fval)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETEQ)),
-          (SELECT_VSSRC (CREQV $lhs, $rhs), $tval, $fval)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETGE)),
-          (SELECT_VSSRC (CRORC  $lhs, $rhs), $tval, $fval)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETGT)),
-          (SELECT_VSSRC (CRANDC $lhs, $rhs), $tval, $fval)>;
-def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETNE)),
+
+  def : Pat<(f64 (extloadf32 xoaddr:$src)),
+            (COPY_TO_REGCLASS (LXSSPX xoaddr:$src), VSFRC)>;
+  def : Pat<(f64 (fextend f32:$src)),
+            (COPY_TO_REGCLASS $src, VSFRC)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETLT)),
+            (SELECT_VSSRC (CRANDC $rhs, $lhs), $tval, $fval)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETLE)),
+            (SELECT_VSSRC (CRORC  $rhs, $lhs), $tval, $fval)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETEQ)),
+            (SELECT_VSSRC (CREQV $lhs, $rhs), $tval, $fval)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETGE)),
+            (SELECT_VSSRC (CRORC  $lhs, $rhs), $tval, $fval)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETGT)),
+            (SELECT_VSSRC (CRANDC $lhs, $rhs), $tval, $fval)>;
+  def : Pat<(f32 (selectcc i1:$lhs, i1:$rhs, f32:$tval, f32:$fval, SETNE)),
           (SELECT_VSSRC (CRXOR $lhs, $rhs), $tval, $fval)>;
+
+  // VSX Elementary Scalar FP arithmetic (SP)
+  let isCommutable = 1 in {
+    def XSADDSP : XX3Form<60, 0,
+                          (outs vssrc:$XT), (ins vssrc:$XA, vssrc:$XB),
+                          "xsaddsp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fadd f32:$XA, f32:$XB))]>;
+    def XSMULSP : XX3Form<60, 16,
+                          (outs vssrc:$XT), (ins vssrc:$XA, vssrc:$XB),
+                          "xsmulsp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fmul f32:$XA, f32:$XB))]>;
+  } // isCommutable
+
+  def XSDIVSP : XX3Form<60, 24,
+                        (outs vssrc:$XT), (ins vssrc:$XA, vssrc:$XB),
+                        "xsdivsp $XT, $XA, $XB", IIC_FPDivS,
+                        [(set f32:$XT, (fdiv f32:$XA, f32:$XB))]>;
+  def XSRESP : XX2Form<60, 26,
+                        (outs vssrc:$XT), (ins vssrc:$XB),
+                        "xsresp $XT, $XB", IIC_VecFP,
+                        [(set f32:$XT, (PPCfre f32:$XB))]>;
+  def XSSQRTSP : XX2Form<60, 11,
+                        (outs vssrc:$XT), (ins vssrc:$XB),
+                        "xssqrtsp $XT, $XB", IIC_FPSqrtS,
+                        [(set f32:$XT, (fsqrt f32:$XB))]>;
+  def XSRSQRTESP : XX2Form<60, 10,
+                           (outs vssrc:$XT), (ins vssrc:$XB),
+                           "xsrsqrtesp $XT, $XB", IIC_VecFP,
+                           [(set f32:$XT, (PPCfrsqrte f32:$XB))]>;
+  def XSSUBSP : XX3Form<60, 8,
+                        (outs vssrc:$XT), (ins vssrc:$XA, vssrc:$XB),
+                        "xssubsp $XT, $XA, $XB", IIC_VecFP,
+                        [(set f32:$XT, (fsub f32:$XA, f32:$XB))]>;
+
+  // FMA Instructions
+  let BaseName = "XSMADDASP" in {
+  let isCommutable = 1 in
+  def XSMADDASP : XX3Form<60, 1,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsmaddasp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fma f32:$XA, f32:$XB, f32:$XTi))]>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  let IsVSXFMAAlt = 1 in
+  def XSMADDMSP : XX3Form<60, 9,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsmaddmsp $XT, $XA, $XB", IIC_VecFP, []>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  }
+
+  let BaseName = "XSMSUBASP" in {
+  let isCommutable = 1 in
+  def XSMSUBASP : XX3Form<60, 17,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsmsubasp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fma f32:$XA, f32:$XB,
+                                              (fneg f32:$XTi)))]>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  let IsVSXFMAAlt = 1 in
+  def XSMSUBMSP : XX3Form<60, 25,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsmsubmsp $XT, $XA, $XB", IIC_VecFP, []>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  }
+
+  let BaseName = "XSNMADDASP" in {
+  let isCommutable = 1 in
+  def XSNMADDASP : XX3Form<60, 129,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsnmaddasp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fneg (fma f32:$XA, f32:$XB,
+                                                    f32:$XTi)))]>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  let IsVSXFMAAlt = 1 in
+  def XSNMADDMSP : XX3Form<60, 137,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsnmaddmsp $XT, $XA, $XB", IIC_VecFP, []>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  }
+
+  let BaseName = "XSNMSUBASP" in {
+  let isCommutable = 1 in
+  def XSNMSUBASP : XX3Form<60, 145,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsnmsubasp $XT, $XA, $XB", IIC_VecFP,
+                          [(set f32:$XT, (fneg (fma f32:$XA, f32:$XB,
+                                                    (fneg f32:$XTi))))]>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  let IsVSXFMAAlt = 1 in
+  def XSNMSUBMSP : XX3Form<60, 153,
+                          (outs vssrc:$XT),
+                          (ins vssrc:$XTi, vssrc:$XA, vssrc:$XB),
+                          "xsnmsubmsp $XT, $XA, $XB", IIC_VecFP, []>,
+                          RegConstraint<"$XTi = $XT">, NoEncode<"$XTi">,
+                          AltVSXFMARel;
+  }
+
+  // Single Precision Conversions (FP <-> INT)
+  def XSCVSXDSP : XX2Form<60, 312,
+                      (outs vssrc:$XT), (ins vsfrc:$XB),
+                      "xscvsxdsp $XT, $XB", IIC_VecFP,
+                      [(set f32:$XT, (PPCfcfids f64:$XB))]>;
+  def XSCVUXDSP : XX2Form<60, 296,
+                      (outs vssrc:$XT), (ins vsfrc:$XB),
+                      "xscvuxdsp $XT, $XB", IIC_VecFP,
+                      [(set f32:$XT, (PPCfcfidus f64:$XB))]>;
+
+  // Conversions between vector and scalar single precision
+  def XSCVDPSPN : XX2Form<60, 267, (outs vsrc:$XT), (ins vssrc:$XB),
+                          "xscvdpspn $XT, $XB", IIC_VecFP, []>;
+  def XSCVSPDPN : XX2Form<60, 331, (outs vssrc:$XT), (ins vsrc:$XB),
+                          "xscvspdpn $XT, $XB", IIC_VecFP, []>;
+
 } // AddedComplexity = 400
 } // HasP8Vector
 
 let Predicates = [HasDirectMove, HasVSX] in {
-// VSX direct move instructions
-def MFVSRD : XX1_RS6_RD5_XO<31, 51, (outs g8rc:$rA), (ins vsfrc:$XT),
-                            "mfvsrd $rA, $XT", IIC_VecGeneral,
-                            [(set i64:$rA, (PPCmfvsr f64:$XT))]>,
-    Requires<[In64BitMode]>;
-def MFVSRWZ : XX1_RS6_RD5_XO<31, 115, (outs gprc:$rA), (ins vsfrc:$XT),
-                             "mfvsrwz $rA, $XT", IIC_VecGeneral,
-                             [(set i32:$rA, (PPCmfvsr f64:$XT))]>;
-def MTVSRD : XX1_RS6_RD5_XO<31, 179, (outs vsfrc:$XT), (ins g8rc:$rA),
-                            "mtvsrd $XT, $rA", IIC_VecGeneral,
-                            [(set f64:$XT, (PPCmtvsra i64:$rA))]>,
-    Requires<[In64BitMode]>;
-def MTVSRWA : XX1_RS6_RD5_XO<31, 211, (outs vsfrc:$XT), (ins gprc:$rA),
-                             "mtvsrwa $XT, $rA", IIC_VecGeneral,
-                             [(set f64:$XT, (PPCmtvsra i32:$rA))]>;
-def MTVSRWZ : XX1_RS6_RD5_XO<31, 243, (outs vsfrc:$XT), (ins gprc:$rA),
-                             "mtvsrwz $XT, $rA", IIC_VecGeneral,
-                             [(set f64:$XT, (PPCmtvsrz i32:$rA))]>;
+  // VSX direct move instructions
+  def MFVSRD : XX1_RS6_RD5_XO<31, 51, (outs g8rc:$rA), (ins vsfrc:$XT),
+                              "mfvsrd $rA, $XT", IIC_VecGeneral,
+                              [(set i64:$rA, (PPCmfvsr f64:$XT))]>,
+      Requires<[In64BitMode]>;
+  def MFVSRWZ : XX1_RS6_RD5_XO<31, 115, (outs gprc:$rA), (ins vsfrc:$XT),
+                               "mfvsrwz $rA, $XT", IIC_VecGeneral,
+                               [(set i32:$rA, (PPCmfvsr f64:$XT))]>;
+  def MTVSRD : XX1_RS6_RD5_XO<31, 179, (outs vsfrc:$XT), (ins g8rc:$rA),
+                              "mtvsrd $XT, $rA", IIC_VecGeneral,
+                              [(set f64:$XT, (PPCmtvsra i64:$rA))]>,
+      Requires<[In64BitMode]>;
+  def MTVSRWA : XX1_RS6_RD5_XO<31, 211, (outs vsfrc:$XT), (ins gprc:$rA),
+                               "mtvsrwa $XT, $rA", IIC_VecGeneral,
+                               [(set f64:$XT, (PPCmtvsra i32:$rA))]>;
+  def MTVSRWZ : XX1_RS6_RD5_XO<31, 243, (outs vsfrc:$XT), (ins gprc:$rA),
+                               "mtvsrwz $XT, $rA", IIC_VecGeneral,
+                               [(set f64:$XT, (PPCmtvsrz i32:$rA))]>;
 } // HasDirectMove, HasVSX
+
+/*  Direct moves of various size entities from GPR's into VSR's. Each lines
+    the value up into element 0 (both BE and LE). Namely, entities smaller than
+    a doubleword are shifted left and moved for BE. For LE, they're moved, then
+    swapped to go into the least significant element of the VSR.
+*/
+def Moves {
+  dag BE_BYTE_0 = (MTVSRD
+                  (RLDICR
+                    (INSERT_SUBREG (i64 (IMPLICIT_DEF)), $A, sub_32), 56, 7));
+  dag BE_HALF_0 = (MTVSRD
+                  (RLDICR
+                    (INSERT_SUBREG (i64 (IMPLICIT_DEF)), $A, sub_32), 48, 15));
+  dag BE_WORD_0 = (MTVSRD
+                  (RLDICR
+                    (INSERT_SUBREG (i64 (IMPLICIT_DEF)), $A, sub_32), 32, 31));
+  dag BE_DWORD_0 = (MTVSRD $A);
+
+  dag LE_MTVSRW = (MTVSRD (INSERT_SUBREG (i64 (IMPLICIT_DEF)), $A, sub_32));
+  dag LE_WORD_1 = (v2i64 (COPY_TO_REGCLASS LE_MTVSRW, VSRC));
+  dag LE_WORD_0 = (XXPERMDI LE_WORD_1, LE_WORD_1, 2);
+  dag LE_DWORD_1 = (v2i64 (COPY_TO_REGCLASS BE_DWORD_0, VSRC));
+  dag LE_DWORD_0 = (XXPERMDI LE_DWORD_1, LE_DWORD_1, 2);
+}
+
+let Predicates = [IsBigEndian, HasP8Vector] in {
+  def : Pat<(v4f32 (scalar_to_vector f32:$A)),
+            (v4f32 (XSCVDPSPN $A))>;
+} // IsBigEndian, HasP8Vector
+
+let Predicates = [IsBigEndian, HasDirectMove] in {
+  def : Pat<(v16i8 (scalar_to_vector i32:$A)),
+            (v16i8 (COPY_TO_REGCLASS Moves.BE_BYTE_0, VSRC))>;
+  def : Pat<(v8i16 (scalar_to_vector i32:$A)),
+            (v8i16 (COPY_TO_REGCLASS Moves.BE_HALF_0, VSRC))>;
+  def : Pat<(v4i32 (scalar_to_vector i32:$A)),
+            (v4i32 (COPY_TO_REGCLASS Moves.BE_WORD_0, VSRC))>;
+  def : Pat<(v2i64 (scalar_to_vector i64:$A)),
+            (v2i64 (COPY_TO_REGCLASS Moves.BE_DWORD_0, VSRC))>;
+} // IsBigEndian, HasDirectMove
+
+let Predicates = [IsLittleEndian, HasP8Vector] in {
+  def : Pat<(v4f32 (scalar_to_vector f32:$A)),
+            (v4f32 (XXSLDWI (XSCVDPSPN $A), (XSCVDPSPN $A), 1))>;
+} // IsLittleEndian, HasP8Vector
+
+let Predicates = [IsLittleEndian, HasDirectMove] in {
+  def : Pat<(v16i8 (scalar_to_vector i32:$A)),
+            (v16i8 (COPY_TO_REGCLASS Moves.LE_WORD_0, VSRC))>;
+  def : Pat<(v8i16 (scalar_to_vector i32:$A)),
+            (v8i16 (COPY_TO_REGCLASS Moves.LE_WORD_0, VSRC))>;
+  def : Pat<(v4i32 (scalar_to_vector i32:$A)),
+            (v4i32 (COPY_TO_REGCLASS Moves.LE_WORD_0, VSRC))>;
+  def : Pat<(v2i64 (scalar_to_vector i64:$A)),
+            (v2i64 Moves.LE_DWORD_0)>;
+} // IsLittleEndian, HasDirectMove
+

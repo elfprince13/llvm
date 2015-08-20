@@ -18,6 +18,13 @@
 #include "llvm/MC/MCInstrInfo.h"
 
 namespace llvm {
+/// Prints bundles as a newline separated list of individual instructions
+/// Duplexes are separated by a vertical tab \v character
+/// A trailing line includes bundle properties such as endloop0/1
+///
+/// r0 = add(r1, r2)
+/// r0 = #0 \v jump 0x0
+/// :endloop0 :endloop1
   class HexagonInstPrinter : public MCInstPrinter {
   public:
     explicit HexagonInstPrinter(MCAsmInfo const &MAI,
@@ -74,11 +81,11 @@ namespace llvm {
     void printSymbol(const MCInst *MI, unsigned OpNo, raw_ostream &O, bool hi)
            const;
 
-    static const char PacketPadding;
-
   private:
     const MCInstrInfo &MII;
 
+    bool HasExtender;
+    void setExtender(MCInst const &MCI);
   };
 
 } // end namespace llvm

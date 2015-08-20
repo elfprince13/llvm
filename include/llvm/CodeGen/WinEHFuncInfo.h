@@ -23,6 +23,7 @@ class BasicBlock;
 class Constant;
 class Function;
 class GlobalVariable;
+class InvokeInst;
 class IntrinsicInst;
 class LandingPadInst;
 class MCSymbol;
@@ -90,7 +91,7 @@ private:
   // When the parseEHActions function is called to populate a vector of
   // instances of this class, the ExceptionObjectVar field will be nullptr
   // and the ExceptionObjectIndex will be the index of the exception object in
-  // the parent function's frameescape block.
+  // the parent function's localescape block.
   const Value *ExceptionObjectVar;
   int ExceptionObjectIndex;
   TinyPtrVector<BasicBlock *> ReturnTargets;
@@ -107,32 +108,36 @@ public:
 };
 
 void parseEHActions(const IntrinsicInst *II,
-  SmallVectorImpl<ActionHandler *> &Actions);
-
+                    SmallVectorImpl<std::unique_ptr<ActionHandler>> &Actions);
 
 // The following structs respresent the .xdata for functions using C++
 // exceptions on Windows.
 
 struct WinEHUnwindMapEntry {
   int ToState;
-  Function *Cleanup;
+  const Value *Cleanup;
 };
 
 struct WinEHHandlerType {
   int Adjectives;
   GlobalVariable *TypeDescriptor;
   int CatchObjRecoverIdx;
-  Function *Handler;
+  const Value *Handler;
 };
 
 struct WinEHTryBlockMapEntry {
   int TryLow;
   int TryHigh;
+  int CatchHigh = -1;
   SmallVector<WinEHHandlerType, 1> HandlerArray;
 };
 
 struct WinEHFuncInfo {
-  DenseMap<const LandingPadInst *, int> LandingPadStateMap;
+  DenseMap<const Function *, const LandingPadInst *> RootLPad;
+  DenseMap<const Function *, const InvokeInst *> LastInvoke;
+  DenseMap<const Function *, int> HandlerEnclosedState;
+  DenseMap<const Function *, bool> LastInvokeVisited;
+  DenseMap<const Instruction *, int> EHPadStateMap;
   DenseMap<const Function *, int> CatchHandlerParentFrameObjIdx;
   DenseMap<const Function *, int> CatchHandlerParentFrameObjOffset;
   DenseMap<const Function *, int> CatchHandlerMaxState;
@@ -140,15 +145,24 @@ struct WinEHFuncInfo {
   SmallVector<WinEHUnwindMapEntry, 4> UnwindMap;
   SmallVector<WinEHTryBlockMapEntry, 4> TryBlockMap;
   SmallVector<std::pair<MCSymbol *, int>, 4> IPToStateList;
-  int UnwindHelpFrameIdx;
-  int UnwindHelpFrameOffset;
+  int UnwindHelpFrameIdx = INT_MAX;
+  int UnwindHelpFrameOffset = -1;
+  unsigned NumIPToStateFuncsVisited = 0;
 
-  unsigned NumIPToStateFuncsVisited;
+  int getLastStateNumber() const { return UnwindMap.size() - 1; }
 
-  WinEHFuncInfo()
-      : UnwindHelpFrameIdx(INT_MAX), UnwindHelpFrameOffset(-1),
-        NumIPToStateFuncsVisited(0) {}
+  /// localescape index of the 32-bit EH registration node. Set by
+  /// WinEHStatePass and used indirectly by SEH filter functions of the parent.
+  int EHRegNodeEscapeIndex = INT_MAX;
+
+  WinEHFuncInfo() {}
 };
+
+/// Analyze the IR in ParentFn and it's handlers to build WinEHFuncInfo, which
+/// describes the state numbers and tables used by __CxxFrameHandler3. This
+/// analysis assumes that WinEHPrepare has already been run.
+void calculateWinCXXEHStateNumbers(const Function *ParentFn,
+                                   WinEHFuncInfo &FuncInfo);
 
 }
 #endif // LLVM_CODEGEN_WINEHFUNCINFO_H

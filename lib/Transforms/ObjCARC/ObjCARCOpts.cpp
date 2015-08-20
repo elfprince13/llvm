@@ -28,7 +28,6 @@
 #include "ARCRuntimeEntryPoints.h"
 #include "BlotMapVector.h"
 #include "DependencyAnalysis.h"
-#include "ObjCARCAliasAnalysis.h"
 #include "ProvenanceAnalysis.h"
 #include "PtrState.h"
 #include "llvm/ADT/DenseMap.h"
@@ -36,6 +35,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/ObjCARCAliasAnalysis.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
@@ -482,7 +482,7 @@ namespace {
     /// A flag indicating whether this optimization pass should run.
     bool Run;
 
-    /// Flags which determine whether each of the interesting runtine functions
+    /// Flags which determine whether each of the interesting runtime functions
     /// is in fact used in the current function.
     unsigned UsedInThisFunction;
 
@@ -1264,7 +1264,7 @@ ObjCARCOpt::VisitInstructionTopDown(Instruction *Inst,
     Arg = GetArgRCIdentityRoot(Inst);
     TopDownPtrState &S = MyStates.getPtrTopDownState(Arg);
     NestingDetected |= S.InitTopDown(Class, Inst);
-    // A retain can be a potential use; procede to the generic checking
+    // A retain can be a potential use; proceed to the generic checking
     // code below.
     break;
   }
@@ -1846,7 +1846,7 @@ void ObjCARCOpt::OptimizeWeakCalls(Function &F) {
         Value *Arg = Call->getArgOperand(0);
         Value *EarlierArg = EarlierCall->getArgOperand(0);
         switch (PA.getAA()->alias(Arg, EarlierArg)) {
-        case AliasAnalysis::MustAlias:
+        case MustAlias:
           Changed = true;
           // If the load has a builtin retain, insert a plain retain for it.
           if (Class == ARCInstKind::LoadWeakRetained) {
@@ -1858,10 +1858,10 @@ void ObjCARCOpt::OptimizeWeakCalls(Function &F) {
           Call->replaceAllUsesWith(EarlierCall);
           Call->eraseFromParent();
           goto clobbered;
-        case AliasAnalysis::MayAlias:
-        case AliasAnalysis::PartialAlias:
+        case MayAlias:
+        case PartialAlias:
           goto clobbered;
-        case AliasAnalysis::NoAlias:
+        case NoAlias:
           break;
         }
         break;
@@ -1875,7 +1875,7 @@ void ObjCARCOpt::OptimizeWeakCalls(Function &F) {
         Value *Arg = Call->getArgOperand(0);
         Value *EarlierArg = EarlierCall->getArgOperand(0);
         switch (PA.getAA()->alias(Arg, EarlierArg)) {
-        case AliasAnalysis::MustAlias:
+        case MustAlias:
           Changed = true;
           // If the load has a builtin retain, insert a plain retain for it.
           if (Class == ARCInstKind::LoadWeakRetained) {
@@ -1887,10 +1887,10 @@ void ObjCARCOpt::OptimizeWeakCalls(Function &F) {
           Call->replaceAllUsesWith(EarlierCall->getArgOperand(1));
           Call->eraseFromParent();
           goto clobbered;
-        case AliasAnalysis::MayAlias:
-        case AliasAnalysis::PartialAlias:
+        case MayAlias:
+        case PartialAlias:
           goto clobbered;
-        case AliasAnalysis::NoAlias:
+        case NoAlias:
           break;
         }
         break;

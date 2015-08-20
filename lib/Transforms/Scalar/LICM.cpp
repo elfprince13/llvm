@@ -82,8 +82,10 @@ static bool isGuaranteedToExecute(const Instruction &Inst,
                                   const LICMSafetyInfo *SafetyInfo);
 static bool isSafeToExecuteUnconditionally(const Instruction &Inst,
                                            const DominatorTree *DT,
+                                           const TargetLibraryInfo *TLI,
                                            const Loop *CurLoop,
-                                           const LICMSafetyInfo *SafetyInfo);
+                                           const LICMSafetyInfo *SafetyInfo,
+                                           const Instruction *CtxI = nullptr);
 static bool pointerInvalidatedByLoop(Value *V, uint64_t Size,
                                      const AAMDNodes &AAInfo, 
                                      AliasSetTracker *CurAST);
@@ -92,8 +94,8 @@ static Instruction *CloneInstructionInExitBlock(const Instruction &I,
                                                 PHINode &PN,
                                                 const LoopInfo *LI);
 static bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA,
-                               DominatorTree *DT, Loop *CurLoop,
-                               AliasSetTracker *CurAST,
+                               DominatorTree *DT, TargetLibraryInfo *TLI,
+                               Loop *CurLoop, AliasSetTracker *CurAST,
                                LICMSafetyInfo *SafetyInfo);
 
 namespace {
@@ -118,7 +120,7 @@ namespace {
       AU.addPreservedID(LCSSAID);
       AU.addRequired<AliasAnalysis>();
       AU.addPreserved<AliasAnalysis>();
-      AU.addPreserved<ScalarEvolution>();
+      AU.addPreserved<ScalarEvolutionWrapperPass>();
       AU.addRequired<TargetLibraryInfoWrapperPass>();
     }
 
@@ -162,7 +164,7 @@ INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(LCSSA)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
 INITIALIZE_PASS_END(LICM, "licm", "Loop Invariant Code Motion", false, false)
@@ -262,9 +264,10 @@ bool LICM::runOnLoop(Loop *L, LPPassManager &LPM) {
     // FIXME: This is really heavy handed. It would be a bit better to use an
     // SSAUpdater strategy during promotion that was LCSSA aware and reformed
     // it as it went.
-    if (Changed)
-      formLCSSARecursively(*L, *DT, LI,
-                           getAnalysisIfAvailable<ScalarEvolution>());
+    if (Changed) {
+      auto *SEWP = getAnalysisIfAvailable<ScalarEvolutionWrapperPass>();
+      formLCSSARecursively(*L, *DT, LI, SEWP ? &SEWP->getSE() : nullptr);
+    }
   }
 
   // Check that neither this loop nor its parent have had LCSSA broken. LICM is
@@ -337,7 +340,7 @@ bool llvm::sinkRegion(DomTreeNode *N, AliasAnalysis *AA, LoopInfo *LI,
     // operands of the instruction are loop invariant.
     //
     if (isNotUsedInLoop(I, CurLoop) &&
-        canSinkOrHoistInst(I, AA, DT, CurLoop, CurAST, SafetyInfo)) {
+        canSinkOrHoistInst(I, AA, DT, TLI, CurLoop, CurAST, SafetyInfo)) {
       ++II;
       Changed |= sink(I, LI, DT, CurLoop, CurAST);
     }
@@ -386,8 +389,9 @@ bool llvm::hoistRegion(DomTreeNode *N, AliasAnalysis *AA, LoopInfo *LI,
       // is safe to hoist the instruction.
       //
       if (CurLoop->hasLoopInvariantOperands(&I) &&
-          canSinkOrHoistInst(I, AA, DT, CurLoop, CurAST, SafetyInfo) &&
-          isSafeToExecuteUnconditionally(I, DT, CurLoop, SafetyInfo))
+          canSinkOrHoistInst(I, AA, DT, TLI, CurLoop, CurAST, SafetyInfo) &&
+          isSafeToExecuteUnconditionally(I, DT, TLI, CurLoop, SafetyInfo,
+                                 CurLoop->getLoopPreheader()->getTerminator()))
         Changed |= hoist(I, CurLoop->getLoopPreheader());
     }
 
@@ -399,7 +403,7 @@ bool llvm::hoistRegion(DomTreeNode *N, AliasAnalysis *AA, LoopInfo *LI,
 }
 
 /// Computes loop safety information, checks loop body & header
-/// for the possiblity of may throw exception.
+/// for the possibility of may throw exception.
 ///
 void llvm::computeLICMSafetyInfo(LICMSafetyInfo * SafetyInfo, Loop * CurLoop) {
   assert(CurLoop != nullptr && "CurLoop cant be null");
@@ -407,7 +411,7 @@ void llvm::computeLICMSafetyInfo(LICMSafetyInfo * SafetyInfo, Loop * CurLoop) {
   // Setting default safety values.
   SafetyInfo->MayThrow = false;
   SafetyInfo->HeaderMayThrow = false;
-  // Iterate over header and compute dafety info.
+  // Iterate over header and compute safety info.
   for (BasicBlock::iterator I = Header->begin(), E = Header->end();
        (I != E) && !SafetyInfo->HeaderMayThrow; ++I)
     SafetyInfo->HeaderMayThrow |= I->mayThrow();
@@ -425,8 +429,8 @@ void llvm::computeLICMSafetyInfo(LICMSafetyInfo * SafetyInfo, Loop * CurLoop) {
 /// instruction.
 ///
 bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
-                        Loop *CurLoop, AliasSetTracker *CurAST,
-                        LICMSafetyInfo *SafetyInfo) {
+                        TargetLibraryInfo *TLI, Loop *CurLoop,
+                        AliasSetTracker *CurAST, LICMSafetyInfo *SafetyInfo) {
   // Loads have extra constraints we have to verify before we can hoist them.
   if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
     if (!LI->isUnordered())
@@ -442,7 +446,7 @@ bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
     // Don't hoist loads which have may-aliased stores in loop.
     uint64_t Size = 0;
     if (LI->getType()->isSized())
-      Size = AA->getTypeStoreSize(LI->getType());
+      Size = I.getModule()->getDataLayout().getTypeStoreSize(LI->getType());
 
     AAMDNodes AAInfo;
     LI->getAAMetadata(AAInfo);
@@ -454,8 +458,8 @@ bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
       return false;
 
     // Handle simple cases by querying alias analysis.
-    AliasAnalysis::ModRefBehavior Behavior = AA->getModRefBehavior(CI);
-    if (Behavior == AliasAnalysis::DoesNotAccessMemory)
+    FunctionModRefBehavior Behavior = AA->getModRefBehavior(CI);
+    if (Behavior == FMRB_DoesNotAccessMemory)
       return true;
     if (AliasAnalysis::onlyReadsMemory(Behavior)) {
       // If this call only reads from memory and there are no writes to memory
@@ -486,7 +490,11 @@ bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
       !isa<InsertValueInst>(I))
     return false;
 
-  return isSafeToExecuteUnconditionally(I, DT, CurLoop, SafetyInfo);
+  // TODO: Plumb the context instruction through to make hoisting and sinking
+  // more powerful. Hoisting of loads already works due to the special casing
+  // above. 
+  return isSafeToExecuteUnconditionally(I, DT, TLI, CurLoop, SafetyInfo,
+                                        nullptr);
 }
 
 /// Returns true if a PHINode is a trivially replaceable with an
@@ -595,13 +603,24 @@ static bool sink(Instruction &I, const LoopInfo *LI, const DominatorTree *DT,
   // PHI nodes in exit blocks due to LCSSA form. Just RAUW them with clones of
   // the instruction.
   while (!I.use_empty()) {
-    Instruction *User = I.user_back();
+    Value::user_iterator UI = I.user_begin();
+    auto *User = cast<Instruction>(*UI);
     if (!DT->isReachableFromEntry(User->getParent())) {
       User->replaceUsesOfWith(&I, UndefValue::get(I.getType()));
       continue;
     }
     // The user must be a PHI node.
     PHINode *PN = cast<PHINode>(User);
+
+    // Surprisingly, instructions can be used outside of loops without any
+    // exits.  This can only happen in PHI nodes if the incoming block is
+    // unreachable.
+    Use &U = UI.getUse();
+    BasicBlock *BB = PN->getIncomingBlock(U);
+    if (!DT->isReachableFromEntry(BB)) {
+      U = UndefValue::get(I.getType());
+      continue;
+    }
 
     BasicBlock *ExitBlock = PN->getParent();
     assert(ExitBlockSet.count(ExitBlock) &&
@@ -639,15 +658,16 @@ static bool hoist(Instruction &I, BasicBlock *Preheader) {
   return true;
 }
 
-/// Only sink or hoist an instruction if it is not a trapping instruction
+/// Only sink or hoist an instruction if it is not a trapping instruction,
+/// or if the instruction is known not to trap when moved to the preheader.
 /// or if it is a trapping instruction and is guaranteed to execute.
-///
-static bool isSafeToExecuteUnconditionally(const Instruction &Inst,
+static bool isSafeToExecuteUnconditionally(const Instruction &Inst, 
                                            const DominatorTree *DT,
+                                           const TargetLibraryInfo *TLI,
                                            const Loop *CurLoop,
-                                           const LICMSafetyInfo *SafetyInfo) {
-  // If it is not a trapping instruction, it is always safe to hoist.
-  if (isSafeToSpeculativelyExecute(&Inst))
+                                           const LICMSafetyInfo *SafetyInfo,
+                                           const Instruction *CtxI) {
+  if (isSafeToSpeculativelyExecute(&Inst, CtxI, DT, TLI))
     return true;
 
   return isGuaranteedToExecute(Inst, DT, CurLoop, SafetyInfo);
@@ -954,7 +974,7 @@ bool llvm::promoteLoopAccessesToScalars(AliasSet &AS,
   return Changed;
 }
 
-/// Simple Analysis hook. Clone alias set info.
+/// Simple analysis hook. Clone alias set info.
 ///
 void LICM::cloneBasicBlockAnalysis(BasicBlock *From, BasicBlock *To, Loop *L) {
   AliasSetTracker *AST = LoopToAliasSetMap.lookup(L);

@@ -16,6 +16,7 @@
 #include "SparcSubtarget.h"
 #include "llvm/MC/MCDisassembler.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -106,6 +107,23 @@ static const unsigned QFPRegDecoderTable[] = {
 static const unsigned FCCRegDecoderTable[] = {
   SP::FCC0, SP::FCC1, SP::FCC2, SP::FCC3 };
 
+static const unsigned ASRRegDecoderTable[] = {
+  SP::Y,     SP::ASR1,  SP::ASR2,  SP::ASR3,
+  SP::ASR4,  SP::ASR5,  SP::ASR6,  SP::ASR7,
+  SP::ASR8,  SP::ASR9,  SP::ASR10, SP::ASR11,
+  SP::ASR12, SP::ASR13, SP::ASR14, SP::ASR15,
+  SP::ASR16, SP::ASR17, SP::ASR18, SP::ASR19,
+  SP::ASR20, SP::ASR21, SP::ASR22, SP::ASR23,
+  SP::ASR24, SP::ASR25, SP::ASR26, SP::ASR27,
+  SP::ASR28, SP::ASR29, SP::ASR30, SP::ASR31};
+
+static const uint16_t IntPairDecoderTable[] = {
+  SP::G0_G1, SP::G2_G3, SP::G4_G5, SP::G6_G7,
+  SP::O0_O1, SP::O2_O3, SP::O4_O5, SP::O6_O7,
+  SP::L0_L1, SP::L2_L3, SP::L4_L5, SP::L6_L7,
+  SP::I0_I1, SP::I2_I3, SP::I4_I5, SP::I6_I7,
+};
+
 static DecodeStatus DecodeIntRegsRegisterClass(MCInst &Inst,
                                                unsigned RegNo,
                                                uint64_t Address,
@@ -176,8 +194,33 @@ static DecodeStatus DecodeFCCRegsRegisterClass(MCInst &Inst, unsigned RegNo,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeASRRegsRegisterClass(MCInst &Inst, unsigned RegNo,
+                                               uint64_t Address,
+                                               const void *Decoder) {
+  if (RegNo > 31)
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(ASRRegDecoderTable[RegNo]));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeIntPairRegisterClass(MCInst &Inst, unsigned RegNo,
+                                   uint64_t Address, const void *Decoder) {
+  DecodeStatus S = MCDisassembler::Success;
+
+  if (RegNo > 31)
+    return MCDisassembler::Fail;
+
+  if ((RegNo & 1))
+    S = MCDisassembler::SoftFail;
+
+  unsigned RegisterPair = IntPairDecoderTable[RegNo/2];
+  Inst.addOperand(MCOperand::createReg(RegisterPair));
+  return S;
+}
 
 static DecodeStatus DecodeLoadInt(MCInst &Inst, unsigned insn, uint64_t Address,
+                                  const void *Decoder);
+static DecodeStatus DecodeLoadIntPair(MCInst &Inst, unsigned insn, uint64_t Address,
                                   const void *Decoder);
 static DecodeStatus DecodeLoadFP(MCInst &Inst, unsigned insn, uint64_t Address,
                                  const void *Decoder);
@@ -186,6 +229,8 @@ static DecodeStatus DecodeLoadDFP(MCInst &Inst, unsigned insn, uint64_t Address,
 static DecodeStatus DecodeLoadQFP(MCInst &Inst, unsigned insn, uint64_t Address,
                                   const void *Decoder);
 static DecodeStatus DecodeStoreInt(MCInst &Inst, unsigned insn,
+                                   uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeStoreIntPair(MCInst &Inst, unsigned insn,
                                    uint64_t Address, const void *Decoder);
 static DecodeStatus DecodeStoreFP(MCInst &Inst, unsigned insn,
                                   uint64_t Address, const void *Decoder);
@@ -259,6 +304,8 @@ static DecodeStatus DecodeMem(MCInst &MI, unsigned insn, uint64_t Address,
   unsigned rd = fieldFromInstruction(insn, 25, 5);
   unsigned rs1 = fieldFromInstruction(insn, 14, 5);
   bool isImm = fieldFromInstruction(insn, 13, 1);
+  bool hasAsi = fieldFromInstruction(insn, 23, 1); // (in op3 field)
+  unsigned asi = fieldFromInstruction(insn, 5, 8);
   unsigned rs2 = 0;
   unsigned simm13 = 0;
   if (isImm)
@@ -287,6 +334,9 @@ static DecodeStatus DecodeMem(MCInst &MI, unsigned insn, uint64_t Address,
       return status;
   }
 
+  if (hasAsi)
+    MI.addOperand(MCOperand::createImm(asi));
+
   if (!isLoad) {
     status = DecodeRD(MI, rd, Address, Decoder);
     if (status != MCDisassembler::Success)
@@ -299,6 +349,12 @@ static DecodeStatus DecodeLoadInt(MCInst &Inst, unsigned insn, uint64_t Address,
                                   const void *Decoder) {
   return DecodeMem(Inst, insn, Address, Decoder, true,
                    DecodeIntRegsRegisterClass);
+}
+
+static DecodeStatus DecodeLoadIntPair(MCInst &Inst, unsigned insn, uint64_t Address,
+                                  const void *Decoder) {
+  return DecodeMem(Inst, insn, Address, Decoder, true,
+                   DecodeIntPairRegisterClass);
 }
 
 static DecodeStatus DecodeLoadFP(MCInst &Inst, unsigned insn, uint64_t Address,
@@ -323,6 +379,12 @@ static DecodeStatus DecodeStoreInt(MCInst &Inst, unsigned insn,
                                    uint64_t Address, const void *Decoder) {
   return DecodeMem(Inst, insn, Address, Decoder, false,
                    DecodeIntRegsRegisterClass);
+}
+
+static DecodeStatus DecodeStoreIntPair(MCInst &Inst, unsigned insn,
+                                   uint64_t Address, const void *Decoder) {
+  return DecodeMem(Inst, insn, Address, Decoder, false,
+                   DecodeIntPairRegisterClass);
 }
 
 static DecodeStatus DecodeStoreFP(MCInst &Inst, unsigned insn, uint64_t Address,
@@ -437,6 +499,8 @@ static DecodeStatus DecodeSWAP(MCInst &MI, unsigned insn, uint64_t Address,
   unsigned rd = fieldFromInstruction(insn, 25, 5);
   unsigned rs1 = fieldFromInstruction(insn, 14, 5);
   unsigned isImm = fieldFromInstruction(insn, 13, 1);
+  bool hasAsi = fieldFromInstruction(insn, 23, 1); // (in op3 field)
+  unsigned asi = fieldFromInstruction(insn, 5, 8);
   unsigned rs2 = 0;
   unsigned simm13 = 0;
   if (isImm)
@@ -462,5 +526,9 @@ static DecodeStatus DecodeSWAP(MCInst &MI, unsigned insn, uint64_t Address,
     if (status != MCDisassembler::Success)
       return status;
   }
+
+  if (hasAsi)
+    MI.addOperand(MCOperand::createImm(asi));
+
   return MCDisassembler::Success;
 }

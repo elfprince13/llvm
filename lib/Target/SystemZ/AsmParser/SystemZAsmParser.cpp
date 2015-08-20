@@ -389,7 +389,7 @@ public:
   SystemZAsmParser(MCSubtargetInfo &sti, MCAsmParser &parser,
                    const MCInstrInfo &MII,
                    const MCTargetOptions &Options)
-      : MCTargetAsmParser(), STI(sti), Parser(parser) {
+      : MCTargetAsmParser(Options), STI(sti), Parser(parser) {
     MCAsmParserExtension::Initialize(Parser);
 
     // Initialize the set of available features.
@@ -863,11 +863,11 @@ SystemZAsmParser::parsePCRel(OperandVector &Operands, int64_t MinVal,
       Error(StartLoc, "offset out of range");
       return MatchOperand_ParseFail;
     }
-    MCSymbol *Sym = Ctx.CreateTempSymbol();
+    MCSymbol *Sym = Ctx.createTempSymbol();
     Out.EmitLabel(Sym);
-    const MCExpr *Base = MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_None,
+    const MCExpr *Base = MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None,
                                                  Ctx);
-    Expr = Value == 0 ? Base : MCBinaryExpr::CreateAdd(Base, Expr, Ctx);
+    Expr = Value == 0 ? Base : MCBinaryExpr::createAdd(Base, Expr, Ctx);
   }
 
   // Optionally match :tls_gdcall: or :tls_ldcall: followed by a TLS symbol.
@@ -904,7 +904,7 @@ SystemZAsmParser::parsePCRel(OperandVector &Operands, int64_t MinVal,
     }
 
     StringRef Identifier = Parser.getTok().getString();
-    Sym = MCSymbolRefExpr::Create(Ctx.GetOrCreateSymbol(Identifier),
+    Sym = MCSymbolRefExpr::create(Ctx.getOrCreateSymbol(Identifier),
                                   Kind, Ctx);
     Parser.Lex();
   }

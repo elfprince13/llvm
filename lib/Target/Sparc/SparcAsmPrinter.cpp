@@ -78,9 +78,9 @@ namespace {
 
 static MCOperand createSparcMCOperand(SparcMCExpr::VariantKind Kind,
                                       MCSymbol *Sym, MCContext &OutContext) {
-  const MCSymbolRefExpr *MCSym = MCSymbolRefExpr::Create(Sym,
+  const MCSymbolRefExpr *MCSym = MCSymbolRefExpr::create(Sym,
                                                          OutContext);
-  const SparcMCExpr *expr = SparcMCExpr::Create(Kind, MCSym, OutContext);
+  const SparcMCExpr *expr = SparcMCExpr::create(Kind, MCSym, OutContext);
   return MCOperand::createExpr(expr);
 
 }
@@ -94,15 +94,15 @@ static MCOperand createPCXRelExprOp(SparcMCExpr::VariantKind Kind,
                                     MCSymbol *CurLabel,
                                     MCContext &OutContext)
 {
-  const MCSymbolRefExpr *GOT = MCSymbolRefExpr::Create(GOTLabel, OutContext);
-  const MCSymbolRefExpr *Start = MCSymbolRefExpr::Create(StartLabel,
+  const MCSymbolRefExpr *GOT = MCSymbolRefExpr::create(GOTLabel, OutContext);
+  const MCSymbolRefExpr *Start = MCSymbolRefExpr::create(StartLabel,
                                                          OutContext);
-  const MCSymbolRefExpr *Cur = MCSymbolRefExpr::Create(CurLabel,
+  const MCSymbolRefExpr *Cur = MCSymbolRefExpr::create(CurLabel,
                                                        OutContext);
 
-  const MCBinaryExpr *Sub = MCBinaryExpr::CreateSub(Cur, Start, OutContext);
-  const MCBinaryExpr *Add = MCBinaryExpr::CreateAdd(GOT, Sub, OutContext);
-  const SparcMCExpr *expr = SparcMCExpr::Create(Kind,
+  const MCBinaryExpr *Sub = MCBinaryExpr::createSub(Cur, Start, OutContext);
+  const MCBinaryExpr *Add = MCBinaryExpr::createAdd(GOT, Sub, OutContext);
+  const SparcMCExpr *expr = SparcMCExpr::create(Kind,
                                                 Add, OutContext);
   return MCOperand::createExpr(expr);
 }
@@ -176,7 +176,7 @@ void SparcAsmPrinter::LowerGETPCXAndEmitMCInsts(const MachineInstr *MI,
                                                 const MCSubtargetInfo &STI)
 {
   MCSymbol *GOTLabel   =
-    OutContext.GetOrCreateSymbol(Twine("_GLOBAL_OFFSET_TABLE_"));
+    OutContext.getOrCreateSymbol(Twine("_GLOBAL_OFFSET_TABLE_"));
 
   const MachineOperand &MO = MI->getOperand(0);
   assert(MO.getReg() != SP::O7 &&
@@ -199,7 +199,7 @@ void SparcAsmPrinter::LowerGETPCXAndEmitMCInsts(const MachineInstr *MI,
       EmitHiLo(*OutStreamer, GOTLabel,
                SparcMCExpr::VK_Sparc_H44, SparcMCExpr::VK_Sparc_M44,
                MCRegOP, OutContext, STI);
-      MCOperand imm = MCOperand::createExpr(MCConstantExpr::Create(12,
+      MCOperand imm = MCOperand::createExpr(MCConstantExpr::create(12,
                                                                    OutContext));
       EmitSHL(*OutStreamer, MCRegOP, imm, MCRegOP, STI);
       MCOperand lo = createSparcMCOperand(SparcMCExpr::VK_Sparc_L44,
@@ -211,7 +211,7 @@ void SparcAsmPrinter::LowerGETPCXAndEmitMCInsts(const MachineInstr *MI,
       EmitHiLo(*OutStreamer, GOTLabel,
                SparcMCExpr::VK_Sparc_HH, SparcMCExpr::VK_Sparc_HM,
                MCRegOP, OutContext, STI);
-      MCOperand imm = MCOperand::createExpr(MCConstantExpr::Create(32,
+      MCOperand imm = MCOperand::createExpr(MCConstantExpr::create(32,
                                                                    OutContext));
       EmitSHL(*OutStreamer, MCRegOP, imm, MCRegOP, STI);
       // Use register %o7 to load the lower 32 bits.
@@ -225,9 +225,9 @@ void SparcAsmPrinter::LowerGETPCXAndEmitMCInsts(const MachineInstr *MI,
     return;
   }
 
-  MCSymbol *StartLabel = OutContext.CreateTempSymbol();
-  MCSymbol *EndLabel   = OutContext.CreateTempSymbol();
-  MCSymbol *SethiLabel = OutContext.CreateTempSymbol();
+  MCSymbol *StartLabel = OutContext.createTempSymbol();
+  MCSymbol *EndLabel   = OutContext.createTempSymbol();
+  MCSymbol *SethiLabel = OutContext.createTempSymbol();
 
   MCOperand RegO7   = MCOperand::createReg(SP::O7);
 
@@ -296,7 +296,7 @@ void SparcAsmPrinter::EmitFunctionBodyStart() {
 
 void SparcAsmPrinter::printOperand(const MachineInstr *MI, int opNum,
                                    raw_ostream &O) {
-  const DataLayout *DL = TM.getDataLayout();
+  const DataLayout &DL = getDataLayout();
   const MachineOperand &MO = MI->getOperand (opNum);
   SparcMCExpr::VariantKind TF = (SparcMCExpr::VariantKind) MO.getTargetFlags();
 
@@ -361,10 +361,10 @@ void SparcAsmPrinter::printOperand(const MachineInstr *MI, int opNum,
     O << (int)MO.getImm();
     break;
   case MachineOperand::MO_MachineBasicBlock:
-    O << *MO.getMBB()->getSymbol();
+    MO.getMBB()->getSymbol()->print(O, MAI);
     return;
   case MachineOperand::MO_GlobalAddress:
-    O << *getSymbol(MO.getGlobal());
+    getSymbol(MO.getGlobal())->print(O, MAI);
     break;
   case MachineOperand::MO_BlockAddress:
     O <<  GetBlockAddressSymbol(MO.getBlockAddress())->getName();
@@ -373,7 +373,7 @@ void SparcAsmPrinter::printOperand(const MachineInstr *MI, int opNum,
     O << MO.getSymbolName();
     break;
   case MachineOperand::MO_ConstantPoolIndex:
-    O << DL->getPrivateGlobalPrefix() << "CPI" << getFunctionNumber() << "_"
+    O << DL.getPrivateGlobalPrefix() << "CPI" << getFunctionNumber() << "_"
       << MO.getIndex();
     break;
   default:

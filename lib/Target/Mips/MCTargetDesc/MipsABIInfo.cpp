@@ -47,7 +47,7 @@ unsigned MipsABIInfo::GetCalleeAllocdArgSizeInBytes(CallingConv::ID CC) const {
   llvm_unreachable("Unhandled ABI");
 }
 
-MipsABIInfo MipsABIInfo::computeTargetABI(Triple TT, StringRef CPU,
+MipsABIInfo MipsABIInfo::computeTargetABI(const Triple &TT, StringRef CPU,
                                           const MCTargetOptions &Options) {
   if (Options.getABIName().startswith("o32"))
     return MipsABIInfo::O32();
@@ -99,8 +99,16 @@ unsigned MipsABIInfo::GetFramePtr() const {
   return ArePtrs64bit() ? Mips::FP_64 : Mips::FP;
 }
 
+unsigned MipsABIInfo::GetBasePtr() const {
+  return ArePtrs64bit() ? Mips::S7_64 : Mips::S7;
+}
+
 unsigned MipsABIInfo::GetNullPtr() const {
   return ArePtrs64bit() ? Mips::ZERO_64 : Mips::ZERO;
+}
+
+unsigned MipsABIInfo::GetZeroReg() const {
+  return AreGprs64bit() ? Mips::ZERO_64 : Mips::ZERO;
 }
 
 unsigned MipsABIInfo::GetPtrAdduOp() const {
@@ -109,6 +117,10 @@ unsigned MipsABIInfo::GetPtrAdduOp() const {
 
 unsigned MipsABIInfo::GetPtrAddiuOp() const {
   return ArePtrs64bit() ? Mips::DADDiu : Mips::ADDiu;
+}
+
+unsigned MipsABIInfo::GetGPRMoveOp() const {
+  return ArePtrs64bit() ? Mips::OR64 : Mips::OR;
 }
 
 unsigned MipsABIInfo::GetEhDataReg(unsigned I) const {

@@ -19,83 +19,46 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Analysis/Passes.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/ScalarEvolutionExpressions.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Pass.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 using namespace llvm;
-
-namespace {
-  /// ScalarEvolutionAliasAnalysis - This is a simple alias analysis
-  /// implementation that uses ScalarEvolution to answer queries.
-  class ScalarEvolutionAliasAnalysis : public FunctionPass,
-                                       public AliasAnalysis {
-    ScalarEvolution *SE;
-
-  public:
-    static char ID; // Class identification, replacement for typeinfo
-    ScalarEvolutionAliasAnalysis() : FunctionPass(ID), SE(nullptr) {
-      initializeScalarEvolutionAliasAnalysisPass(
-        *PassRegistry::getPassRegistry());
-    }
-
-    /// getAdjustedAnalysisPointer - This method is used when a pass implements
-    /// an analysis interface through multiple inheritance.  If needed, it
-    /// should override this to adjust the this pointer as needed for the
-    /// specified pass info.
-    void *getAdjustedAnalysisPointer(AnalysisID PI) override {
-      if (PI == &AliasAnalysis::ID)
-        return (AliasAnalysis*)this;
-      return this;
-    }
-
-  private:
-    void getAnalysisUsage(AnalysisUsage &AU) const override;
-    bool runOnFunction(Function &F) override;
-    AliasResult alias(const Location &LocA, const Location &LocB) override;
-
-    Value *GetBaseValue(const SCEV *S);
-  };
-}  // End of anonymous namespace
 
 // Register this pass...
 char ScalarEvolutionAliasAnalysis::ID = 0;
 INITIALIZE_AG_PASS_BEGIN(ScalarEvolutionAliasAnalysis, AliasAnalysis, "scev-aa",
-                   "ScalarEvolution-based Alias Analysis", false, true, false)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
+                         "ScalarEvolution-based Alias Analysis", false, true,
+                         false)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_AG_PASS_END(ScalarEvolutionAliasAnalysis, AliasAnalysis, "scev-aa",
-                    "ScalarEvolution-based Alias Analysis", false, true, false)
+                       "ScalarEvolution-based Alias Analysis", false, true,
+                       false)
 
 FunctionPass *llvm::createScalarEvolutionAliasAnalysisPass() {
   return new ScalarEvolutionAliasAnalysis();
 }
 
-void
-ScalarEvolutionAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addRequiredTransitive<ScalarEvolution>();
+void ScalarEvolutionAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.addRequiredTransitive<ScalarEvolutionWrapperPass>();
   AU.setPreservesAll();
   AliasAnalysis::getAnalysisUsage(AU);
 }
 
-bool
-ScalarEvolutionAliasAnalysis::runOnFunction(Function &F) {
+bool ScalarEvolutionAliasAnalysis::runOnFunction(Function &F) {
   InitializeAliasAnalysis(this, &F.getParent()->getDataLayout());
-  SE = &getAnalysis<ScalarEvolution>();
+  SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   return false;
 }
 
-/// GetBaseValue - Given an expression, try to find a
-/// base value. Return null is none was found.
-Value *
-ScalarEvolutionAliasAnalysis::GetBaseValue(const SCEV *S) {
+/// Given an expression, try to find a base value.
+///
+/// Returns null if none was found.
+Value *ScalarEvolutionAliasAnalysis::GetBaseValue(const SCEV *S) {
   if (const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(S)) {
     // In an addrec, assume that the base will be in the start, rather
     // than the step.
     return GetBaseValue(AR->getStart());
   } else if (const SCEVAddExpr *A = dyn_cast<SCEVAddExpr>(S)) {
     // If there's a pointer operand, it'll be sorted at the end of the list.
-    const SCEV *Last = A->getOperand(A->getNumOperands()-1);
+    const SCEV *Last = A->getOperand(A->getNumOperands() - 1);
     if (Last->getType()->isPointerTy())
       return GetBaseValue(Last);
   } else if (const SCEVUnknown *U = dyn_cast<SCEVUnknown>(S)) {
@@ -106,9 +69,8 @@ ScalarEvolutionAliasAnalysis::GetBaseValue(const SCEV *S) {
   return nullptr;
 }
 
-AliasAnalysis::AliasResult
-ScalarEvolutionAliasAnalysis::alias(const Location &LocA,
-                                    const Location &LocB) {
+AliasResult ScalarEvolutionAliasAnalysis::alias(const MemoryLocation &LocA,
+                                                const MemoryLocation &LocB) {
   // If either of the memory references is empty, it doesn't matter what the
   // pointer values are. This allows the code below to ignore this special
   // case.
@@ -120,7 +82,8 @@ ScalarEvolutionAliasAnalysis::alias(const Location &LocA,
   const SCEV *BS = SE->getSCEV(const_cast<Value *>(LocB.Ptr));
 
   // If they evaluate to the same expression, it's a MustAlias.
-  if (AS == BS) return MustAlias;
+  if (AS == BS)
+    return MustAlias;
 
   // If something is known about the difference between the two addresses,
   // see if it's enough to prove a NoAlias.
@@ -161,12 +124,12 @@ ScalarEvolutionAliasAnalysis::alias(const Location &LocA,
   Value *AO = GetBaseValue(AS);
   Value *BO = GetBaseValue(BS);
   if ((AO && AO != LocA.Ptr) || (BO && BO != LocB.Ptr))
-    if (alias(Location(AO ? AO : LocA.Ptr,
-                       AO ? +UnknownSize : LocA.Size,
-                       AO ? AAMDNodes() : LocA.AATags),
-              Location(BO ? BO : LocB.Ptr,
-                       BO ? +UnknownSize : LocB.Size,
-                       BO ? AAMDNodes() : LocB.AATags)) == NoAlias)
+    if (alias(MemoryLocation(AO ? AO : LocA.Ptr,
+                             AO ? +MemoryLocation::UnknownSize : LocA.Size,
+                             AO ? AAMDNodes() : LocA.AATags),
+              MemoryLocation(BO ? BO : LocB.Ptr,
+                             BO ? +MemoryLocation::UnknownSize : LocB.Size,
+                             BO ? AAMDNodes() : LocB.AATags)) == NoAlias)
       return NoAlias;
 
   // Forward the query to the next analysis.

@@ -121,7 +121,7 @@ private:
 //===----------------------------------------------------------------------===//
 
 void AArch64AsmPrinter::EmitEndOfAsmFile(Module &M) {
-  Triple TT(TM.getTargetTriple());
+  const Triple &TT = TM.getTargetTriple();
   if (TT.isOSBinFormatMachO()) {
     // Funny Darwin hack: This flag tells the linker that no global symbols
     // contain code that falls through to other global symbols (e.g. the obvious
@@ -172,11 +172,11 @@ MCSymbol *AArch64AsmPrinter::GetCPISymbol(unsigned CPID) const {
   // avoid addends on the relocation?), ELF has no such concept and
   // uses a normal private symbol.
   if (getDataLayout().getLinkerPrivateGlobalPrefix()[0])
-    return OutContext.GetOrCreateSymbol(
+    return OutContext.getOrCreateSymbol(
         Twine(getDataLayout().getLinkerPrivateGlobalPrefix()) + "CPI" +
         Twine(getFunctionNumber()) + "_" + Twine(CPID));
 
-  return OutContext.GetOrCreateSymbol(
+  return OutContext.getOrCreateSymbol(
       Twine(getDataLayout().getPrivateGlobalPrefix()) + "CPI" +
       Twine(getFunctionNumber()) + "_" + Twine(CPID));
 }
@@ -206,7 +206,7 @@ void AArch64AsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNum,
     // FIXME: Can we get anything other than a plain symbol here?
     assert(!MO.getTargetFlags() && "Unknown operand target flag!");
 
-    O << *Sym;
+    Sym->print(O, MAI);
     printOffset(MO.getOffset(), O);
     break;
   }

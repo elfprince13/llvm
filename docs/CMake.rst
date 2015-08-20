@@ -327,8 +327,8 @@ LLVM-specific variables
 
 **LLVM_USE_SANITIZER**:STRING
   Define the sanitizer used to build LLVM binaries and tests. Possible values
-  are ``Address``, ``Memory``, ``MemoryWithOrigins`` and ``Undefined``.
-  Defaults to empty string.
+  are ``Address``, ``Memory``, ``MemoryWithOrigins``, ``Undefined``, ``Thread``,
+  and ``Address;Undefined``. Defaults to empty string.
 
 **LLVM_PARALLEL_COMPILE_JOBS**:STRING
   Define the maximum number of concurrent compilation jobs.
@@ -386,6 +386,10 @@ LLVM-specific variables
   ``find_program()`` can find. This option is only useful in combination with
   ``-DLLVM_ENABLE_DOXYGEN_QT_HELP=ON``; otherwise this has no
   effect.
+
+**LLVM_DOXYGEN_SVG**:BOOL
+  Uses .svg files instead of .png files for graphs in the Doxygen output.
+  Defaults to OFF.
 
 **LLVM_ENABLE_SPHINX**:BOOL
   If enabled CMake will search for the ``sphinx-build`` executable and will make

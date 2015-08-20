@@ -16,6 +16,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
@@ -356,6 +357,10 @@ TEST_F(MDNodeTest, PrintFromFunction) {
 
   EXPECT_PRINTER_EQ("!0 = distinct !{}", N0->print(OS, &M));
   EXPECT_PRINTER_EQ("!1 = distinct !{}", N1->print(OS, &M));
+
+  ModuleSlotTracker MST(&M);
+  EXPECT_PRINTER_EQ("!0 = distinct !{}", N0->print(OS, MST));
+  EXPECT_PRINTER_EQ("!1 = distinct !{}", N1->print(OS, MST));
 }
 
 TEST_F(MDNodeTest, PrintFromMetadataAsValue) {
@@ -384,6 +389,14 @@ TEST_F(MDNodeTest, PrintFromMetadataAsValue) {
   EXPECT_PRINTER_EQ("!1", MAV1->printAsOperand(OS, false));
   EXPECT_PRINTER_EQ("metadata !0", MAV0->printAsOperand(OS, true));
   EXPECT_PRINTER_EQ("metadata !1", MAV1->printAsOperand(OS, true));
+
+  ModuleSlotTracker MST(&M);
+  EXPECT_PRINTER_EQ("!0 = distinct !{}", MAV0->print(OS, MST));
+  EXPECT_PRINTER_EQ("!1 = distinct !{}", MAV1->print(OS, MST));
+  EXPECT_PRINTER_EQ("!0", MAV0->printAsOperand(OS, false, MST));
+  EXPECT_PRINTER_EQ("!1", MAV1->printAsOperand(OS, false, MST));
+  EXPECT_PRINTER_EQ("metadata !0", MAV0->printAsOperand(OS, true, MST));
+  EXPECT_PRINTER_EQ("metadata !1", MAV1->printAsOperand(OS, true, MST));
 }
 #undef EXPECT_PRINTER_EQ
 
@@ -1247,10 +1260,6 @@ TEST_F(DISubroutineTypeTest, get) {
   EXPECT_EQ(nullptr, N->getScope());
   EXPECT_EQ(nullptr, N->getFile());
   EXPECT_EQ("", N->getName());
-  EXPECT_EQ(nullptr, N->getBaseType());
-  EXPECT_EQ(nullptr, N->getVTableHolder());
-  EXPECT_EQ(nullptr, N->getTemplateParams().get());
-  EXPECT_EQ("", N->getIdentifier());
 }
 
 typedef MetadataTest DIFileTest;
@@ -1294,10 +1303,11 @@ TEST_F(DICompileUnitTest, get) {
   MDTuple *Subprograms = getTuple();
   MDTuple *GlobalVariables = getTuple();
   MDTuple *ImportedEntities = getTuple();
-  auto *N = DICompileUnit::get(
+  uint64_t DWOId = 0xc0ffee;
+  auto *N = DICompileUnit::getDistinct(
       Context, SourceLanguage, File, Producer, IsOptimized, Flags,
       RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
-      RetainedTypes, Subprograms, GlobalVariables, ImportedEntities);
+      RetainedTypes, Subprograms, GlobalVariables, ImportedEntities, DWOId);
 
   EXPECT_EQ(dwarf::DW_TAG_compile_unit, N->getTag());
   EXPECT_EQ(SourceLanguage, N->getSourceLanguage());
@@ -1313,77 +1323,29 @@ TEST_F(DICompileUnitTest, get) {
   EXPECT_EQ(Subprograms, N->getSubprograms().get());
   EXPECT_EQ(GlobalVariables, N->getGlobalVariables().get());
   EXPECT_EQ(ImportedEntities, N->getImportedEntities().get());
-  EXPECT_EQ(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage + 1, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, getFile(), Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, "other",
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  !IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, "other", RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion + 1,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N,
-            DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                               IsOptimized, Flags, RuntimeVersion, "other",
-                               EmissionKind, EnumTypes, RetainedTypes,
-                               Subprograms, GlobalVariables, ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind + 1,
-                                  EnumTypes, RetainedTypes, Subprograms,
-                                  GlobalVariables, ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, getTuple(),
-                                  RetainedTypes, Subprograms, GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(
-                   Context, SourceLanguage, File, Producer, IsOptimized, Flags,
-                   RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
-                   getTuple(), Subprograms, GlobalVariables, ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(Context, SourceLanguage, File, Producer,
-                                  IsOptimized, Flags, RuntimeVersion,
-                                  SplitDebugFilename, EmissionKind, EnumTypes,
-                                  RetainedTypes, getTuple(), GlobalVariables,
-                                  ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(
-                   Context, SourceLanguage, File, Producer, IsOptimized, Flags,
-                   RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
-                   RetainedTypes, Subprograms, getTuple(), ImportedEntities));
-  EXPECT_NE(N, DICompileUnit::get(
-                   Context, SourceLanguage, File, Producer, IsOptimized, Flags,
-                   RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
-                   RetainedTypes, Subprograms, GlobalVariables, getTuple()));
+  EXPECT_EQ(DWOId, N->getDWOId());
 
   TempDICompileUnit Temp = N->clone();
-  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
+  EXPECT_EQ(dwarf::DW_TAG_compile_unit, Temp->getTag());
+  EXPECT_EQ(SourceLanguage, Temp->getSourceLanguage());
+  EXPECT_EQ(File, Temp->getFile());
+  EXPECT_EQ(Producer, Temp->getProducer());
+  EXPECT_EQ(IsOptimized, Temp->isOptimized());
+  EXPECT_EQ(Flags, Temp->getFlags());
+  EXPECT_EQ(RuntimeVersion, Temp->getRuntimeVersion());
+  EXPECT_EQ(SplitDebugFilename, Temp->getSplitDebugFilename());
+  EXPECT_EQ(EmissionKind, Temp->getEmissionKind());
+  EXPECT_EQ(EnumTypes, Temp->getEnumTypes().get());
+  EXPECT_EQ(RetainedTypes, Temp->getRetainedTypes().get());
+  EXPECT_EQ(Subprograms, Temp->getSubprograms().get());
+  EXPECT_EQ(GlobalVariables, Temp->getGlobalVariables().get());
+  EXPECT_EQ(ImportedEntities, Temp->getImportedEntities().get());
+  EXPECT_EQ(DWOId, Temp->getDWOId());
+
+  auto *TempAddress = Temp.get();
+  auto *Clone = MDNode::replaceWithPermanent(std::move(Temp));
+  EXPECT_TRUE(Clone->isDistinct());
+  EXPECT_EQ(TempAddress, Clone);
 }
 
 TEST_F(DICompileUnitTest, replaceArrays) {
@@ -1398,10 +1360,11 @@ TEST_F(DICompileUnitTest, replaceArrays) {
   MDTuple *EnumTypes = MDTuple::getDistinct(Context, None);
   MDTuple *RetainedTypes = MDTuple::getDistinct(Context, None);
   MDTuple *ImportedEntities = MDTuple::getDistinct(Context, None);
-  auto *N = DICompileUnit::get(
+  uint64_t DWOId = 0xc0ffee;
+  auto *N = DICompileUnit::getDistinct(
       Context, SourceLanguage, File, Producer, IsOptimized, Flags,
       RuntimeVersion, SplitDebugFilename, EmissionKind, EnumTypes,
-      RetainedTypes, nullptr, nullptr, ImportedEntities);
+      RetainedTypes, nullptr, nullptr, ImportedEntities, DWOId);
 
   auto *Subprograms = MDTuple::getDistinct(Context, None);
   EXPECT_EQ(nullptr, N->getSubprograms().get());
@@ -1680,6 +1643,40 @@ TEST_F(DINamespaceTest, get) {
   EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
+typedef MetadataTest DIModuleTest;
+
+TEST_F(DIModuleTest, get) {
+  DIScope *Scope = getFile();
+  StringRef Name = "module";
+  StringRef ConfigMacro = "-DNDEBUG";
+  StringRef Includes = "-I.";
+  StringRef Sysroot = "/";
+
+  auto *N = DIModule::get(Context, Scope, Name, ConfigMacro, Includes, Sysroot);
+
+  EXPECT_EQ(dwarf::DW_TAG_module, N->getTag());
+  EXPECT_EQ(Scope, N->getScope());
+  EXPECT_EQ(Name, N->getName());
+  EXPECT_EQ(ConfigMacro, N->getConfigurationMacros());
+  EXPECT_EQ(Includes, N->getIncludePath());
+  EXPECT_EQ(Sysroot, N->getISysRoot());
+  EXPECT_EQ(N, DIModule::get(Context, Scope, Name,
+                             ConfigMacro, Includes, Sysroot));
+  EXPECT_NE(N, DIModule::get(Context, getFile(), Name,
+                             ConfigMacro, Includes, Sysroot));
+  EXPECT_NE(N, DIModule::get(Context, Scope, "other",
+                             ConfigMacro, Includes, Sysroot));
+  EXPECT_NE(N, DIModule::get(Context, Scope, Name,
+                             "other", Includes, Sysroot));
+  EXPECT_NE(N, DIModule::get(Context, Scope, Name,
+                             ConfigMacro, "other", Sysroot));
+  EXPECT_NE(N, DIModule::get(Context, Scope, Name,
+                             ConfigMacro, Includes, "other"));
+
+  TempDIModule Temp = N->clone();
+  EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
+}
+
 typedef MetadataTest DITemplateTypeParameterTest;
 
 TEST_F(DITemplateTypeParameterTest, get) {
@@ -1807,7 +1804,6 @@ TEST_F(DIGlobalVariableTest, get) {
 typedef MetadataTest DILocalVariableTest;
 
 TEST_F(DILocalVariableTest, get) {
-  unsigned Tag = dwarf::DW_TAG_arg_variable;
   DILocalScope *Scope = getSubprogram();
   StringRef Name = "name";
   DIFile *File = getFile();
@@ -1816,9 +1812,9 @@ TEST_F(DILocalVariableTest, get) {
   unsigned Arg = 6;
   unsigned Flags = 7;
 
-  auto *N = DILocalVariable::get(Context, Tag, Scope, Name, File, Line, Type,
-                                 Arg, Flags);
-  EXPECT_EQ(Tag, N->getTag());
+  auto *N =
+      DILocalVariable::get(Context, Scope, Name, File, Line, Type, Arg, Flags);
+  EXPECT_TRUE(N->isParameter());
   EXPECT_EQ(Scope, N->getScope());
   EXPECT_EQ(Name, N->getName());
   EXPECT_EQ(File, N->getFile());
@@ -1826,47 +1822,44 @@ TEST_F(DILocalVariableTest, get) {
   EXPECT_EQ(Type, N->getType());
   EXPECT_EQ(Arg, N->getArg());
   EXPECT_EQ(Flags, N->getFlags());
-  EXPECT_EQ(N, DILocalVariable::get(Context, Tag, Scope, Name, File, Line, Type,
-                                    Arg, Flags));
+  EXPECT_EQ(N, DILocalVariable::get(Context, Scope, Name, File, Line, Type, Arg,
+                                    Flags));
 
-  EXPECT_NE(N, DILocalVariable::get(Context, dwarf::DW_TAG_auto_variable, Scope,
-                                    Name, File, Line, Type, Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, getSubprogram(), Name, File,
-                                    Line, Type, Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, "other", File, Line,
+  EXPECT_FALSE(
+      DILocalVariable::get(Context, Scope, Name, File, Line, Type, 0, Flags)
+          ->isParameter());
+  EXPECT_NE(N, DILocalVariable::get(Context, getSubprogram(), Name, File, Line,
                                     Type, Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, Name, getFile(), Line,
-                                    Type, Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, Name, File, Line + 1,
-                                    Type, Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, Name, File, Line,
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, "other", File, Line, Type,
+                                    Arg, Flags));
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, Name, getFile(), Line, Type,
+                                    Arg, Flags));
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, Name, File, Line + 1, Type,
+                                    Arg, Flags));
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, Name, File, Line,
                                     getDerivedType(), Arg, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, Name, File, Line, Type,
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, Name, File, Line, Type,
                                     Arg + 1, Flags));
-  EXPECT_NE(N, DILocalVariable::get(Context, Tag, Scope, Name, File, Line, Type,
-                                    Arg, ~Flags));
+  EXPECT_NE(N, DILocalVariable::get(Context, Scope, Name, File, Line, Type, Arg,
+                                    ~Flags));
 
   TempDILocalVariable Temp = N->clone();
   EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));
 }
 
 TEST_F(DILocalVariableTest, getArg256) {
-  EXPECT_EQ(255u, DILocalVariable::get(Context, dwarf::DW_TAG_arg_variable,
-                                       getSubprogram(), "", getFile(), 0,
-                                       nullptr, 255, 0)
+  EXPECT_EQ(255u, DILocalVariable::get(Context, getSubprogram(), "", getFile(),
+                                       0, nullptr, 255, 0)
                       ->getArg());
-  EXPECT_EQ(256u, DILocalVariable::get(Context, dwarf::DW_TAG_arg_variable,
-                                       getSubprogram(), "", getFile(), 0,
-                                       nullptr, 256, 0)
+  EXPECT_EQ(256u, DILocalVariable::get(Context, getSubprogram(), "", getFile(),
+                                       0, nullptr, 256, 0)
                       ->getArg());
-  EXPECT_EQ(257u, DILocalVariable::get(Context, dwarf::DW_TAG_arg_variable,
-                                       getSubprogram(), "", getFile(), 0,
-                                       nullptr, 257, 0)
+  EXPECT_EQ(257u, DILocalVariable::get(Context, getSubprogram(), "", getFile(),
+                                       0, nullptr, 257, 0)
                       ->getArg());
   unsigned Max = UINT16_MAX;
-  EXPECT_EQ(Max, DILocalVariable::get(Context, dwarf::DW_TAG_arg_variable,
-                                      getSubprogram(), "", getFile(), 0,
-                                      nullptr, Max, 0)
+  EXPECT_EQ(Max, DILocalVariable::get(Context, getSubprogram(), "", getFile(),
+                                      0, nullptr, Max, 0)
                      ->getArg());
 }
 
@@ -1934,7 +1927,7 @@ TEST_F(DIObjCPropertyTest, get) {
   StringRef GetterName = "getter";
   StringRef SetterName = "setter";
   unsigned Attributes = 7;
-  DIType *Type = cast<DIBasicType>(getBasicType("basic"));
+  DITypeRef Type = getBasicType("basic");
 
   auto *N = DIObjCProperty::get(Context, Name, File, Line, GetterName,
                                 SetterName, Attributes, Type);
@@ -1964,7 +1957,7 @@ TEST_F(DIObjCPropertyTest, get) {
                                    SetterName, Attributes + 1, Type));
   EXPECT_NE(N, DIObjCProperty::get(Context, Name, File, Line, GetterName,
                                    SetterName, Attributes,
-                                   cast<DIBasicType>(getBasicType("other"))));
+                                   getBasicType("other")));
 
   TempDIObjCProperty Temp = N->clone();
   EXPECT_EQ(N, MDNode::replaceWithUniqued(std::move(Temp)));

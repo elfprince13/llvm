@@ -73,6 +73,7 @@ public:
     ByVal,                 ///< Pass structure by value
     InAlloca,              ///< Pass structure in an alloca
     Cold,                  ///< Marks function as being in a cold path.
+    Convergent,            ///< Can only be moved to control-equivalent blocks
     InlineHint,            ///< Source said inlining was desirable
     InReg,                 ///< Force argument to be passed in register
     JumpTable,             ///< Build jump-instruction tables and replace refs.
@@ -97,6 +98,8 @@ public:
     OptimizeNone,          ///< Function must not be optimized.
     ReadNone,              ///< Function does not access memory
     ReadOnly,              ///< Function only reads from memory
+    ArgMemOnly,            ///< Funciton can access memory only using pointers
+                           ///< based on its arguments.
     Returned,              ///< Return value is always equal to this argument
     ReturnsTwice,          ///< Function can return twice
     SExt,                  ///< Sign extended before/after call
@@ -107,6 +110,7 @@ public:
     StackProtect,          ///< Stack protection.
     StackProtectReq,       ///< Stack protection required.
     StackProtectStrong,    ///< Strong Stack protection.
+    SafeStack,             ///< Safe Stack protection.
     StructRet,             ///< Hidden pointer to structure to return
     SanitizeAddress,       ///< AddressSanitizer is on.
     SanitizeThread,        ///< ThreadSanitizer is on.
@@ -569,7 +573,7 @@ public:
 namespace AttributeFuncs {
 
 /// \brief Which attributes cannot be applied to a type.
-AttrBuilder typeIncompatible(const Type *Ty);
+AttrBuilder typeIncompatible(Type *Ty);
 
 } // end AttributeFuncs namespace
 

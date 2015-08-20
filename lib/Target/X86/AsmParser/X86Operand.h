@@ -12,8 +12,11 @@
 
 #include "X86AsmParserCommon.h"
 #include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/ADT/STLExtras.h"
+#include "MCTargetDesc/X86MCTargetDesc.h"
 
 namespace llvm {
 
@@ -235,17 +238,33 @@ struct X86Operand : public MCParsedAsmOperand {
     return Kind == Memory && (!Mem.Size || Mem.Size == 32) &&
       getMemIndexReg() >= X86::XMM0 && getMemIndexReg() <= X86::XMM15;
   }
+  bool isMemVX32X() const {
+    return Kind == Memory && (!Mem.Size || Mem.Size == 32) &&
+      getMemIndexReg() >= X86::XMM0 && getMemIndexReg() <= X86::XMM31;
+  }
   bool isMemVY32() const {
     return Kind == Memory && (!Mem.Size || Mem.Size == 32) &&
       getMemIndexReg() >= X86::YMM0 && getMemIndexReg() <= X86::YMM15;
+  }
+  bool isMemVY32X() const {
+    return Kind == Memory && (!Mem.Size || Mem.Size == 32) &&
+      getMemIndexReg() >= X86::YMM0 && getMemIndexReg() <= X86::YMM31;
   }
   bool isMemVX64() const {
     return Kind == Memory && (!Mem.Size || Mem.Size == 64) &&
       getMemIndexReg() >= X86::XMM0 && getMemIndexReg() <= X86::XMM15;
   }
+  bool isMemVX64X() const {
+    return Kind == Memory && (!Mem.Size || Mem.Size == 64) &&
+      getMemIndexReg() >= X86::XMM0 && getMemIndexReg() <= X86::XMM31;
+  }
   bool isMemVY64() const {
     return Kind == Memory && (!Mem.Size || Mem.Size == 64) &&
       getMemIndexReg() >= X86::YMM0 && getMemIndexReg() <= X86::YMM15;
+  }
+  bool isMemVY64X() const {
+    return Kind == Memory && (!Mem.Size || Mem.Size == 64) &&
+      getMemIndexReg() >= X86::YMM0 && getMemIndexReg() <= X86::YMM31;
   }
   bool isMemVZ32() const {
     return Kind == Memory && (!Mem.Size || Mem.Size == 32) &&

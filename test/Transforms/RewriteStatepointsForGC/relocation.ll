@@ -1,4 +1,4 @@
-; RUN: opt %s -rewrite-statepoints-for-gc -S 2>&1 | FileCheck %s
+; RUN: opt %s -rewrite-statepoints-for-gc -spp-rematerialization-threshold=0 -S 2>&1 | FileCheck %s
 
 
 declare void @foo()
@@ -232,7 +232,7 @@ inner-loop:
 ; CHECK: phi i8 addrspace(1)* 
 ; CHECK-DAG: %outer-loop ]
 ; CHECK-DAG: [ %arg2.relocated, %inner-loop ]
-; CHECKL phi i8 addrspace(1)* 
+; CHECK: phi i8 addrspace(1)* 
 ; CHECK-DAG: %outer-loop ]
 ; CHECK-DAG: [ %arg1.relocated, %inner-loop ]
 ; CHECK: gc.statepoint

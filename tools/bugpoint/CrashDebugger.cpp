@@ -385,8 +385,7 @@ bool ReduceCrashingBlocks::TestBlocks(std::vector<const BasicBlock*> &BBs) {
   std::vector<std::pair<std::string, std::string> > BlockInfo;
 
   for (BasicBlock *BB : Blocks)
-    BlockInfo.push_back(std::make_pair(BB->getParent()->getName(),
-                                       BB->getName()));
+    BlockInfo.emplace_back(BB->getParent()->getName(), BB->getName());
 
   // Now run the CFG simplify pass on the function...
   std::vector<std::string> Passes;
@@ -471,7 +470,7 @@ bool ReduceCrashingInstructions::TestInsts(std::vector<const Instruction*>
       for (BasicBlock::iterator I = FI->begin(), E = FI->end(); I != E;) {
         Instruction *Inst = I++;
         if (!Instructions.count(Inst) && !isa<TerminatorInst>(Inst) &&
-            !isa<LandingPadInst>(Inst)) {
+            !Inst->isEHPad()) {
           if (!Inst->getType()->isVoidTy())
             Inst->replaceAllUsesWith(UndefValue::get(Inst->getType()));
           Inst->eraseFromParent();

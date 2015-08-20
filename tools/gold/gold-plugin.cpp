@@ -103,7 +103,7 @@ namespace options {
   // use only and will not be passed.
   static std::vector<const char *> extra;
 
-  static void process_plugin_option(const char* opt_)
+  static void process_plugin_option(const char *opt_)
   {
     if (opt_ == nullptr)
       return;
@@ -322,7 +322,8 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
       message(LDPL_ERROR, "Failed to get a view of %s", file->name);
       return LDPS_ERR;
     }
-    BufferRef = MemoryBufferRef(StringRef((const char *)view, file->filesize), "");
+    BufferRef =
+        MemoryBufferRef(StringRef((const char *)view, file->filesize), "");
   } else {
     int64_t offset = 0;
     // Gold has found what might be IR part-way inside of a file, such as
@@ -429,7 +430,7 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
   }
 
   if (!cf.syms.empty()) {
-    if (add_symbols(cf.handle, cf.syms.size(), &cf.syms[0]) != LDPS_OK) {
+    if (add_symbols(cf.handle, cf.syms.size(), cf.syms.data()) != LDPS_OK) {
       message(LDPL_ERROR, "Unable to add symbols!");
       return LDPS_ERR;
     }
@@ -583,7 +584,7 @@ getModuleForFile(LLVMContext &Context, claimed_file &F,
                  ld_plugin_input_file &Info, raw_fd_ostream *ApiFile,
                  StringSet<> &Internalize, StringSet<> &Maybe) {
 
-  if (get_symbols(F.handle, F.syms.size(), &F.syms[0]) != LDPS_OK)
+  if (get_symbols(F.handle, F.syms.size(), F.syms.data()) != LDPS_OK)
     message(LDPL_FATAL, "Failed to get symbol information");
 
   const void *View;
@@ -716,8 +717,7 @@ getModuleForFile(LLVMContext &Context, claimed_file &F,
 }
 
 static void runLTOPasses(Module &M, TargetMachine &TM) {
-  if (const DataLayout *DL = TM.getDataLayout())
-    M.setDataLayout(*DL);
+  M.setDataLayout(TM.createDataLayout());
 
   legacy::PassManager passes;
   passes.add(createTargetTransformInfoWrapperPass(TM.getTargetIRAnalysis()));
@@ -787,15 +787,20 @@ static void codegen(Module &M) {
   legacy::PassManager CodeGenPasses;
 
   SmallString<128> Filename;
+  if (!options::obj_path.empty())
+    Filename = options::obj_path;
+  else if (options::TheOutputType == options::OT_SAVE_TEMPS)
+    Filename = output_name + ".o";
+
   int FD;
-  if (options::obj_path.empty()) {
+  bool TempOutFile = Filename.empty();
+  if (TempOutFile) {
     std::error_code EC =
         sys::fs::createTemporaryFile("lto-llvm", "o", FD, Filename);
     if (EC)
       message(LDPL_FATAL, "Could not create temporary file: %s",
               EC.message().c_str());
   } else {
-    Filename = options::obj_path;
     std::error_code EC =
         sys::fs::openFileForWrite(Filename.c_str(), FD, sys::fs::F_None);
     if (EC)
@@ -816,7 +821,7 @@ static void codegen(Module &M) {
             "Unable to add .o file to the link. File left behind in: %s",
             Filename.c_str());
 
-  if (options::obj_path.empty())
+  if (TempOutFile)
     Cleanup.push_back(Filename.c_str());
 }
 

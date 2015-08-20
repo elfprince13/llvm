@@ -133,7 +133,7 @@ namespace {
   class Thumb2SizeReduce : public MachineFunctionPass {
   public:
     static char ID;
-    Thumb2SizeReduce();
+    Thumb2SizeReduce(std::function<bool(const Function &)> Ftor);
 
     const Thumb2InstrInfo *TII;
     const ARMSubtarget *STI;
@@ -198,11 +198,14 @@ namespace {
     };
 
     SmallVector<MBBInfo, 8> BlockInfo;
+
+    std::function<bool(const Function &)> PredicateFtor;
   };
   char Thumb2SizeReduce::ID = 0;
 }
 
-Thumb2SizeReduce::Thumb2SizeReduce() : MachineFunctionPass(ID) {
+Thumb2SizeReduce::Thumb2SizeReduce(std::function<bool(const Function &)> Ftor)
+    : MachineFunctionPass(ID), PredicateFtor(Ftor) {
   OptimizeSize = MinimizeSize = false;
   for (unsigned i = 0, e = array_lengthof(ReduceTable); i != e; ++i) {
     unsigned FromOpc = ReduceTable[i].WideOpc;
@@ -569,7 +572,7 @@ Thumb2SizeReduce::ReduceSpecial(MachineBasicBlock &MBB, MachineInstr *MI,
   if (Entry.LowRegs1 && !VerifyLowRegs(MI))
     return false;
 
-  if (MI->mayLoad() || MI->mayStore())
+  if (MI->mayLoadOrStore())
     return ReduceLoadStore(MBB, MI, Entry);
 
   switch (Opc) {
@@ -630,10 +633,9 @@ Thumb2SizeReduce::ReduceTo2Addr(MachineBasicBlock &MBB, MachineInstr *MI,
   if (ReduceLimit2Addr != -1 && ((int)Num2Addrs >= ReduceLimit2Addr))
     return false;
 
-  if (!MinimizeSize && !OptimizeSize && Entry.AvoidMovs &&
-      STI->avoidMOVsShifterOperand())
+  if (!OptimizeSize && Entry.AvoidMovs && STI->avoidMOVsShifterOperand())
     // Don't issue movs with shifter operand for some CPUs unless we
-    // are optimizing / minimizing for size.
+    // are optimizing for size.
     return false;
 
   unsigned Reg0 = MI->getOperand(0).getReg();
@@ -747,10 +749,9 @@ Thumb2SizeReduce::ReduceToNarrow(MachineBasicBlock &MBB, MachineInstr *MI,
   if (ReduceLimit != -1 && ((int)NumNarrows >= ReduceLimit))
     return false;
 
-  if (!MinimizeSize && !OptimizeSize && Entry.AvoidMovs &&
-      STI->avoidMOVsShifterOperand())
+  if (!OptimizeSize && Entry.AvoidMovs && STI->avoidMOVsShifterOperand())
     // Don't issue movs with shifter operand for some CPUs unless we
-    // are optimizing / minimizing for size.
+    // are optimizing for size.
     return false;
 
   unsigned Limit = ~0U;
@@ -1000,15 +1001,18 @@ bool Thumb2SizeReduce::ReduceMBB(MachineBasicBlock &MBB) {
 }
 
 bool Thumb2SizeReduce::runOnMachineFunction(MachineFunction &MF) {
+  if (PredicateFtor && !PredicateFtor(*MF.getFunction()))
+    return false;
+
   STI = &static_cast<const ARMSubtarget &>(MF.getSubtarget());
   if (STI->isThumb1Only() || STI->prefers32BitThumb())
     return false;
 
   TII = static_cast<const Thumb2InstrInfo *>(STI->getInstrInfo());
 
-  // Optimizing / minimizing size?
-  OptimizeSize = MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize);
-  MinimizeSize = MF.getFunction()->hasFnAttribute(Attribute::MinSize);
+  // Optimizing / minimizing size? Minimizing size implies optimizing for size.
+  OptimizeSize = MF.getFunction()->optForSize();
+  MinimizeSize = MF.getFunction()->optForMinSize();
 
   BlockInfo.clear();
   BlockInfo.resize(MF.getNumBlockIDs());
@@ -1025,6 +1029,7 @@ bool Thumb2SizeReduce::runOnMachineFunction(MachineFunction &MF) {
 
 /// createThumb2SizeReductionPass - Returns an instance of the Thumb2 size
 /// reduction pass.
-FunctionPass *llvm::createThumb2SizeReductionPass() {
-  return new Thumb2SizeReduce();
+FunctionPass *llvm::createThumb2SizeReductionPass(
+    std::function<bool(const Function &)> Ftor) {
+  return new Thumb2SizeReduce(Ftor);
 }

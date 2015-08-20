@@ -28,7 +28,7 @@ Note that some code bases (e.g. ``libc++``) have really good reasons to deviate
 from the coding standards.  In the case of ``libc++``, this is because the
 naming and other conventions are dictated by the C++ standard.  If you think
 there is a specific good reason to deviate from the standards here, please bring
-it up on the LLVMdev mailing list.
+it up on the LLVM-dev mailing list.
 
 There are some conventions that are not uniformly followed in the code base
 (e.g. the naming convention).  This is because they are relatively new, and a
@@ -39,7 +39,7 @@ hand, it is reasonable to rename the methods of a class if you're about to
 change it in some other way.  Just do the reformating as a separate commit from
 the functionality change.
   
-The ultimate goal of these guidelines is the increase readability and
+The ultimate goal of these guidelines is to increase the readability and
 maintainability of our common source base. If you have suggestions for topics to
 be included, please mail them to `Chris <mailto:sabre@nondot.org>`_.
 
@@ -247,8 +247,8 @@ tree.  The standard header looks like this:
   //===----------------------------------------------------------------------===//
   ///
   /// \file
-  /// \brief This file contains the declaration of the Instruction class, which is
-  /// the base class for all of the VM instructions.
+  /// This file contains the declaration of the Instruction class, which is the
+  /// base class for all of the VM instructions.
   ///
   //===----------------------------------------------------------------------===//
 
@@ -268,10 +268,10 @@ file is released under.  This makes it perfectly clear what terms the source
 code can be distributed under and should not be modified in any way.
 
 The main body is a ``doxygen`` comment (identified by the ``///`` comment
-marker instead of the usual ``//``) describing the purpose of the file.  It
-should have a ``\brief`` command that describes the file in one or two
-sentences.  Any additional information should be separated by a blank line.  If
-an algorithm is being implemented or something tricky is going on, a reference
+marker instead of the usual ``//``) describing the purpose of the file.  The
+first sentence or a passage beginning with ``\brief`` is used as an abstract.
+Any additional information should be separated by a blank line.  If an
+algorithm is being implemented or something tricky is going on, a reference
 to the paper where it is published should be included, as well as any notes or
 *gotchas* in the code to watch out for.
 
@@ -320,10 +320,11 @@ Doxygen Use in Documentation Comments
 Use the ``\file`` command to turn the standard file header into a file-level
 comment.
 
-Include descriptive ``\brief`` paragraphs for all public interfaces (public
-classes, member and non-member functions).  Explain API use and purpose in
-``\brief`` paragraphs, don't just restate the information that can be inferred
-from the API name.  Put detailed discussion into separate paragraphs.
+Include descriptive paragraphs for all public interfaces (public classes,
+member and non-member functions).  Don't just restate the information that can
+be inferred from the API name.  The first sentence or a paragraph beginning
+with ``\brief`` is used as an abstract. Put detailed discussion into separate
+paragraphs.
 
 To refer to parameter names inside a paragraph, use the ``\p name`` command.
 Don't use the ``\arg name`` command since it starts a new paragraph that
@@ -343,8 +344,8 @@ A minimal documentation comment:
 
 .. code-block:: c++
 
-  /// \brief Does foo and bar.
-  void fooBar(bool Baz);
+  /// Sets the xyzzy property to \p Baz.
+  void setXyzzy(bool Baz);
 
 A documentation comment that uses all Doxygen features in a preferred way:
 
@@ -401,10 +402,10 @@ Correct:
 
   // In Something.h:
 
-  /// \brief An abstraction for some complicated thing.
+  /// An abstraction for some complicated thing.
   class Something {
   public:
-    /// \brief Does foo and bar.
+    /// Does foo and bar.
     void fooBar();
   };
 

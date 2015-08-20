@@ -8,6 +8,10 @@
 //===----------------------------------------------------------------------===//
 // Define the main class fuzzer::Fuzzer and most functions.
 //===----------------------------------------------------------------------===//
+
+#ifndef LLVM_FUZZER_INTERNAL_H
+#define LLVM_FUZZER_INTERNAL_H
+
 #include <cassert>
 #include <climits>
 #include <chrono>
@@ -16,7 +20,6 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
-#include <set>
 
 #include "FuzzerInterface.h"
 
@@ -34,15 +37,22 @@ void CopyFileToErr(const std::string &Path);
 std::string DirPlusFile(const std::string &DirPath,
                         const std::string &FileName);
 
-void Mutate(Unit *U, size_t MaxLen);
-
-void CrossOver(const Unit &A, const Unit &B, Unit *U, size_t MaxLen);
-
+void Printf(const char *Fmt, ...);
 void Print(const Unit &U, const char *PrintAfter = "");
 void PrintASCII(const Unit &U, const char *PrintAfter = "");
 std::string Hash(const Unit &U);
 void SetTimer(int Seconds);
 void PrintFileAsBase64(const std::string &Path);
+void ExecuteCommand(const std::string &Command);
+
+// Private copy of SHA1 implementation.
+static const int kSHA1NumBytes = 20;
+// Computes SHA1 hash of 'Len' bytes in 'Data', writes kSHA1NumBytes to 'Out'.
+void ComputeSHA1(const uint8_t *Data, size_t Len, uint8_t *Out);
+
+// Changes U to contain only ASCII (isprint+isspace) characters.
+// Returns true iff U has been changed.
+bool ToASCII(Unit &U);
 
 int NumberOfCpuCores();
 
@@ -51,20 +61,26 @@ class Fuzzer {
   struct FuzzingOptions {
     int Verbosity = 1;
     int MaxLen = 0;
+    int UnitTimeoutSec = 300;
     bool DoCrossOver = true;
     int  MutateDepth = 5;
     bool ExitOnFirst = false;
     bool UseCounters = false;
     bool UseTraces = false;
     bool UseFullCoverageSet  = false;
-    bool UseCoveragePairs = false;
     bool Reload = true;
     int PreferSmallDuringInitialShuffle = -1;
     size_t MaxNumberOfRuns = ULONG_MAX;
+    int SyncTimeout = 600;
+    int ReportSlowUnits = 10;
+    bool OnlyASCII = false;
+    int TBMDepth = 10;
+    int TBMWidth = 10;
     std::string OutputCorpus;
+    std::string SyncCommand;
     std::vector<std::string> Tokens;
   };
-  Fuzzer(UserCallback Callback, FuzzingOptions Options);
+  Fuzzer(UserSuppliedFuzzer &USF, FuzzingOptions Options);
   void AddToCorpus(const Unit &U) { Corpus.push_back(U); }
   void Loop(size_t NumIterations);
   void ShuffleAndMinimize();
@@ -94,14 +110,16 @@ class Fuzzer {
   void MutateAndTestOne(Unit *U);
   void ReportNewCoverage(size_t NewCoverage, const Unit &U);
   size_t RunOne(const Unit &U);
-  void RunOneAndUpdateCorpus(const Unit &U);
+  void RunOneAndUpdateCorpus(Unit &U);
   size_t RunOneMaximizeTotalCoverage(const Unit &U);
   size_t RunOneMaximizeFullCoverageSet(const Unit &U);
   size_t RunOneMaximizeCoveragePairs(const Unit &U);
   void WriteToOutputCorpus(const Unit &U);
-  void WriteToCrash(const Unit &U, const char *Prefix);
+  void WriteUnitToFileWithPrefix(const Unit &U, const char *Prefix);
   void PrintStats(const char *Where, size_t Cov, const char *End = "\n");
   void PrintUnitInASCIIOrTokens(const Unit &U, const char *PrintAfter = "");
+
+  void SyncCorpus();
 
   // Trace-based fuzzing: we run a unit with some kind of tracing
   // enabled and record potentially useful mutations. Then
@@ -120,11 +138,11 @@ class Fuzzer {
   Unit CurrentUnit;
 
   size_t TotalNumberOfRuns = 0;
+  size_t TotalNumberOfExecutedTraceBasedMutations = 0;
 
   std::vector<Unit> Corpus;
-  std::set<Unit> UnitsAddedAfterInitialLoad;
+  std::unordered_set<std::string> UnitHashesAddedToCorpus;
   std::unordered_set<uintptr_t> FullCoverageSets;
-  std::unordered_set<uint64_t>  CoveragePairs;
 
   // For UseCounters
   std::vector<uint8_t> CounterBitmap;
@@ -134,12 +152,27 @@ class Fuzzer {
     return Res;
   }
 
-  UserCallback Callback;
+  UserSuppliedFuzzer &USF;
   FuzzingOptions Options;
   system_clock::time_point ProcessStartTime = system_clock::now();
+  system_clock::time_point LastExternalSync = system_clock::now();
   system_clock::time_point UnitStartTime;
   long TimeOfLongestUnitInSeconds = 0;
   long EpochOfLastReadOfOutputCorpus = 0;
 };
 
+class SimpleUserSuppliedFuzzer: public UserSuppliedFuzzer {
+ public:
+  SimpleUserSuppliedFuzzer(FuzzerRandomBase *Rand, UserCallback Callback)
+      : UserSuppliedFuzzer(Rand), Callback(Callback) {}
+  virtual void TargetFunction(const uint8_t *Data, size_t Size) {
+    return Callback(Data, Size);
+  }
+
+ private:
+  UserCallback Callback;
+};
+
 };  // namespace fuzzer
+
+#endif // LLVM_FUZZER_INTERNAL_H

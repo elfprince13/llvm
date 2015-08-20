@@ -75,7 +75,7 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
 declare i32 @_Z8test_exti(i32)
 
-define i32 @_Z5test2v()  {
+define i32 @_Z5test2v() personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) {
 entry:
   %exn.slot = alloca i8*
   %ehselector.slot = alloca i32
@@ -88,7 +88,7 @@ invoke.cont:                                      ; preds = %entry
   br label %try.cont, !dbg !23
 
 lpad:                                             ; preds = %entry
-  %1 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+  %1 = landingpad { i8*, i32 }
           catch i8* bitcast (i8** @_ZTIi to i8*), !dbg !21
   %2 = extractvalue { i8*, i32 } %1, 0, !dbg !21
   store i8* %2, i8** %exn.slot, !dbg !21
@@ -140,7 +140,7 @@ attributes #2 = { nounwind }
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!31}
 
-!0 = !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.3 ", isOptimized: false, emissionKind: 0, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, producer: "clang version 3.3 ", isOptimized: false, emissionKind: 0, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
 !1 = !DIFile(filename: "<unknown>", directory: "")
 !2 = !{}
 !3 = !{!4, !10}
@@ -153,9 +153,9 @@ attributes #2 = { nounwind }
 !10 = !DISubprogram(name: "test2", linkageName: "_Z5test2v", line: 11, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, scopeLine: 11, file: !5, scope: !6, type: !11, function: i32 ()* @_Z5test2v, variables: !2)
 !11 = !DISubroutineType(types: !12)
 !12 = !{!9}
-!13 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "k", line: 4, arg: 1, scope: !4, file: !6, type: !9)
+!13 = !DILocalVariable(name: "k", line: 4, arg: 1, scope: !4, file: !6, type: !9)
 !14 = !DILocation(line: 4, scope: !4)
-!15 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "k2", line: 5, scope: !4, file: !6, type: !9)
+!15 = !DILocalVariable(name: "k2", line: 5, scope: !4, file: !6, type: !9)
 !16 = !DILocation(line: 5, scope: !4)
 !17 = !DILocation(line: 6, scope: !4)
 !18 = !DILocation(line: 7, scope: !4)
@@ -164,7 +164,7 @@ attributes #2 = { nounwind }
 !21 = !DILocation(line: 14, scope: !22)
 !22 = distinct !DILexicalBlock(line: 13, column: 0, file: !5, scope: !10)
 !23 = !DILocation(line: 15, scope: !22)
-!24 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "e", line: 16, scope: !10, file: !6, type: !9)
+!24 = !DILocalVariable(name: "e", line: 16, scope: !10, file: !6, type: !9)
 !25 = !DILocation(line: 16, scope: !10)
 !26 = !DILocation(line: 17, scope: !27)
 !27 = distinct !DILexicalBlock(line: 16, column: 0, file: !5, scope: !10)

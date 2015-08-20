@@ -1,7 +1,7 @@
-; RUN: opt -S -winehprepare < %s | FileCheck %s
+; RUN: opt -S -winehprepare -mtriple=x86_64-pc-windows-msvc < %s | FileCheck %s
+; RUN: opt -S -winehprepare -mtriple=x86_64-pc-windows-coreclr < %s | FileCheck %s
 
 target datalayout = "e-m:w-i64:64-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-pc-windows-msvc"
 
 declare void @might_crash(i8* %ehptr)
 declare i32 @filt()
@@ -9,13 +9,13 @@ declare void @cleanup()
 declare i32 @__C_specific_handler(...)
 declare i32 @llvm.eh.typeid.for(i8*)
 
-define void @resume_phi() {
+define void @resume_phi() personality i32 (...)* @__C_specific_handler {
 entry:
   invoke void @might_crash(i8* null)
           to label %return unwind label %lpad1
 
 lpad1:
-  %ehvals1 = landingpad { i8*, i32 } personality i32 (...)* @__C_specific_handler
+  %ehvals1 = landingpad { i8*, i32 }
           catch i32 ()* @filt
   %ehptr1 = extractvalue { i8*, i32 } %ehvals1, 0
   %ehsel1 = extractvalue { i8*, i32 } %ehvals1, 1
@@ -28,7 +28,7 @@ __except:
           to label %return unwind label %lpad2
 
 lpad2:
-  %ehvals2 = landingpad { i8*, i32 } personality i32 (...)* @__C_specific_handler
+  %ehvals2 = landingpad { i8*, i32 }
           cleanup
   %ehptr2 = extractvalue { i8*, i32 } %ehvals2, 0
   %ehsel2 = extractvalue { i8*, i32 } %ehvals2, 1
