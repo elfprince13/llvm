@@ -270,7 +270,7 @@ static void RemoveVRSaveCode(MachineInstr *MI) {
   // epilog blocks.
   for (MachineFunction::iterator I = MF->begin(), E = MF->end(); I != E; ++I) {
     // If last instruction is a return instruction, add an epilogue
-    if (!I->empty() && I->back().isReturn()) {
+    if (I->isReturnBlock()) {
       bool FoundIt = false;
       for (MBBI = I->end(); MBBI != I->begin(); ) {
         --MBBI;
@@ -326,7 +326,7 @@ static void HandleVRSaveUpdate(MachineInstr *MI, const TargetInstrInfo &TII) {
   for (MachineFunction::const_iterator BI = MF->begin(), BE = MF->end();
        UsedRegMask != 0 && BI != BE; ++BI) {
     const MachineBasicBlock &MBB = *BI;
-    if (MBB.empty() || !MBB.back().isReturn())
+    if (!MBB.isReturnBlock())
       continue;
     const MachineInstr &Ret = MBB.back();
     for (unsigned I = 0, E = Ret.getNumOperands(); I != E; ++I) {
@@ -556,9 +556,60 @@ void PPCFrameLowering::replaceFPWithRealFP(MachineFunction &MF) const {
     }
 }
 
+bool PPCFrameLowering::findScratchRegister(MachineBasicBlock *MBB,
+                                           bool UseAtEnd,
+                                           unsigned *ScratchRegister) const {
+  RegScavenger RS;
+  unsigned     R0 = Subtarget.isPPC64() ? PPC::X0 : PPC::R0;
+
+  if (ScratchRegister)
+    *ScratchRegister = R0;
+
+  // If MBB is an entry or exit block, use R0 as the scratch register
+  if ((UseAtEnd && MBB->isReturnBlock()) ||
+      (!UseAtEnd && (&MBB->getParent()->front() == MBB)))
+    return true;
+    
+  RS.initRegState();
+  RS.enterBasicBlock(MBB);
+
+  // The scratch register will be used at the end of the block, so must consider
+  // all registers used within the block
+  if (UseAtEnd && MBB->begin() != MBB->getFirstTerminator())
+    RS.forward(MBB->getFirstTerminator());
+  
+  if (!RS.isRegUsed(R0)) 
+    return true;
+
+  unsigned Reg = RS.FindUnusedReg(Subtarget.isPPC64() ? &PPC::G8RCRegClass
+                                  : &PPC::GPRCRegClass);
+  
+  // Make sure the register scavenger was able to find an available register
+  // If not, use R0 but return false to indicate no register was available and
+  // R0 must be used (as recommended by the ABI)
+  if (Reg == 0)
+    return false;
+
+  if (ScratchRegister)
+    *ScratchRegister = Reg;
+
+  return true;
+}
+
+bool PPCFrameLowering::canUseAsPrologue(const MachineBasicBlock &MBB) const {
+  MachineBasicBlock *TmpMBB = const_cast<MachineBasicBlock *>(&MBB);
+
+  return findScratchRegister(TmpMBB, false, nullptr);
+}
+
+bool PPCFrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
+  MachineBasicBlock *TmpMBB = const_cast<MachineBasicBlock *>(&MBB);
+
+  return findScratchRegister(TmpMBB, true, nullptr);
+}
+
 void PPCFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
-  assert(&MF.front() == &MBB && "Shrink-wrapping not yet supported");
   MachineBasicBlock::iterator MBBI = MBB.begin();
   MachineFrameInfo *MFI = MF.getFrameInfo();
   const PPCInstrInfo &TII =
@@ -590,7 +641,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
       }
     }
 
-  // Move MBBI back to the beginning of the function.
+  // Move MBBI back to the beginning of the prologue block.
   MBBI = MBB.begin();
 
   // Work out frame sizes.
@@ -614,7 +665,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   unsigned BPReg       = RegInfo->getBaseRegister(MF);
   unsigned FPReg       = isPPC64 ? PPC::X31 : PPC::R31;
   unsigned LRReg       = isPPC64 ? PPC::LR8 : PPC::LR;
-  unsigned ScratchReg  = isPPC64 ? PPC::X0  : PPC::R0;
+  unsigned ScratchReg  = 0;
   unsigned TempReg     = isPPC64 ? PPC::X12 : PPC::R12; // another scratch reg
   //  ...(R12/X12 is volatile in both Darwin & SVR4, & can't be a function arg.)
   const MCInstrDesc& MFLRInst = TII.get(isPPC64 ? PPC::MFLR8
@@ -643,6 +694,9 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   assert((isPPC64 || !isSVR4ABI || !(!FrameSize && (MustSaveLR || HasFP))) &&
          "FrameSize must be >0 to save/restore the FP or LR for 32-bit SVR4.");
 
+  findScratchRegister(&MBB, false, &ScratchReg);
+  assert(ScratchReg && "No scratch register!");
+         
   int LROffset = getReturnSaveOffset();
 
   int FPOffset = 0;
@@ -917,26 +971,17 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 }
 
 void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
-                                MachineBasicBlock &MBB) const {
-  MachineBasicBlock::iterator MBBI = MBB.getLastNonDebugInstr();
-  assert(MBBI != MBB.end() && "Returning block has no terminator");
+                                    MachineBasicBlock &MBB) const {
+  MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
+  DebugLoc dl;
+
+  if (MBBI != MBB.end())
+    dl = MBBI->getDebugLoc();
+  
   const PPCInstrInfo &TII =
       *static_cast<const PPCInstrInfo *>(Subtarget.getInstrInfo());
   const PPCRegisterInfo *RegInfo =
       static_cast<const PPCRegisterInfo *>(Subtarget.getRegisterInfo());
-
-  unsigned RetOpcode = MBBI->getOpcode();
-  DebugLoc dl;
-
-  assert((RetOpcode == PPC::BLR ||
-          RetOpcode == PPC::BLR8 ||
-          RetOpcode == PPC::TCRETURNri ||
-          RetOpcode == PPC::TCRETURNdi ||
-          RetOpcode == PPC::TCRETURNai ||
-          RetOpcode == PPC::TCRETURNri8 ||
-          RetOpcode == PPC::TCRETURNdi8 ||
-          RetOpcode == PPC::TCRETURNai8) &&
-         "Can only insert epilog into returning blocks");
 
   // Get alignment info so we know how to restore the SP.
   const MachineFrameInfo *MFI = MF.getFrameInfo();
@@ -960,7 +1005,7 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
   unsigned SPReg      = isPPC64 ? PPC::X1  : PPC::R1;
   unsigned BPReg      = RegInfo->getBaseRegister(MF);
   unsigned FPReg      = isPPC64 ? PPC::X31 : PPC::R31;
-  unsigned ScratchReg  = isPPC64 ? PPC::X0  : PPC::R0;
+  unsigned ScratchReg = 0;
   unsigned TempReg     = isPPC64 ? PPC::X12 : PPC::R12; // another scratch reg
   const MCInstrDesc& MTLRInst = TII.get( isPPC64 ? PPC::MTLR8
                                                  : PPC::MTLR );
@@ -974,10 +1019,14 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
                                                    : PPC::ADDI );
   const MCInstrDesc& AddInst = TII.get( isPPC64 ? PPC::ADD8
                                                 : PPC::ADD4 );
-
+  
   int LROffset = getReturnSaveOffset();
 
   int FPOffset = 0;
+
+  findScratchRegister(&MBB, true, &ScratchReg);
+  assert(ScratchReg && "No scratch register!");
+  
   if (HasFP) {
     if (isSVR4ABI) {
       MachineFrameInfo *FFI = MF.getFrameInfo();
@@ -1009,25 +1058,30 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
     PBPOffset = FFI->getObjectOffset(PBPIndex);
   }
 
-  bool UsesTCRet =  RetOpcode == PPC::TCRETURNri ||
-    RetOpcode == PPC::TCRETURNdi ||
-    RetOpcode == PPC::TCRETURNai ||
-    RetOpcode == PPC::TCRETURNri8 ||
-    RetOpcode == PPC::TCRETURNdi8 ||
-    RetOpcode == PPC::TCRETURNai8;
+  bool IsReturnBlock = (MBBI != MBB.end() && MBBI->isReturn());
+  
+  if (IsReturnBlock) {
+    unsigned RetOpcode = MBBI->getOpcode();
+    bool UsesTCRet =  RetOpcode == PPC::TCRETURNri ||
+                      RetOpcode == PPC::TCRETURNdi ||
+                      RetOpcode == PPC::TCRETURNai ||
+                      RetOpcode == PPC::TCRETURNri8 ||
+                      RetOpcode == PPC::TCRETURNdi8 ||
+                      RetOpcode == PPC::TCRETURNai8;
 
-  if (UsesTCRet) {
-    int MaxTCRetDelta = FI->getTailCallSPDelta();
-    MachineOperand &StackAdjust = MBBI->getOperand(1);
-    assert(StackAdjust.isImm() && "Expecting immediate value.");
-    // Adjust stack pointer.
-    int StackAdj = StackAdjust.getImm();
-    int Delta = StackAdj - MaxTCRetDelta;
-    assert((Delta >= 0) && "Delta must be positive");
-    if (MaxTCRetDelta>0)
-      FrameSize += (StackAdj +Delta);
-    else
-      FrameSize += StackAdj;
+    if (UsesTCRet) {
+      int MaxTCRetDelta = FI->getTailCallSPDelta();
+      MachineOperand &StackAdjust = MBBI->getOperand(1);
+      assert(StackAdjust.isImm() && "Expecting immediate value.");
+      // Adjust stack pointer.
+      int StackAdj = StackAdjust.getImm();
+      int Delta = StackAdj - MaxTCRetDelta;
+      assert((Delta >= 0) && "Delta must be positive");
+      if (MaxTCRetDelta>0)
+        FrameSize += (StackAdj +Delta);
+      else
+        FrameSize += StackAdj;
+    }
   }
 
   // Frames of 32KB & larger require special handling because they cannot be
@@ -1067,7 +1121,6 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
         .addImm(0)
         .addReg(SPReg);
     }
-
   }
 
   if (MustSaveLR)
@@ -1110,52 +1163,55 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
 
   // Callee pop calling convention. Pop parameter/linkage area. Used for tail
   // call optimization
-  if (MF.getTarget().Options.GuaranteedTailCallOpt &&
-      (RetOpcode == PPC::BLR || RetOpcode == PPC::BLR8) &&
-      MF.getFunction()->getCallingConv() == CallingConv::Fast) {
-     PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
-     unsigned CallerAllocatedAmt = FI->getMinReservedArea();
+  if (IsReturnBlock) {
+    unsigned RetOpcode = MBBI->getOpcode();
+    if (MF.getTarget().Options.GuaranteedTailCallOpt &&
+        (RetOpcode == PPC::BLR || RetOpcode == PPC::BLR8) &&
+        MF.getFunction()->getCallingConv() == CallingConv::Fast) {
+      PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
+      unsigned CallerAllocatedAmt = FI->getMinReservedArea();
 
-     if (CallerAllocatedAmt && isInt<16>(CallerAllocatedAmt)) {
-       BuildMI(MBB, MBBI, dl, AddImmInst, SPReg)
-         .addReg(SPReg).addImm(CallerAllocatedAmt);
-     } else {
-       BuildMI(MBB, MBBI, dl, LoadImmShiftedInst, ScratchReg)
+      if (CallerAllocatedAmt && isInt<16>(CallerAllocatedAmt)) {
+        BuildMI(MBB, MBBI, dl, AddImmInst, SPReg)
+          .addReg(SPReg).addImm(CallerAllocatedAmt);
+      } else {
+        BuildMI(MBB, MBBI, dl, LoadImmShiftedInst, ScratchReg)
           .addImm(CallerAllocatedAmt >> 16);
-       BuildMI(MBB, MBBI, dl, OrImmInst, ScratchReg)
+        BuildMI(MBB, MBBI, dl, OrImmInst, ScratchReg)
           .addReg(ScratchReg, RegState::Kill)
           .addImm(CallerAllocatedAmt & 0xFFFF);
-       BuildMI(MBB, MBBI, dl, AddInst)
+        BuildMI(MBB, MBBI, dl, AddInst)
           .addReg(SPReg)
           .addReg(FPReg)
           .addReg(ScratchReg);
-     }
-  } else if (RetOpcode == PPC::TCRETURNdi) {
-    MBBI = MBB.getLastNonDebugInstr();
-    MachineOperand &JumpTarget = MBBI->getOperand(0);
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILB)).
-      addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset());
-  } else if (RetOpcode == PPC::TCRETURNri) {
-    MBBI = MBB.getLastNonDebugInstr();
-    assert(MBBI->getOperand(0).isReg() && "Expecting register operand.");
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBCTR));
-  } else if (RetOpcode == PPC::TCRETURNai) {
-    MBBI = MBB.getLastNonDebugInstr();
-    MachineOperand &JumpTarget = MBBI->getOperand(0);
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBA)).addImm(JumpTarget.getImm());
-  } else if (RetOpcode == PPC::TCRETURNdi8) {
-    MBBI = MBB.getLastNonDebugInstr();
-    MachineOperand &JumpTarget = MBBI->getOperand(0);
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILB8)).
-      addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset());
-  } else if (RetOpcode == PPC::TCRETURNri8) {
-    MBBI = MBB.getLastNonDebugInstr();
-    assert(MBBI->getOperand(0).isReg() && "Expecting register operand.");
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBCTR8));
-  } else if (RetOpcode == PPC::TCRETURNai8) {
-    MBBI = MBB.getLastNonDebugInstr();
-    MachineOperand &JumpTarget = MBBI->getOperand(0);
-    BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBA8)).addImm(JumpTarget.getImm());
+      }
+    } else if (RetOpcode == PPC::TCRETURNdi) {
+      MBBI = MBB.getLastNonDebugInstr();
+      MachineOperand &JumpTarget = MBBI->getOperand(0);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILB)).
+        addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset());
+    } else if (RetOpcode == PPC::TCRETURNri) {
+      MBBI = MBB.getLastNonDebugInstr();
+      assert(MBBI->getOperand(0).isReg() && "Expecting register operand.");
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBCTR));
+    } else if (RetOpcode == PPC::TCRETURNai) {
+      MBBI = MBB.getLastNonDebugInstr();
+      MachineOperand &JumpTarget = MBBI->getOperand(0);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBA)).addImm(JumpTarget.getImm());
+    } else if (RetOpcode == PPC::TCRETURNdi8) {
+      MBBI = MBB.getLastNonDebugInstr();
+      MachineOperand &JumpTarget = MBBI->getOperand(0);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILB8)).
+        addGlobalAddress(JumpTarget.getGlobal(), JumpTarget.getOffset());
+    } else if (RetOpcode == PPC::TCRETURNri8) {
+      MBBI = MBB.getLastNonDebugInstr();
+      assert(MBBI->getOperand(0).isReg() && "Expecting register operand.");
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBCTR8));
+    } else if (RetOpcode == PPC::TCRETURNai8) {
+      MBBI = MBB.getLastNonDebugInstr();
+      MachineOperand &JumpTarget = MBBI->getOperand(0);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::TAILBA8)).addImm(JumpTarget.getImm());
+    }
   }
 }
 
@@ -1709,4 +1765,9 @@ PPCFrameLowering::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
   }
 
   return true;
+}
+
+bool PPCFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+  // FIXME: Enable this for non-Darwin PPC64 once it is confirmed working.
+  return false;
 }

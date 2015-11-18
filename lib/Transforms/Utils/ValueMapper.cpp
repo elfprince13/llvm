@@ -19,6 +19,7 @@
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/IR/Operator.h"
 using namespace llvm;
 
 // Out of line method to get vtable etc for class.
@@ -41,9 +42,16 @@ Value *llvm::MapValue(const Value *V, ValueToValueMapTy &VM, RemapFlags Flags,
 
   // Global values do not need to be seeded into the VM if they
   // are using the identity mapping.
-  if (isa<GlobalValue>(V))
+  if (isa<GlobalValue>(V)) {
+    if (Flags & RF_NullMapMissingGlobalValues) {
+      assert(!(Flags & RF_IgnoreMissingEntries) &&
+             "Illegal to specify both RF_NullMapMissingGlobalValues and "
+             "RF_IgnoreMissingEntries");
+      return nullptr;
+    }
     return VM[V] = const_cast<Value*>(V);
-  
+  }
+
   if (const InlineAsm *IA = dyn_cast<InlineAsm>(V)) {
     // Inline asm may need *type* remapping.
     FunctionType *NewTy = IA->getFunctionType();
@@ -73,7 +81,8 @@ Value *llvm::MapValue(const Value *V, ValueToValueMapTy &VM, RemapFlags Flags,
     // correct.  For now, just match behaviour from before the metadata/value
     // split.
     //
-    //    assert(MappedMD && "Referenced metadata value not in value map");
+    //    assert((MappedMD || (Flags & RF_NullMapMissingGlobalValues)) &&
+    //           "Referenced metadata value not in value map");
     return VM[V] = MetadataAsValue::get(V->getContext(), MappedMD);
   }
 
@@ -127,9 +136,13 @@ Value *llvm::MapValue(const Value *V, ValueToValueMapTy &VM, RemapFlags Flags,
       Ops.push_back(MapValue(cast<Constant>(C->getOperand(OpNo)), VM,
                              Flags, TypeMapper, Materializer));
   }
-  
+  Type *NewSrcTy = nullptr;
+  if (TypeMapper)
+    if (auto *GEPO = dyn_cast<GEPOperator>(C))
+      NewSrcTy = TypeMapper->remapType(GEPO->getSourceElementType());
+
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(C))
-    return VM[V] = CE->getWithOperands(Ops, NewTy);
+    return VM[V] = CE->getWithOperands(Ops, NewTy, false, NewSrcTy);
   if (isa<ConstantArray>(C))
     return VM[V] = ConstantArray::get(cast<ArrayType>(NewTy), Ops);
   if (isa<ConstantStruct>(C))
@@ -179,7 +192,8 @@ static Metadata *mapMetadataOp(Metadata *Op,
   // correct.  For now, just match behaviour from before the metadata/value
   // split.
   //
-  //    llvm_unreachable("Referenced metadata not in value map!");
+  //    assert((Flags & RF_NullMapMissingGlobalValues) &&
+  //           "Referenced metadata not in value map!");
   return nullptr;
 }
 
@@ -300,7 +314,8 @@ static Metadata *MapMetadataImpl(const Metadata *MD,
     // correct.  For now, just match behaviour from before the metadata/value
     // split.
     //
-    //    assert(MappedV && "Referenced metadata not in value map!");
+    //    assert((MappedV || (Flags & RF_NullMapMissingGlobalValues)) &&
+    //           "Referenced metadata not in value map!");
     if (MappedV)
       return mapToMetadata(VM, MD, ValueAsMetadata::get(MappedV));
     return nullptr;

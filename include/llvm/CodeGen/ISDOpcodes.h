@@ -336,7 +336,7 @@ namespace ISD {
     SHL, SRA, SRL, ROTL, ROTR,
 
     /// Byte Swap and Counting operators.
-    BSWAP, CTTZ, CTLZ, CTPOP,
+    BSWAP, CTTZ, CTLZ, CTPOP, BITREVERSE,
 
     /// [SU]ABSDIFF - Signed/Unsigned absolute difference of two input integer
     /// vector. These nodes are generated from llvm.*absdiff* intrinsics.
@@ -373,8 +373,7 @@ namespace ISD {
     SETCC,
 
     /// SHL_PARTS/SRA_PARTS/SRL_PARTS - These operators are used for expanded
-    /// integer shift operations, just like ADD/SUB_PARTS.  The operation
-    /// ordering is:
+    /// integer shift operations.  The operation ordering is:
     ///       [Lo,Hi] = op [LoLHS,HiLHS], Amt
     SHL_PARTS, SRA_PARTS, SRL_PARTS,
 
@@ -591,6 +590,18 @@ namespace ISD {
     /// take a chain as input and return a chain.
     EH_LABEL,
 
+    /// CATCHPAD - Represents a catchpad instruction.
+    CATCHPAD,
+
+    /// CATCHRET - Represents a return from a catch block funclet. Used for
+    /// MSVC compatible exception handling. Takes a chain operand and a
+    /// destination basic block operand.
+    CATCHRET,
+
+    /// CLEANUPRET - Represents a return from a cleanup block funclet.  Used for
+    /// MSVC compatible exception handling. Takes only a chain operand.
+    CLEANUPRET,
+
     /// STACKSAVE - STACKSAVE has one operand, an input chain.  It produces a
     /// value, the same type as the pointer type for the system, and an output
     /// chain.
@@ -634,9 +645,11 @@ namespace ISD {
     PCMARKER,
 
     /// READCYCLECOUNTER - This corresponds to the readcyclecounter intrinsic.
-    /// The only operand is a chain and a value and a chain are produced.  The
-    /// value is the contents of the architecture specific cycle counter like
-    /// register (or other high accuracy low latency clock source)
+    /// It produces a chain and one i64 value. The only operand is a chain.
+    /// If i64 is not legal, the result will be expanded into smaller values.
+    /// Still, it returns an i64, so targets should set legality for i64.
+    /// The result is the content of the architecture-specific cycle
+    /// counter-like register (or other high accuracy low latency clock source).
     READCYCLECOUNTER,
 
     /// HANDLENODE node - Used as a handle for various purposes.
