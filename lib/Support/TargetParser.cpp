@@ -16,6 +16,7 @@
 #include "llvm/Support/TargetParser.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/Twine.h"
 #include <cctype>
 
 using namespace llvm;
@@ -53,14 +54,14 @@ static const struct {
 static const struct {
   const char *NameCStr;
   size_t NameLength;
-  ARM::ArchKind ID;
   const char *CPUAttrCStr;
   size_t CPUAttrLength;
   const char *SubArchCStr;
   size_t SubArchLength;
-  ARMBuildAttrs::CPUArch ArchAttr; // Arch ID in build attributes.
   unsigned DefaultFPU;
   unsigned ArchBaseExtensions;
+  ARM::ArchKind ID;
+  ARMBuildAttrs::CPUArch ArchAttr; // Arch ID in build attributes.
 
   StringRef getName() const { return StringRef(NameCStr, NameLength); }
 
@@ -71,8 +72,8 @@ static const struct {
   StringRef getSubArch() const { return StringRef(SubArchCStr, SubArchLength); }
 } ARCHNames[] = {
 #define ARM_ARCH(NAME, ID, CPU_ATTR, SUB_ARCH, ARCH_ATTR, ARCH_FPU, ARCH_BASE_EXT)       \
-  {NAME, sizeof(NAME) - 1, ID, CPU_ATTR, sizeof(CPU_ATTR) - 1, SUB_ARCH,       \
-   sizeof(SUB_ARCH) - 1, ARCH_ATTR, ARCH_FPU, ARCH_BASE_EXT},
+  {NAME, sizeof(NAME) - 1, CPU_ATTR, sizeof(CPU_ATTR) - 1, SUB_ARCH,       \
+   sizeof(SUB_ARCH) - 1, ARCH_FPU, ARCH_BASE_EXT, ID, ARCH_ATTR},
 #include "llvm/Support/ARMTargetParser.def"
 };
 
@@ -82,10 +83,13 @@ static const struct {
   const char *NameCStr;
   size_t NameLength;
   unsigned ID;
+  const char *Feature;
+  const char *NegFeature;
 
   StringRef getName() const { return StringRef(NameCStr, NameLength); }
 } ARCHExtNames[] = {
-#define ARM_ARCH_EXT_NAME(NAME, ID) { NAME, sizeof(NAME) - 1, ID },
+#define ARM_ARCH_EXT_NAME(NAME, ID, FEATURE, NEGFEATURE) \
+  { NAME, sizeof(NAME) - 1, ID, FEATURE, NEGFEATURE },
 #include "llvm/Support/ARMTargetParser.def"
 };
 
@@ -326,6 +330,22 @@ StringRef llvm::ARM::getArchExtName(unsigned ArchExtKind) {
   return StringRef();
 }
 
+const char *llvm::ARM::getArchExtFeature(StringRef ArchExt) {
+  if (ArchExt.startswith("no")) {
+    StringRef ArchExtBase(ArchExt.substr(2));
+    for (const auto AE : ARCHExtNames) {
+      if (AE.NegFeature && ArchExtBase == AE.getName())
+        return AE.NegFeature;
+    }
+  }
+  for (const auto AE : ARCHExtNames) {
+    if (AE.Feature && ArchExt == AE.getName())
+      return AE.Feature;
+  }
+
+  return nullptr;
+}
+
 StringRef llvm::ARM::getHWDivName(unsigned HWDivKind) {
   for (const auto D : HWDivNames) {
     if (HWDivKind == D.ID)
@@ -380,6 +400,7 @@ static StringRef getArchSynonym(StringRef Arch) {
   return StringSwitch<StringRef>(Arch)
       .Case("v5", "v5t")
       .Case("v5e", "v5te")
+      .Case("v6j", "v6")
       .Case("v6hl", "v6k")
       .Cases("v6m", "v6sm", "v6s-m", "v6-m")
       .Cases("v6z", "v6zk", "v6kz")
@@ -389,6 +410,9 @@ static StringRef getArchSynonym(StringRef Arch) {
       .Case("v7em", "v7e-m")
       .Cases("v8", "v8a", "aarch64", "arm64", "v8-a")
       .Case("v8.1a", "v8.1-a")
+      .Case("v8.2a", "v8.2-a")
+      .Case("v8m.base", "v8-m.base")
+      .Case("v8m.main", "v8-m.main")
       .Default(Arch);
 }
 
@@ -526,6 +550,8 @@ unsigned llvm::ARM::parseArchProfile(StringRef Arch) {
   case ARM::AK_ARMV6M:
   case ARM::AK_ARMV7M:
   case ARM::AK_ARMV7EM:
+  case ARM::AK_ARMV8MMainline:
+  case ARM::AK_ARMV8MBaseline:
     return ARM::PK_M;
   case ARM::AK_ARMV7R:
     return ARM::PK_R;
@@ -533,6 +559,7 @@ unsigned llvm::ARM::parseArchProfile(StringRef Arch) {
   case ARM::AK_ARMV7K:
   case ARM::AK_ARMV8A:
   case ARM::AK_ARMV8_1A:
+  case ARM::AK_ARMV8_2A:
     return ARM::PK_A;
   }
   return ARM::PK_INVALID;
@@ -559,7 +586,6 @@ unsigned llvm::ARM::parseArchVersion(StringRef Arch) {
   case ARM::AK_ARMV5TEJ:
     return 5;
   case ARM::AK_ARMV6:
-  case ARM::AK_ARMV6J:
   case ARM::AK_ARMV6K:
   case ARM::AK_ARMV6T2:
   case ARM::AK_ARMV6KZ:
@@ -574,6 +600,9 @@ unsigned llvm::ARM::parseArchVersion(StringRef Arch) {
     return 7;
   case ARM::AK_ARMV8A:
   case ARM::AK_ARMV8_1A:
+  case ARM::AK_ARMV8_2A:
+  case ARM::AK_ARMV8MBaseline:
+  case ARM::AK_ARMV8MMainline:
     return 8;
   }
   return 0;

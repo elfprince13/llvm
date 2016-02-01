@@ -19,7 +19,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/CFG.h"
-#include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
@@ -264,13 +264,17 @@ namespace llvm {
         return;
       IS.OptLevel = NewOptLevel;
       IS.TM.setOptLevel(NewOptLevel);
-      SavedFastISel = IS.TM.Options.EnableFastISel;
-      if (NewOptLevel == CodeGenOpt::None)
-        IS.TM.setFastISel(true);
       DEBUG(dbgs() << "\nChanging optimization level for Function "
             << IS.MF->getFunction()->getName() << "\n");
       DEBUG(dbgs() << "\tBefore: -O" << SavedOptLevel
             << " ; After: -O" << NewOptLevel << "\n");
+      SavedFastISel = IS.TM.Options.EnableFastISel;
+      if (NewOptLevel == CodeGenOpt::None) {
+        IS.TM.setFastISel(IS.TM.getO0WantsFastISel());
+        DEBUG(dbgs() << "\tFastISel is "
+              << (IS.TM.Options.EnableFastISel ? "enabled" : "disabled")
+              << "\n");
+      }
     }
 
     ~OptLevelChanger() {
@@ -463,14 +467,49 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
 
   MF->setHasInlineAsm(false);
 
+  FuncInfo->SplitCSR = false;
+  SmallVector<MachineBasicBlock*, 4> Returns;
+
+  // We split CSR if the target supports it for the given function
+  // and the function has only return exits.
+  if (TLI->supportSplitCSR(MF)) {
+    FuncInfo->SplitCSR = true;
+
+    // Collect all the return blocks.
+    for (const BasicBlock &BB : Fn) {
+      if (!succ_empty(&BB))
+        continue;
+
+      const TerminatorInst *Term = BB.getTerminator();
+      if (isa<UnreachableInst>(Term))
+        continue;
+      if (isa<ReturnInst>(Term)) {
+        Returns.push_back(FuncInfo->MBBMap[&BB]);
+        continue;
+      }
+
+      // Bail out if the exit block is not Return nor Unreachable.
+      FuncInfo->SplitCSR = false;
+      break;
+    }
+  }
+
+  MachineBasicBlock *EntryMBB = &MF->front();
+  if (FuncInfo->SplitCSR)
+    // This performs initialization so lowering for SplitCSR will be correct.
+    TLI->initializeSplitCSR(EntryMBB);
+
   SelectAllBasicBlocks(Fn);
 
   // If the first basic block in the function has live ins that need to be
   // copied into vregs, emit the copies into the top of the block before
   // emitting the code for the block.
-  MachineBasicBlock *EntryMBB = &MF->front();
   const TargetRegisterInfo &TRI = *MF->getSubtarget().getRegisterInfo();
   RegInfo->EmitLiveInCopies(EntryMBB, TRI, *TII);
+
+  // Insert copies in the entry block and the return blocks.
+  if (FuncInfo->SplitCSR)
+    TLI->insertCopiesSplitCSR(EntryMBB, Returns);
 
   DenseMap<unsigned, unsigned> LiveInMap;
   if (!FuncInfo->ArgDbgValues.empty())
@@ -594,6 +633,9 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
     MRI.replaceRegWith(From, To);
   }
 
+  if (TLI->hasCopyImplyingStackAdjustment(MF))
+    MFI->setHasCopyImplyingStackAdjustment(true);
+
   // Freeze the set of reserved registers now that MachineFrameInfo has been
   // set up. All the information required by getReservedRegs() should be
   // available now.
@@ -627,7 +669,7 @@ void SelectionDAGISel::SelectBasicBlock(BasicBlock::const_iterator Begin,
 }
 
 void SelectionDAGISel::ComputeLiveOutVRegInfo() {
-  SmallPtrSet<SDNode*, 128> VisitedNodes;
+  SmallPtrSet<SDNode*, 16> VisitedNodes;
   SmallVector<SDNode*, 128> Worklist;
 
   Worklist.push_back(CurDAG->getRoot().getNode());
@@ -1460,7 +1502,7 @@ SelectionDAGISel::FinishBasicBlock() {
 
     // CodeGen Failure MBB if we have not codegened it yet.
     MachineBasicBlock *FailureMBB = SDB->SPDescriptor.getFailureMBB();
-    if (!FailureMBB->size()) {
+    if (FailureMBB->empty()) {
       FuncInfo->MBB = FailureMBB;
       FuncInfo->InsertPt = FailureMBB->end();
       SDB->visitSPDescriptorFailure(SDB->SPDescriptor);
@@ -1486,10 +1528,9 @@ SelectionDAGISel::FinishBasicBlock() {
       CodeGenAndEmitDAG();
     }
 
-    uint32_t UnhandledWeight = SDB->BitTestCases[i].Weight;
-
+    BranchProbability UnhandledProb = SDB->BitTestCases[i].Prob;
     for (unsigned j = 0, ej = SDB->BitTestCases[i].Cases.size(); j != ej; ++j) {
-      UnhandledWeight -= SDB->BitTestCases[i].Cases[j].ExtraWeight;
+      UnhandledProb -= SDB->BitTestCases[i].Cases[j].ExtraProb;
       // Set the current basic block to the mbb we wish to insert the code into
       FuncInfo->MBB = SDB->BitTestCases[i].Cases[j].ThisBB;
       FuncInfo->InsertPt = FuncInfo->MBB->end();
@@ -1509,7 +1550,7 @@ SelectionDAGISel::FinishBasicBlock() {
 
       SDB->visitBitTestCase(SDB->BitTestCases[i],
                             NextMBB,
-                            UnhandledWeight,
+                            UnhandledProb,
                             SDB->BitTestCases[i].Reg,
                             SDB->BitTestCases[i].Cases[j],
                             FuncInfo->MBB);
@@ -2067,8 +2108,9 @@ enum ChainResult {
 /// already selected nodes "below" us.
 static ChainResult
 WalkChainUsers(const SDNode *ChainedNode,
-               SmallVectorImpl<SDNode*> &ChainedNodesInPattern,
-               SmallVectorImpl<SDNode*> &InteriorChainedNodes) {
+               SmallVectorImpl<SDNode *> &ChainedNodesInPattern,
+               DenseMap<const SDNode *, ChainResult> &TokenFactorResult,
+               SmallVectorImpl<SDNode *> &InteriorChainedNodes) {
   ChainResult Result = CR_Simple;
 
   for (SDNode::use_iterator UI = ChainedNode->use_begin(),
@@ -2149,7 +2191,15 @@ WalkChainUsers(const SDNode *ChainedNode,
     // as a new TokenFactor.
     //
     // To distinguish these two cases, do a recursive walk down the uses.
-    switch (WalkChainUsers(User, ChainedNodesInPattern, InteriorChainedNodes)) {
+    auto MemoizeResult = TokenFactorResult.find(User);
+    bool Visited = MemoizeResult != TokenFactorResult.end();
+    // Recursively walk chain users only if the result is not memoized.
+    if (!Visited) {
+      auto Res = WalkChainUsers(User, ChainedNodesInPattern, TokenFactorResult,
+                                InteriorChainedNodes);
+      MemoizeResult = TokenFactorResult.insert(std::make_pair(User, Res)).first;
+    }
+    switch (MemoizeResult->second) {
     case CR_Simple:
       // If the uses of the TokenFactor are just already-selected nodes, ignore
       // it, it is "below" our pattern.
@@ -2169,8 +2219,10 @@ WalkChainUsers(const SDNode *ChainedNode,
     // ultimate chain result of the generated code.  We will also add its chain
     // inputs as inputs to the ultimate TokenFactor we create.
     Result = CR_LeadsToInteriorNode;
-    ChainedNodesInPattern.push_back(User);
-    InteriorChainedNodes.push_back(User);
+    if (!Visited) {
+      ChainedNodesInPattern.push_back(User);
+      InteriorChainedNodes.push_back(User);
+    }
     continue;
   }
 
@@ -2186,12 +2238,16 @@ WalkChainUsers(const SDNode *ChainedNode,
 static SDValue
 HandleMergeInputChains(SmallVectorImpl<SDNode*> &ChainNodesMatched,
                        SelectionDAG *CurDAG) {
+  // Used for memoization. Without it WalkChainUsers could take exponential
+  // time to run.
+  DenseMap<const SDNode *, ChainResult> TokenFactorResult;
   // Walk all of the chained nodes we've matched, recursively scanning down the
   // users of the chain result. This adds any TokenFactor nodes that are caught
   // in between chained nodes to the chained and interior nodes list.
   SmallVector<SDNode*, 3> InteriorChainedNodes;
   for (unsigned i = 0, e = ChainNodesMatched.size(); i != e; ++i) {
     if (WalkChainUsers(ChainNodesMatched[i], ChainNodesMatched,
+                       TokenFactorResult,
                        InteriorChainedNodes) == CR_InducesCycle)
       return SDValue(); // Would induce a cycle.
   }

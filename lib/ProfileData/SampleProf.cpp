@@ -45,6 +45,8 @@ class SampleProfErrorCategoryType : public std::error_category {
       return "Truncated function name table";
     case sampleprof_error::not_implemented:
       return "Unimplemented feature";
+    case sampleprof_error::counter_overflow:
+      return "Counter overflow";
     }
     llvm_unreachable("A value of sampleprof_error has no message.");
   }
@@ -69,14 +71,14 @@ raw_ostream &llvm::sampleprof::operator<<(raw_ostream &OS,
   return OS;
 }
 
-void LineLocation::dump() const { print(dbgs()); }
+LLVM_DUMP_METHOD void LineLocation::dump() const { print(dbgs()); }
 
 void CallsiteLocation::print(raw_ostream &OS) const {
   LineLocation::print(OS);
   OS << ": inlined callee: " << CalleeName;
 }
 
-void CallsiteLocation::dump() const { print(dbgs()); }
+LLVM_DUMP_METHOD void CallsiteLocation::dump() const { print(dbgs()); }
 
 inline raw_ostream &llvm::sampleprof::operator<<(raw_ostream &OS,
                                                  const CallsiteLocation &Loc) {
@@ -95,7 +97,7 @@ void SampleRecord::print(raw_ostream &OS, unsigned Indent) const {
   OS << "\n";
 }
 
-void SampleRecord::dump() const { print(dbgs(), 0); }
+LLVM_DUMP_METHOD void SampleRecord::dump() const { print(dbgs(), 0); }
 
 raw_ostream &llvm::sampleprof::operator<<(raw_ostream &OS,
                                           const SampleRecord &Sample) {
@@ -108,15 +110,33 @@ void FunctionSamples::print(raw_ostream &OS, unsigned Indent) const {
   OS << TotalSamples << ", " << TotalHeadSamples << ", " << BodySamples.size()
      << " sampled lines\n";
 
-  for (const auto &SI : BodySamples) {
+  OS.indent(Indent);
+  if (BodySamples.size() > 0) {
+    OS << "Samples collected in the function's body {\n";
+    SampleSorter<LineLocation, SampleRecord> SortedBodySamples(BodySamples);
+    for (const auto &SI : SortedBodySamples.get()) {
+      OS.indent(Indent + 2);
+      OS << SI->first << ": " << SI->second;
+    }
     OS.indent(Indent);
-    OS << SI.first << ": " << SI.second;
+    OS << "}\n";
+  } else {
+    OS << "No samples collected in the function's body\n";
   }
 
-  for (const auto &CS : CallsiteSamples) {
-    OS.indent(Indent);
-    OS << CS.first << ": ";
-    CS.second.print(OS, Indent + 2);
+  OS.indent(Indent);
+  if (CallsiteSamples.size() > 0) {
+    OS << "Samples collected in inlined callsites {\n";
+    SampleSorter<CallsiteLocation, FunctionSamples> SortedCallsiteSamples(
+        CallsiteSamples);
+    for (const auto &CS : SortedCallsiteSamples.get()) {
+      OS.indent(Indent + 2);
+      OS << CS->first << ": ";
+      CS->second.print(OS, Indent + 4);
+    }
+    OS << "}\n";
+  } else {
+    OS << "No inlined callsites in this function\n";
   }
 }
 

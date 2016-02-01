@@ -414,7 +414,7 @@ public:
   /// \brief A combiner-aware RAUW-like routine.
   ///
   /// This method is to be used when an instruction is found to be dead,
-  /// replacable with another preexisting expression. Here we add all uses of
+  /// replaceable with another preexisting expression. Here we add all uses of
   /// I to the worklist, replace all uses of I with the new value, then return
   /// I, so that the inst combiner will know that I was modified.
   Instruction *ReplaceInstUsesWith(Instruction &I, Value *V) {
@@ -458,9 +458,9 @@ public:
     // Make sure that we reprocess all operands now that we reduced their
     // use counts.
     if (I.getNumOperands() < 8) {
-      for (User::op_iterator i = I.op_begin(), e = I.op_end(); i != e; ++i)
-        if (Instruction *Op = dyn_cast<Instruction>(*i))
-          Worklist.Add(Op);
+      for (Use &Operand : I.operands())
+        if (auto *Inst = dyn_cast<Instruction>(Operand))
+          Worklist.Add(Inst);
     }
     Worklist.Remove(&I);
     I.eraseFromParent();
@@ -556,7 +556,7 @@ private:
   Value *InsertRangeTest(Value *V, Constant *Lo, Constant *Hi, bool isSigned,
                          bool Inside);
   Instruction *PromoteCastOfAllocation(BitCastInst &CI, AllocaInst &AI);
-  Instruction *MatchBSwap(BinaryOperator &I);
+  Instruction *MatchBSwapOrBitReverse(BinaryOperator &I);
   bool SimplifyStoreAtEndOfBlock(StoreInst &SI);
   Instruction *SimplifyMemTransfer(MemIntrinsic *MI);
   Instruction *SimplifyMemSet(MemSetInst *MI);

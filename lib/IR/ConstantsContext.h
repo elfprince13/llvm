@@ -179,6 +179,13 @@ public:
 
   /// Transparently provide more efficient getOperand methods.
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
+
+  static bool classof(const ConstantExpr *CE) {
+    return CE->getOpcode() == Instruction::ExtractValue;
+  }
+  static bool classof(const Value *V) {
+    return isa<ConstantExpr>(V) && classof(cast<ConstantExpr>(V));
+  }
 };
 
 /// InsertValueConstantExpr - This class is private to
@@ -205,25 +212,25 @@ public:
 
   /// Transparently provide more efficient getOperand methods.
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
+
+  static bool classof(const ConstantExpr *CE) {
+    return CE->getOpcode() == Instruction::InsertValue;
+  }
+  static bool classof(const Value *V) {
+    return isa<ConstantExpr>(V) && classof(cast<ConstantExpr>(V));
+  }
 };
 
 /// GetElementPtrConstantExpr - This class is private to Constants.cpp, and is
 /// used behind the scenes to implement getelementpr constant exprs.
 class GetElementPtrConstantExpr : public ConstantExpr {
   Type *SrcElementTy;
+  Type *ResElementTy;
   void anchor() override;
   GetElementPtrConstantExpr(Type *SrcElementTy, Constant *C,
                             ArrayRef<Constant *> IdxList, Type *DestTy);
 
 public:
-  static GetElementPtrConstantExpr *Create(Constant *C,
-                                           ArrayRef<Constant*> IdxList,
-                                           Type *DestTy,
-                                           unsigned Flags) {
-    return Create(
-        cast<PointerType>(C->getType()->getScalarType())->getElementType(), C,
-        IdxList, DestTy, Flags);
-  }
   static GetElementPtrConstantExpr *Create(Type *SrcElementTy, Constant *C,
                                            ArrayRef<Constant *> IdxList,
                                            Type *DestTy, unsigned Flags) {
@@ -233,8 +240,16 @@ public:
     return Result;
   }
   Type *getSourceElementType() const;
+  Type *getResultElementType() const;
   /// Transparently provide more efficient getOperand methods.
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
+
+  static bool classof(const ConstantExpr *CE) {
+    return CE->getOpcode() == Instruction::GetElementPtr;
+  }
+  static bool classof(const Value *V) {
+    return isa<ConstantExpr>(V) && classof(cast<ConstantExpr>(V));
+  }
 };
 
 // CompareConstantExpr - This class is private to Constants.cpp, and is used
@@ -257,6 +272,14 @@ public:
   }
   /// Transparently provide more efficient getOperand methods.
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
+
+  static bool classof(const ConstantExpr *CE) {
+    return CE->getOpcode() == Instruction::ICmp ||
+           CE->getOpcode() == Instruction::FCmp;
+  }
+  static bool classof(const Value *V) {
+    return isa<ConstantExpr>(V) && classof(cast<ConstantExpr>(V));
+  }
 };
 
 template <>

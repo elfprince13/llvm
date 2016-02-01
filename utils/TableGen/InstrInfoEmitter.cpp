@@ -59,12 +59,12 @@ private:
                   raw_ostream &OS);
   void emitOperandTypesEnum(raw_ostream &OS, const CodeGenTarget &Target);
   void initOperandMapData(
-            const std::vector<const CodeGenInstruction *> &NumberedInstructions,
+            ArrayRef<const CodeGenInstruction *> NumberedInstructions,
             const std::string &Namespace,
             std::map<std::string, unsigned> &Operands,
             OpNameMapTy &OperandMap);
   void emitOperandNameMappings(raw_ostream &OS, const CodeGenTarget &Target,
-            const std::vector<const CodeGenInstruction*> &NumberedInstructions);
+            ArrayRef<const CodeGenInstruction*> NumberedInstructions);
 
   // Operand information.
   void EmitOperandInfo(raw_ostream &OS, OperandInfoMapTy &OperandInfoIDs);
@@ -74,7 +74,7 @@ private:
 
 static void PrintDefList(const std::vector<Record*> &Uses,
                          unsigned Num, raw_ostream &OS) {
-  OS << "static const uint16_t ImplicitList" << Num << "[] = { ";
+  OS << "static const MCPhysReg ImplicitList" << Num << "[] = { ";
   for (unsigned i = 0, e = Uses.size(); i != e; ++i)
     OS << getQualifiedName(Uses[i]) << ", ";
   OS << "0 };\n";
@@ -177,7 +177,7 @@ void InstrInfoEmitter::EmitOperandInfo(raw_ostream &OS,
 
   OS << "\n";
   const CodeGenTarget &Target = CDP.getTargetInfo();
-  for (const CodeGenInstruction *Inst : Target.instructions()) {
+  for (const CodeGenInstruction *Inst : Target.getInstructionsByEnumValue()) {
     std::vector<std::string> OperandInfo = GetOperandInfo(*Inst);
     unsigned &N = OperandInfoIDs[OperandInfo];
     if (N != 0) continue;
@@ -198,7 +198,7 @@ void InstrInfoEmitter::EmitOperandInfo(raw_ostream &OS,
 ///        each instructions.  This is used to generate the OperandMap table as
 ///        well as the getNamedOperandIdx() function.
 void InstrInfoEmitter::initOperandMapData(
-        const std::vector<const CodeGenInstruction *> &NumberedInstructions,
+        ArrayRef<const CodeGenInstruction *> NumberedInstructions,
         const std::string &Namespace,
         std::map<std::string, unsigned> &Operands,
         OpNameMapTy &OperandMap) {
@@ -234,7 +234,7 @@ void InstrInfoEmitter::initOperandMapData(
 ///   OpName enum
 void InstrInfoEmitter::emitOperandNameMappings(raw_ostream &OS,
            const CodeGenTarget &Target,
-           const std::vector<const CodeGenInstruction*> &NumberedInstructions) {
+           ArrayRef<const CodeGenInstruction*> NumberedInstructions) {
 
   const std::string &Namespace = Target.getInstNamespace();
   std::string OpNameNS = "OpName";
@@ -358,7 +358,7 @@ void InstrInfoEmitter::run(raw_ostream &OS) {
   unsigned ListNumber = 0;
 
   // Emit all of the instruction's implicit uses and defs.
-  for (const CodeGenInstruction *II : Target.instructions()) {
+  for (const CodeGenInstruction *II : Target.getInstructionsByEnumValue()) {
     Record *Inst = II->TheDef;
     std::vector<Record*> Uses = Inst->getValueAsListOfDefs("Uses");
     if (!Uses.empty()) {
@@ -380,7 +380,7 @@ void InstrInfoEmitter::run(raw_ostream &OS) {
   // Emit all of the MCInstrDesc records in their ENUM ordering.
   //
   OS << "\nextern const MCInstrDesc " << TargetName << "Insts[] = {\n";
-  const std::vector<const CodeGenInstruction*> &NumberedInstructions =
+  ArrayRef<const CodeGenInstruction*> NumberedInstructions =
     Target.getInstructionsByEnumValue();
 
   SequenceToOffsetTable<std::string> InstrNames;
@@ -577,7 +577,7 @@ void InstrInfoEmitter::emitEnums(raw_ostream &OS) {
   if (Namespace.empty())
     PrintFatalError("No instructions defined!");
 
-  const std::vector<const CodeGenInstruction*> &NumberedInstructions =
+  ArrayRef<const CodeGenInstruction*> NumberedInstructions =
     Target.getInstructionsByEnumValue();
 
   OS << "namespace " << Namespace << " {\n";

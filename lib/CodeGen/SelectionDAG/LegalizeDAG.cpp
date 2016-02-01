@@ -154,6 +154,7 @@ private:
   SDValue ExpandVectorBuildThroughStack(SDNode* Node);
 
   SDValue ExpandConstantFP(ConstantFPSDNode *CFP, bool UseCP);
+  SDValue ExpandConstant(ConstantSDNode *CP);
 
   // if ExpandNode returns false, LegalizeOp falls back to ConvertNodeToLibcall
   bool ExpandNode(SDNode *Node);
@@ -291,6 +292,20 @@ SelectionDAGLegalize::ExpandConstantFP(ConstantFPSDNode *CFP, bool UseCP) {
       DAG.getLoad(OrigVT, dl, DAG.getEntryNode(), CPIdx,
                   MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
                   false, false, false, Alignment);
+  return Result;
+}
+
+/// Expands the Constant node to a load from the constant pool.
+SDValue SelectionDAGLegalize::ExpandConstant(ConstantSDNode *CP) {
+  SDLoc dl(CP);
+  EVT VT = CP->getValueType(0);
+  SDValue CPIdx = DAG.getConstantPool(CP->getConstantIntValue(),
+                                      TLI.getPointerTy(DAG.getDataLayout()));
+  unsigned Alignment = cast<ConstantPoolSDNode>(CPIdx)->getAlignment();
+  SDValue Result =
+    DAG.getLoad(VT, dl, DAG.getEntryNode(), CPIdx,
+                MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
+                false, false, false, Alignment);
   return Result;
 }
 
@@ -844,8 +859,7 @@ void SelectionDAGLegalize::LegalizeStoreOps(SDNode *Node) {
         SDValue Result = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Lo, Hi);
         ReplaceNode(SDValue(Node, 0), Result);
       } else {
-        switch (TLI.getTruncStoreAction(ST->getValue().getSimpleValueType(),
-                                        StVT.getSimpleVT())) {
+        switch (TLI.getTruncStoreAction(ST->getValue().getValueType(), StVT)) {
         default: llvm_unreachable("This action is not supported yet!");
         case TargetLowering::Legal: {
           EVT MemVT = ST->getMemoryVT();
@@ -1193,15 +1207,17 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
 
 #ifndef NDEBUG
   for (unsigned i = 0, e = Node->getNumValues(); i != e; ++i)
-    assert(TLI.getTypeAction(*DAG.getContext(), Node->getValueType(i)) ==
-             TargetLowering::TypeLegal &&
+    assert((TLI.getTypeAction(*DAG.getContext(), Node->getValueType(i)) ==
+              TargetLowering::TypeLegal ||
+            TLI.isTypeLegal(Node->getValueType(i))) &&
            "Unexpected illegal type!");
 
   for (const SDValue &Op : Node->op_values())
-    assert((TLI.getTypeAction(*DAG.getContext(),
-                              Op.getValueType()) == TargetLowering::TypeLegal ||
-                              Op.getOpcode() == ISD::TargetConstant) &&
-                              "Unexpected illegal type!");
+    assert((TLI.getTypeAction(*DAG.getContext(), Op.getValueType()) ==
+              TargetLowering::TypeLegal ||
+            TLI.isTypeLegal(Op.getValueType()) ||
+            Op.getOpcode() == ISD::TargetConstant) &&
+            "Unexpected illegal type!");
 #endif
 
   // Figure out the correct action; the way to query this varies by opcode
@@ -1213,6 +1229,10 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
   case ISD::INTRINSIC_VOID:
   case ISD::STACKSAVE:
     Action = TLI.getOperationAction(Node->getOpcode(), MVT::Other);
+    break;
+  case ISD::GET_DYNAMIC_AREA_OFFSET:
+    Action = TLI.getOperationAction(Node->getOpcode(),
+                                    Node->getValueType(0));
     break;
   case ISD::VAARG:
     Action = TLI.getOperationAction(Node->getOpcode(),
@@ -1242,7 +1262,8 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
   case ISD::SETCC:
   case ISD::BR_CC: {
     unsigned CCOperand = Node->getOpcode() == ISD::SELECT_CC ? 4 :
-                         Node->getOpcode() == ISD::SETCC ? 2 : 1;
+                         Node->getOpcode() == ISD::SETCC ? 2 :
+                         Node->getOpcode() == ISD::SETCCE ? 3 : 1;
     unsigned CompareOperand = Node->getOpcode() == ISD::BR_CC ? 2 : 0;
     MVT OpVT = Node->getOperand(CompareOperand).getSimpleValueType();
     ISD::CondCode CCCode =
@@ -1442,6 +1463,11 @@ SDValue SelectionDAGLegalize::ExpandExtractFromVectorThroughStack(SDValue Op) {
   // series of EXTRACT_VECTOR_ELT nodes are generated, one for each element in
   // the vector. If all are expanded here, we don't want one store per vector
   // element.
+
+  // Caches for hasPredecessorHelper
+  SmallPtrSet<const SDNode *, 32> Visited;
+  SmallVector<const SDNode *, 16> Worklist;
+
   SDValue StackPtr, Ch;
   for (SDNode::use_iterator UI = Vec.getNode()->use_begin(),
        UE = Vec.getNode()->use_end(); UI != UE; ++UI) {
@@ -1454,6 +1480,12 @@ SDValue SelectionDAGLegalize::ExpandExtractFromVectorThroughStack(SDValue Op) {
       // Make sure that nothing else could have stored into the destination of
       // this store.
       if (!ST->getChain().reachesChainWithoutSideEffects(DAG.getEntryNode()))
+        continue;
+
+      // If the index is dependent on the store we will introduce a cycle when
+      // creating the load (the load uses the index, and by replacing the chain
+      // we will make the index dependent on the load).
+      if (Idx.getNode()->hasPredecessorHelper(ST, Visited, Worklist))
         continue;
 
       StackPtr = ST->getBasePtr();
@@ -2909,6 +2941,18 @@ SDValue SelectionDAGLegalize::ExpandBitCount(unsigned Opc, SDValue Op,
     // This trivially expands to CTLZ.
     return DAG.getNode(ISD::CTLZ, dl, Op.getValueType(), Op);
   case ISD::CTLZ: {
+    EVT VT = Op.getValueType();
+    unsigned len = VT.getSizeInBits();
+
+    if (TLI.isOperationLegalOrCustom(ISD::CTLZ_ZERO_UNDEF, VT)) {
+      EVT SetCCVT = getSetCCResultType(VT);
+      SDValue CTLZ = DAG.getNode(ISD::CTLZ_ZERO_UNDEF, dl, VT, Op);
+      SDValue Zero = DAG.getConstant(0, dl, VT);
+      SDValue SrcIsZero = DAG.getSetCC(dl, SetCCVT, Op, Zero, ISD::SETEQ);
+      return DAG.getNode(ISD::SELECT, dl, VT, SrcIsZero,
+                         DAG.getConstant(len, dl, VT), CTLZ);
+    }
+
     // for now, we do this:
     // x = x | (x >> 1);
     // x = x | (x >> 2);
@@ -2918,9 +2962,7 @@ SDValue SelectionDAGLegalize::ExpandBitCount(unsigned Opc, SDValue Op,
     // return popcount(~x);
     //
     // Ref: "Hacker's Delight" by Henry Warren
-    EVT VT = Op.getValueType();
     EVT ShVT = TLI.getShiftAmountTy(VT, DAG.getDataLayout());
-    unsigned len = VT.getSizeInBits();
     for (unsigned i = 0; (1U << i) <= (len / 2); ++i) {
       SDValue Tmp3 = DAG.getConstant(1ULL << i, dl, ShVT);
       Op = DAG.getNode(ISD::OR, dl, VT, Op,
@@ -3295,6 +3337,10 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
       Results.push_back(Node->getOperand(0));
     }
     break;
+  case ISD::GET_DYNAMIC_AREA_OFFSET:
+    Results.push_back(DAG.getConstant(0, dl, Node->getValueType(0)));
+    Results.push_back(Results[0].getValue(0));
+    break;
   case ISD::FCOPYSIGN:
     Results.push_back(ExpandFCOPYSIGN(Node));
     break;
@@ -3370,7 +3416,7 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
         SDValue FloatVal = DAG.getNode(ISD::FP_ROUND, dl, MVT::f32, Op,
                                        DAG.getIntPtrConstant(0, dl));
         Results.push_back(
-            DAG.getNode(ISD::FP_TO_FP16, dl, MVT::i16, FloatVal));
+            DAG.getNode(ISD::FP_TO_FP16, dl, Node->getValueType(0), FloatVal));
       }
     }
     break;
@@ -3380,6 +3426,11 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
     // If this is a legal constant, turn it into a TargetConstantFP node.
     if (!TLI.isFPImmLegal(CFP->getValueAPF(), Node->getValueType(0)))
       Results.push_back(ExpandConstantFP(CFP, true));
+    break;
+  }
+  case ISD::Constant: {
+    ConstantSDNode *CP = cast<ConstantSDNode>(Node);
+    Results.push_back(ExpandConstant(CP));
     break;
   }
   case ISD::FSUB: {

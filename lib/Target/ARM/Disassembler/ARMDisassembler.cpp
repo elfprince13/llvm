@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/MC/MCDisassembler.h"
+#include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
 #include "MCTargetDesc/ARMMCExpr.h"
@@ -59,7 +59,7 @@ namespace {
       }
 
       // Called when decoding an IT instruction. Sets the IT state for the following
-      // instructions that for the IT block. Firstcond and Mask correspond to the 
+      // instructions that for the IT block. Firstcond and Mask correspond to the
       // fields in the IT instruction encoding.
       void setITState(char Firstcond, char Mask) {
         // (3 - the number of trailing zeros) is the number of then / else.
@@ -221,6 +221,8 @@ static DecodeStatus DecodeT2CPSInstruction(MCInst &Inst, unsigned Insn,
 static DecodeStatus DecodeAddrModeImm12Operand(MCInst &Inst, unsigned Val,
                                uint64_t Address, const void *Decoder);
 static DecodeStatus DecodeAddrMode5Operand(MCInst &Inst, unsigned Val,
+                               uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeAddrMode5FP16Operand(MCInst &Inst, unsigned Val,
                                uint64_t Address, const void *Decoder);
 static DecodeStatus DecodeAddrMode7Operand(MCInst &Inst, unsigned Val,
                                uint64_t Address, const void *Decoder);
@@ -882,7 +884,7 @@ static DecodeStatus
 DecodeGPRnopcRegisterClass(MCInst &Inst, unsigned RegNo,
                            uint64_t Address, const void *Decoder) {
   DecodeStatus S = MCDisassembler::Success;
-  
+
   if (RegNo == 15) 
     S = MCDisassembler::SoftFail;
 
@@ -1643,7 +1645,7 @@ DecodeAddrMode3Instruction(MCInst &Inst, unsigned Insn,
     case ARM::STRD_POST:
       if (P == 0 && W == 1)
         S = MCDisassembler::SoftFail;
-      
+
       if (writeback && (Rn == 15 || Rn == Rt || Rn == Rt2))
         S = MCDisassembler::SoftFail;
       if (type && Rm == 15)
@@ -2183,6 +2185,7 @@ static DecodeStatus DecodeAddrMode5Operand(MCInst &Inst, unsigned Val,
   DecodeStatus S = MCDisassembler::Success;
 
   unsigned Rn = fieldFromInstruction(Val, 9, 4);
+  // U == 1 to add imm, 0 to subtract it.
   unsigned U = fieldFromInstruction(Val, 8, 1);
   unsigned imm = fieldFromInstruction(Val, 0, 8);
 
@@ -2193,6 +2196,26 @@ static DecodeStatus DecodeAddrMode5Operand(MCInst &Inst, unsigned Val,
     Inst.addOperand(MCOperand::createImm(ARM_AM::getAM5Opc(ARM_AM::add, imm)));
   else
     Inst.addOperand(MCOperand::createImm(ARM_AM::getAM5Opc(ARM_AM::sub, imm)));
+
+  return S;
+}
+
+static DecodeStatus DecodeAddrMode5FP16Operand(MCInst &Inst, unsigned Val,
+                                   uint64_t Address, const void *Decoder) {
+  DecodeStatus S = MCDisassembler::Success;
+
+  unsigned Rn = fieldFromInstruction(Val, 9, 4);
+  // U == 1 to add imm, 0 to subtract it.
+  unsigned U = fieldFromInstruction(Val, 8, 1);
+  unsigned imm = fieldFromInstruction(Val, 0, 8);
+
+  if (!Check(S, DecodeGPRRegisterClass(Inst, Rn, Address, Decoder)))
+    return MCDisassembler::Fail;
+
+  if (U)
+    Inst.addOperand(MCOperand::createImm(ARM_AM::getAM5FP16Opc(ARM_AM::add, imm)));
+  else
+    Inst.addOperand(MCOperand::createImm(ARM_AM::getAM5FP16Opc(ARM_AM::sub, imm)));
 
   return S;
 }
@@ -4096,6 +4119,24 @@ static DecodeStatus DecodeMSRMask(MCInst &Inst, unsigned Val,
         // Values basepri, basepri_max and faultmask are only valid for v7m.
         return MCDisassembler::Fail;
       break;
+    case 0x8a: // msplim_ns
+    case 0x8b: // psplim_ns
+    case 0x91: // basepri_ns
+    case 0x92: // basepri_max_ns
+    case 0x93: // faultmask_ns
+      if (!(FeatureBits[ARM::HasV8MMainlineOps]))
+        return MCDisassembler::Fail;
+      // fall through
+    case 10:   // msplim
+    case 11:   // psplim
+    case 0x88: // msp_ns
+    case 0x89: // psp_ns
+    case 0x90: // primask_ns
+    case 0x94: // control_ns
+    case 0x98: // sp_ns
+      if (!(FeatureBits[ARM::Feature8MSecExt]))
+        return MCDisassembler::Fail;
+      break;
     default:
       return MCDisassembler::Fail;
     }
@@ -5050,6 +5091,10 @@ static DecodeStatus DecodeSwap(MCInst &Inst, unsigned Insn,
 
 static DecodeStatus DecodeVCVTD(MCInst &Inst, unsigned Insn,
                                 uint64_t Address, const void *Decoder) {
+  const FeatureBitset &featureBits =
+      ((const MCDisassembler *)Decoder)->getSubtargetInfo().getFeatureBits();
+  bool hasFullFP16 = featureBits[ARM::FeatureFullFP16];
+
   unsigned Vd = (fieldFromInstruction(Insn, 12, 4) << 0);
   Vd |= (fieldFromInstruction(Insn, 22, 1) << 4);
   unsigned Vm = (fieldFromInstruction(Insn, 0, 4) << 0);
@@ -5060,10 +5105,35 @@ static DecodeStatus DecodeVCVTD(MCInst &Inst, unsigned Insn,
 
   DecodeStatus S = MCDisassembler::Success;
 
-  // VMOVv2f32 is ambiguous with these decodings.
-  if (!(imm & 0x38) && cmode == 0xF) {
-    if (op == 1) return MCDisassembler::Fail;
-    Inst.setOpcode(ARM::VMOVv2f32);
+  // If the top 3 bits of imm are clear, this is a VMOV (immediate)
+  if (!(imm & 0x38)) {
+    if (cmode == 0xF) {
+      if (op == 1) return MCDisassembler::Fail;
+      Inst.setOpcode(ARM::VMOVv2f32);
+    }
+    if (hasFullFP16) {
+      if (cmode == 0xE) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMOVv1i64);
+        } else {
+          Inst.setOpcode(ARM::VMOVv8i8);
+        }
+      }
+      if (cmode == 0xD) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMVNv2i32);
+        } else {
+          Inst.setOpcode(ARM::VMOVv2i32);
+        }
+      }
+      if (cmode == 0xC) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMVNv2i32);
+        } else {
+          Inst.setOpcode(ARM::VMOVv2i32);
+        }
+      }
+    }
     return DecodeNEONModImmInstruction(Inst, Insn, Address, Decoder);
   }
 
@@ -5080,6 +5150,10 @@ static DecodeStatus DecodeVCVTD(MCInst &Inst, unsigned Insn,
 
 static DecodeStatus DecodeVCVTQ(MCInst &Inst, unsigned Insn,
                                 uint64_t Address, const void *Decoder) {
+  const FeatureBitset &featureBits =
+      ((const MCDisassembler *)Decoder)->getSubtargetInfo().getFeatureBits();
+  bool hasFullFP16 = featureBits[ARM::FeatureFullFP16];
+
   unsigned Vd = (fieldFromInstruction(Insn, 12, 4) << 0);
   Vd |= (fieldFromInstruction(Insn, 22, 1) << 4);
   unsigned Vm = (fieldFromInstruction(Insn, 0, 4) << 0);
@@ -5090,10 +5164,35 @@ static DecodeStatus DecodeVCVTQ(MCInst &Inst, unsigned Insn,
 
   DecodeStatus S = MCDisassembler::Success;
 
-  // VMOVv4f32 is ambiguous with these decodings.
-  if (!(imm & 0x38) && cmode == 0xF) {
-    if (op == 1) return MCDisassembler::Fail;
-    Inst.setOpcode(ARM::VMOVv4f32);
+  // If the top 3 bits of imm are clear, this is a VMOV (immediate)
+  if (!(imm & 0x38)) {
+    if (cmode == 0xF) {
+      if (op == 1) return MCDisassembler::Fail;
+      Inst.setOpcode(ARM::VMOVv4f32);
+    }
+    if (hasFullFP16) {
+      if (cmode == 0xE) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMOVv2i64);
+        } else {
+          Inst.setOpcode(ARM::VMOVv16i8);
+        }
+      }
+      if (cmode == 0xD) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMVNv4i32);
+        } else {
+          Inst.setOpcode(ARM::VMOVv4i32);
+        }
+      }
+      if (cmode == 0xC) {
+        if (op == 1) {
+          Inst.setOpcode(ARM::VMVNv4i32);
+        } else {
+          Inst.setOpcode(ARM::VMOVv4i32);
+        }
+      }
+    }
     return DecodeNEONModImmInstruction(Inst, Insn, Address, Decoder);
   }
 
@@ -5117,7 +5216,7 @@ static DecodeStatus DecodeLDR(MCInst &Inst, unsigned Val,
   unsigned Rm = fieldFromInstruction(Val, 0, 4);
   Rm |= (fieldFromInstruction(Val, 23, 1) << 4);
   unsigned Cond = fieldFromInstruction(Val, 28, 4);
- 
+
   if (fieldFromInstruction(Val, 8, 4) != 0 || Rn == Rt)
     S = MCDisassembler::SoftFail;
 

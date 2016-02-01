@@ -30,7 +30,7 @@ if(NOT DEFINED LLVM_VERSION_MAJOR)
   set(LLVM_VERSION_MAJOR 3)
 endif()
 if(NOT DEFINED LLVM_VERSION_MINOR)
-  set(LLVM_VERSION_MINOR 8)
+  set(LLVM_VERSION_MINOR 9)
 endif()
 if(NOT DEFINED LLVM_VERSION_PATCH)
   set(LLVM_VERSION_PATCH 0)
@@ -68,6 +68,8 @@ if(LLVM_PARALLEL_COMPILE_JOBS)
   endif()
 endif()
 
+set(LLVM_BUILD_GLOBAL_ISEL OFF CACHE BOOL "Experimental: Build GlobalISel")
+
 set(LLVM_PARALLEL_LINK_JOBS "" CACHE STRING
   "Define the maximum number of concurrent link jobs.")
 if(LLVM_PARALLEL_LINK_JOBS)
@@ -85,6 +87,10 @@ set(CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules"
   )
+
+# Generate a CompilationDatabase (compile_commands.json file) for our build,
+# for use by clang_complete, YouCompleteMe, etc.
+set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 
 option(LLVM_INSTALL_UTILS "Include utility binaries in the 'install' target." OFF)
 
@@ -300,6 +306,9 @@ endif( LLVM_USE_INTEL_JITEVENTS )
 
 option(LLVM_USE_OPROFILE
   "Use opagent JIT interface to inform OProfile about JIT code" OFF)
+
+option(LLVM_EXTERNALIZE_DEBUGINFO
+  "Generate dSYM files and strip executables and libraries (Darwin Only)" OFF)
 
 # If enabled, verify we are on a platform that supports oprofile.
 if( LLVM_USE_OPROFILE )

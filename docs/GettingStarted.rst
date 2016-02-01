@@ -55,6 +55,12 @@ Here's the short story for getting up and running quickly with LLVM:
    * ``cd llvm/projects``
    * ``svn co http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt``
 
+#. Checkout Libomp (required for OpenMP support):
+
+   * ``cd where-you-want-llvm-to-live``
+   * ``cd llvm/projects``
+   * ``svn co http://llvm.org/svn/llvm-project/openmp/trunk openmp``
+
 #. Checkout libcxx and libcxxabi **[Optional]**:
 
    * ``cd where-you-want-llvm-to-live``
@@ -70,8 +76,9 @@ Here's the short story for getting up and running quickly with LLVM:
 
 #. Configure and build LLVM and Clang:
 
-   The usual build uses `CMake <CMake.html>`_. If you would rather use
-   autotools, see `Building LLVM with autotools <BuildingLLVMWithAutotools.html>`_.
+   The build uses `CMake <CMake.html>`_.
+   Although the build is known to work with CMake >= 2.8.8, we recommend CMake
+   >= v3.2, especially if you're generating Ninja build files.
 
    * ``cd where you want to build llvm``
    * ``mkdir build``
@@ -82,7 +89,7 @@ Here's the short story for getting up and running quickly with LLVM:
 
      * ``Unix Makefiles`` --- for generating make-compatible parallel makefiles.
      * ``Ninja`` --- for generating `Ninja <http://martine.github.io/ninja/>`
-        build files.
+        build files. Most llvm developers use Ninja.
      * ``Visual Studio`` --- for generating Visual Studio projects and
         solutions.
      * ``Xcode`` --- for generating Xcode projects.
@@ -535,6 +542,13 @@ If you want to check out compiler-rt (required to build the sanitizers), run:
   % cd llvm/projects
   % git clone http://llvm.org/git/compiler-rt.git
 
+If you want to check out libomp (required for OpenMP support), run:
+
+.. code-block:: console
+
+  % cd llvm/projects
+  % git clone http://llvm.org/git/openmp.git
+
 If you want to check out libcxx and libcxxabi (optional), run:
 
 .. code-block:: console
@@ -613,6 +627,8 @@ Then, your .git/config should have [imap] sections.
   ; example for Traditional Chinese
         folder = "[Gmail]/&g0l6Pw-"
 
+.. _developers-work-with-git-svn:
+
 For developers to work with git-svn
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -634,7 +650,7 @@ To set up clone from which you can submit code using ``git-svn``, run:
   % git config svn-remote.svn.fetch :refs/remotes/origin/master
   % git svn rebase -l
 
-Likewise for compiler-rt and test-suite.
+Likewise for compiler-rt, libomp and test-suite.
 
 To update this clone without generating git-svn tags that conflict with the
 upstream Git repo, run:
@@ -648,7 +664,7 @@ upstream Git repo, run:
      git checkout master &&
      git svn rebase -l)
 
-Likewise for compiler-rt and test-suite.
+Likewise for compiler-rt, libomp and test-suite.
 
 This leaves your working directories on their master branches, so you'll need to
 ``checkout`` each working branch individually and ``rebase`` it on top of its
@@ -696,9 +712,8 @@ Local LLVM Configuration
 ------------------------
 
 Once checked out from the Subversion repository, the LLVM suite source code must
-be configured before being built. For instructions using autotools please see
-`Building LLVM With Autotools <BuildingLLVMWithAutotools.html>`_. The
-recommended process uses CMake. Unlinke the normal ``configure`` script, CMake
+be configured before being built. This process uses CMake.
+Unlinke the normal ``configure`` script, CMake
 generates the build files in whatever format you request as well as various
 ``*.inc`` files, and ``llvm/include/Config/config.h``.
 
@@ -853,7 +868,7 @@ with the latest Xcode:
 
 .. code-block:: console
 
-  % cmake -G "Ninja" -DCMAKE_OSX_ARCHITECTURES=“armv7;armv7s;arm64"
+  % cmake -G "Ninja" -DCMAKE_OSX_ARCHITECTURES="armv7;armv7s;arm64"
     -DCMAKE_TOOLCHAIN_FILE=<PATH_TO_LLVM>/cmake/platforms/iOS.cmake
     -DCMAKE_BUILD_TYPE=Release -DLLVM_BUILD_RUNTIME=Off -DLLVM_INCLUDE_TESTS=Off
     -DLLVM_INCLUDE_EXAMPLES=Off -DLLVM_ENABLE_BACKTRACES=Off [options]

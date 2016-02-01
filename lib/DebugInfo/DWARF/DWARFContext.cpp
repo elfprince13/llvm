@@ -72,7 +72,7 @@ static void dumpAccelSection(raw_ostream &OS, StringRef Name,
   Accel.dump(OS);
 }
 
-void DWARFContext::dump(raw_ostream &OS, DIDumpType DumpType) {
+void DWARFContext::dump(raw_ostream &OS, DIDumpType DumpType, bool DumpEH) {
   if (DumpType == DIDT_All || DumpType == DIDT_Abbrev) {
     OS << ".debug_abbrev contents:\n";
     getDebugAbbrev()->dump(OS);
@@ -125,6 +125,10 @@ void DWARFContext::dump(raw_ostream &OS, DIDumpType DumpType) {
   if (DumpType == DIDT_All || DumpType == DIDT_Frames) {
     OS << "\n.debug_frame contents:\n";
     getDebugFrame()->dump(OS);
+    if (DumpEH) {
+      OS << "\n.eh_frame contents:\n";
+      getEHFrame()->dump(OS);
+    }
   }
 
   if (DumpType == DIDT_All || DumpType == DIDT_Macro) {
@@ -163,20 +167,12 @@ void DWARFContext::dump(raw_ostream &OS, DIDumpType DumpType) {
 
   if (DumpType == DIDT_All || DumpType == DIDT_CUIndex) {
     OS << "\n.debug_cu_index contents:\n";
-    DataExtractor CUIndexData(getCUIndexSection(), isLittleEndian(),
-                              savedAddressByteSize);
-    DWARFUnitIndex CUIndex;
-    if (CUIndex.parse(CUIndexData))
-      CUIndex.dump(OS);
+    getCUIndex().dump(OS);
   }
 
   if (DumpType == DIDT_All || DumpType == DIDT_TUIndex) {
     OS << "\n.debug_tu_index contents:\n";
-    DataExtractor TUIndexData(getTUIndexSection(), isLittleEndian(),
-                              savedAddressByteSize);
-    DWARFUnitIndex TUIndex;
-    if (TUIndex.parse(TUIndexData))
-      TUIndex.dump(OS);
+    getTUIndex().dump(OS);
   }
 
   if (DumpType == DIDT_All || DumpType == DIDT_LineDwo) {
@@ -280,7 +276,7 @@ const DWARFUnitIndex &DWARFContext::getCUIndex() {
 
   DataExtractor CUIndexData(getCUIndexSection(), isLittleEndian(), 0);
 
-  CUIndex = llvm::make_unique<DWARFUnitIndex>();
+  CUIndex = llvm::make_unique<DWARFUnitIndex>(DW_SECT_INFO);
   CUIndex->parse(CUIndexData);
   return *CUIndex;
 }
@@ -291,7 +287,7 @@ const DWARFUnitIndex &DWARFContext::getTUIndex() {
 
   DataExtractor TUIndexData(getTUIndexSection(), isLittleEndian(), 0);
 
-  TUIndex = llvm::make_unique<DWARFUnitIndex>();
+  TUIndex = llvm::make_unique<DWARFUnitIndex>(DW_SECT_TYPES);
   TUIndex->parse(TUIndexData);
   return *TUIndex;
 }
@@ -363,7 +359,18 @@ const DWARFDebugFrame *DWARFContext::getDebugFrame() {
   // http://lists.dwarfstd.org/htdig.cgi/dwarf-discuss-dwarfstd.org/2011-December/001173.html
   DataExtractor debugFrameData(getDebugFrameSection(), isLittleEndian(),
                                getAddressSize());
-  DebugFrame.reset(new DWARFDebugFrame());
+  DebugFrame.reset(new DWARFDebugFrame(false /* IsEH */));
+  DebugFrame->parse(debugFrameData);
+  return DebugFrame.get();
+}
+
+const DWARFDebugFrame *DWARFContext::getEHFrame() {
+  if (EHFrame)
+    return EHFrame.get();
+
+  DataExtractor debugFrameData(getEHFrameSection(), isLittleEndian(),
+                               getAddressSize());
+  DebugFrame.reset(new DWARFDebugFrame(true /* IsEH */));
   DebugFrame->parse(debugFrameData);
   return DebugFrame.get();
 }
@@ -649,6 +656,7 @@ DWARFContextInMemory::DWARFContextInMemory(const object::ObjectFile &Obj,
             .Case("debug_line", &LineSection.Data)
             .Case("debug_aranges", &ARangeSection)
             .Case("debug_frame", &DebugFrameSection)
+            .Case("eh_frame", &EHFrameSection)
             .Case("debug_str", &StringSection)
             .Case("debug_ranges", &RangeSection)
             .Case("debug_macinfo", &MacinfoSection)

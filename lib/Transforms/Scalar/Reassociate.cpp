@@ -64,7 +64,7 @@ namespace {
 /// Print out the expression identified in the Ops list.
 ///
 static void PrintOps(Instruction *I, const SmallVectorImpl<ValueEntry> &Ops) {
-  Module *M = I->getParent()->getParent()->getParent();
+  Module *M = I->getModule();
   dbgs() << Instruction::getOpcodeName(I->getOpcode()) << " "
        << *Ops[0].Op->getType() << '\t';
   for (unsigned i = 0, e = Ops.size(); i != e; ++i) {
@@ -163,7 +163,8 @@ namespace {
       AU.addPreserved<GlobalsAAWrapperPass>();
     }
   private:
-    void BuildRankMap(Function &F);
+    void BuildRankMap(Function &F, ReversePostOrderTraversal<Function *> &RPOT);
+
     unsigned getRank(Value *V);
     void canonicalizeOperands(Instruction *I);
     void ReassociateExpression(BinaryOperator *I);
@@ -183,6 +184,8 @@ namespace {
     Value *OptimizeMul(BinaryOperator *I, SmallVectorImpl<ValueEntry> &Ops);
     Value *RemoveFactorFromExpression(Value *V, Value *Factor);
     void EraseInst(Instruction *I);
+    void RecursivelyEraseDeadInsts(Instruction *I,
+                                   SetVector<AssertingVH<Instruction>> &Insts);
     void OptimizeInst(Instruction *I);
     Instruction *canonicalizeNegConstExpr(Instruction *I);
   };
@@ -244,7 +247,8 @@ static BinaryOperator *isReassociableOp(Value *V, unsigned Opcode1,
   return nullptr;
 }
 
-void Reassociate::BuildRankMap(Function &F) {
+void Reassociate::BuildRankMap(Function &F,
+                               ReversePostOrderTraversal<Function *> &RPOT) {
   unsigned i = 2;
 
   // Assign distinct ranks to function arguments.
@@ -253,7 +257,6 @@ void Reassociate::BuildRankMap(Function &F) {
     DEBUG(dbgs() << "Calculated Rank[" << I->getName() << "] = " << i << "\n");
   }
 
-  ReversePostOrderTraversal<Function*> RPOT(&F);
   for (ReversePostOrderTraversal<Function*>::rpo_iterator I = RPOT.begin(),
          E = RPOT.end(); I != E; ++I) {
     BasicBlock *BB = *I;
@@ -947,8 +950,6 @@ static Value *NegateValue(Value *V, Instruction *BI,
     if (Instruction *InstInput = dyn_cast<Instruction>(V)) {
       if (InvokeInst *II = dyn_cast<InvokeInst>(InstInput)) {
         InsertPt = II->getNormalDest()->begin();
-      } else if (auto *CPI = dyn_cast<CatchPadInst>(InstInput)) {
-        InsertPt = CPI->getNormalDest()->begin();
       } else {
         InsertPt = ++InstInput->getIterator();
       }
@@ -1231,7 +1232,7 @@ static Value *OptimizeAndOrXor(unsigned Opcode,
   return nullptr;
 }
 
-/// Helper funciton of CombineXorOpnd(). It creates a bitwise-and
+/// Helper function of CombineXorOpnd(). It creates a bitwise-and
 /// instruction with the given two operands, and return the resulting
 /// instruction. There are two special cases: 1) if the constant operand is 0,
 /// it will return NULL. 2) if the constant is ~0, the symbolic operand will
@@ -1928,6 +1929,22 @@ Value *Reassociate::OptimizeExpression(BinaryOperator *I,
   return nullptr;
 }
 
+// Remove dead instructions and if any operands are trivially dead add them to
+// Insts so they will be removed as well.
+void Reassociate::RecursivelyEraseDeadInsts(
+    Instruction *I, SetVector<AssertingVH<Instruction>> &Insts) {
+  assert(isInstructionTriviallyDead(I) && "Trivially dead instructions only!");
+  SmallVector<Value *, 4> Ops(I->op_begin(), I->op_end());
+  ValueRankMap.erase(I);
+  Insts.remove(I);
+  RedoInsts.remove(I);
+  I->eraseFromParent();
+  for (auto Op : Ops)
+    if (Instruction *OpInst = dyn_cast<Instruction>(Op))
+      if (OpInst->use_empty())
+        Insts.insert(OpInst);
+}
+
 /// Zap the given instruction, adding interesting operands to the work list.
 void Reassociate::EraseInst(Instruction *I) {
   assert(isInstructionTriviallyDead(I) && "Trivially dead instructions only!");
@@ -2064,7 +2081,7 @@ void Reassociate::OptimizeInst(Instruction *I) {
     return;
 
   // Don't optimize floating point instructions that don't have unsafe algebra.
-  if (I->getType()->isFloatingPointTy() && !I->hasUnsafeAlgebra())
+  if (I->getType()->isFPOrFPVectorTy() && !I->hasUnsafeAlgebra())
     return;
 
   // Do not reassociate boolean (i1) expressions.  We want to preserve the
@@ -2139,7 +2156,8 @@ void Reassociate::OptimizeInst(Instruction *I) {
     // During the initial run we will get to the root of the tree.
     // But if we get here while we are redoing instructions, there is no
     // guarantee that the root will be visited. So Redo later
-    if (BO->user_back() != BO)
+    if (BO->user_back() != BO &&
+        BO->getParent() == BO->user_back()->getParent())
       RedoInsts.insert(BO->user_back());
     return;
   }
@@ -2242,13 +2260,28 @@ bool Reassociate::runOnFunction(Function &F) {
   if (skipOptnoneFunction(F))
     return false;
 
-  // Calculate the rank map for F
-  BuildRankMap(F);
+  // Reassociate needs for each instruction to have its operands already
+  // processed, so we first perform a RPOT of the basic blocks so that
+  // when we process a basic block, all its dominators have been processed
+  // before.
+  ReversePostOrderTraversal<Function *> RPOT(&F);
+  BuildRankMap(F, RPOT);
 
   MadeChange = false;
-  for (Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+  for (BasicBlock *BI : RPOT) {
+    // Use a worklist to keep track of which instructions have been processed
+    // (and which insts won't be optimized again) so when redoing insts,
+    // optimize insts rightaway which won't be processed later.
+    SmallSet<Instruction *, 8> Worklist;
+
+    // Insert all instructions in the BB
+    for (Instruction &I : *BI)
+      Worklist.insert(&I);
+
     // Optimize every instruction in the basic block.
-    for (BasicBlock::iterator II = BI->begin(), IE = BI->end(); II != IE; )
+    for (BasicBlock::iterator II = BI->begin(), IE = BI->end(); II != IE;) {
+      // This instruction has been processed.
+      Worklist.erase(&*II);
       if (isInstructionTriviallyDead(&*II)) {
         EraseInst(&*II++);
       } else {
@@ -2257,13 +2290,22 @@ bool Reassociate::runOnFunction(Function &F) {
         ++II;
       }
 
-    // If this produced extra instructions to optimize, handle them now.
-    while (!RedoInsts.empty()) {
-      Instruction *I = RedoInsts.pop_back_val();
-      if (isInstructionTriviallyDead(I))
-        EraseInst(I);
-      else
-        OptimizeInst(I);
+      // If the above optimizations produced new instructions to optimize or
+      // made modifications which need to be redone, do them now if they won't
+      // be handled later.
+      while (!RedoInsts.empty()) {
+        Instruction *I = RedoInsts.pop_back_val();
+        // Process instructions that won't be processed later, either
+        // inside the block itself or in another basic block (based on rank),
+        // since these will be processed later.
+        if ((I->getParent() != BI || !Worklist.count(I)) &&
+            RankMap[I->getParent()] <= RankMap[BI]) {
+          if (isInstructionTriviallyDead(I))
+            EraseInst(I);
+          else
+            OptimizeInst(I);
+        }
+      }
     }
   }
 

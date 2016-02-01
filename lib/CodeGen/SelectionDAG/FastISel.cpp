@@ -56,6 +56,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -492,13 +493,11 @@ bool FastISel::selectGetElementPtr(const User *I) {
   uint64_t TotalOffs = 0;
   // FIXME: What's a good SWAG number for MaxOffs?
   uint64_t MaxOffs = 2048;
-  Type *Ty = I->getOperand(0)->getType();
   MVT VT = TLI.getPointerTy(DL);
-  for (GetElementPtrInst::const_op_iterator OI = I->op_begin() + 1,
-                                            E = I->op_end();
-       OI != E; ++OI) {
-    const Value *Idx = *OI;
-    if (auto *StTy = dyn_cast<StructType>(Ty)) {
+  for (gep_type_iterator GTI = gep_type_begin(I), E = gep_type_end(I);
+       GTI != E; ++GTI) {
+    const Value *Idx = GTI.getOperand();
+    if (auto *StTy = dyn_cast<StructType>(*GTI)) {
       uint64_t Field = cast<ConstantInt>(Idx)->getZExtValue();
       if (Field) {
         // N = N + Offset
@@ -511,9 +510,8 @@ bool FastISel::selectGetElementPtr(const User *I) {
           TotalOffs = 0;
         }
       }
-      Ty = StTy->getElementType(Field);
     } else {
-      Ty = cast<SequentialType>(Ty)->getElementType();
+      Type *Ty = GTI.getIndexedType();
 
       // If this is a constant subscript, handle it quickly.
       if (const auto *CI = dyn_cast<ConstantInt>(Idx)) {
@@ -880,9 +878,8 @@ bool FastISel::lowerCallTo(const CallInst *CI, MCSymbol *Symbol,
                            unsigned NumArgs) {
   ImmutableCallSite CS(CI);
 
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FTy->getReturnType();
+  FunctionType *FTy = CS.getFunctionType();
+  Type *RetTy = CS.getType();
 
   ArgListTy Args;
   Args.reserve(NumArgs);
@@ -1010,9 +1007,8 @@ bool FastISel::lowerCallTo(CallLoweringInfo &CLI) {
 bool FastISel::lowerCall(const CallInst *CI) {
   ImmutableCallSite CS(CI);
 
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FuncTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FuncTy->getReturnType();
+  FunctionType *FuncTy = CS.getFunctionType();
+  Type *RetTy = CS.getType();
 
   ArgListTy Args;
   ArgListEntry Entry;
@@ -1322,12 +1318,38 @@ bool FastISel::selectBitCast(const User *I) {
   return true;
 }
 
+// Remove local value instructions starting from the instruction after
+// SavedLastLocalValue to the current function insert point.
+void FastISel::removeDeadLocalValueCode(MachineInstr *SavedLastLocalValue)
+{
+  MachineInstr *CurLastLocalValue = getLastLocalValue();
+  if (CurLastLocalValue != SavedLastLocalValue) {
+    // Find the first local value instruction to be deleted. 
+    // This is the instruction after SavedLastLocalValue if it is non-NULL.
+    // Otherwise it's the first instruction in the block.
+    MachineBasicBlock::iterator FirstDeadInst(SavedLastLocalValue);
+    if (SavedLastLocalValue)
+      ++FirstDeadInst;
+    else
+      FirstDeadInst = FuncInfo.MBB->getFirstNonPHI();
+    setLastLocalValue(SavedLastLocalValue);
+    removeDeadCode(FirstDeadInst, FuncInfo.InsertPt);
+  }
+}
+
 bool FastISel::selectInstruction(const Instruction *I) {
+  MachineInstr *SavedLastLocalValue = getLastLocalValue();
   // Just before the terminator instruction, insert instructions to
   // feed PHI nodes in successor blocks.
   if (isa<TerminatorInst>(I))
-    if (!handlePHINodesInSuccessorBlocks(I->getParent()))
+    if (!handlePHINodesInSuccessorBlocks(I->getParent())) {
+      // PHI node handling may have generated local value instructions,
+      // even though it failed to handle all PHI nodes.
+      // We remove these instructions because SelectionDAGISel will generate 
+      // them again.
+      removeDeadLocalValueCode(SavedLastLocalValue);
       return false;
+    }
 
   DbgLoc = I->getDebugLoc();
 
@@ -1344,7 +1366,7 @@ bool FastISel::selectInstruction(const Instruction *I) {
         LibInfo->hasOptimizedCodeGen(Func))
       return false;
 
-    // Don't handle Intrinsic::trap if a trap funciton is specified.
+    // Don't handle Intrinsic::trap if a trap function is specified.
     if (F && F->getIntrinsicID() == Intrinsic::trap &&
         Call->hasFnAttr("trap-func-name"))
       return false;
@@ -1376,8 +1398,12 @@ bool FastISel::selectInstruction(const Instruction *I) {
 
   DbgLoc = DebugLoc();
   // Undo phi node updates, because they will be added again by SelectionDAG.
-  if (isa<TerminatorInst>(I))
+  if (isa<TerminatorInst>(I)) {
+    // PHI node handling may have generated local value instructions. 
+    // We remove them because SelectionDAGISel will generate them again.
+    removeDeadLocalValueCode(SavedLastLocalValue);
     FuncInfo.PHINodesToUpdate.resize(FuncInfo.OrigNumPHINodesToUpdate);
+  }
   return false;
 }
 
@@ -1395,11 +1421,11 @@ void FastISel::fastEmitBranch(MachineBasicBlock *MSucc, DebugLoc DbgLoc) {
                      SmallVector<MachineOperand, 0>(), DbgLoc);
   }
   if (FuncInfo.BPI) {
-    uint32_t BranchWeight = FuncInfo.BPI->getEdgeWeight(
+    auto BranchProbability = FuncInfo.BPI->getEdgeProbability(
         FuncInfo.MBB->getBasicBlock(), MSucc->getBasicBlock());
-    FuncInfo.MBB->addSuccessor(MSucc, BranchWeight);
+    FuncInfo.MBB->addSuccessor(MSucc, BranchProbability);
   } else
-    FuncInfo.MBB->addSuccessorWithoutWeight(MSucc);
+    FuncInfo.MBB->addSuccessorWithoutProb(MSucc);
 }
 
 void FastISel::finishCondBranch(const BasicBlock *BranchBB,
@@ -1410,11 +1436,11 @@ void FastISel::finishCondBranch(const BasicBlock *BranchBB,
   // successor/predecessor lists.
   if (TrueMBB != FalseMBB) {
     if (FuncInfo.BPI) {
-      uint32_t BranchWeight =
-          FuncInfo.BPI->getEdgeWeight(BranchBB, TrueMBB->getBasicBlock());
-      FuncInfo.MBB->addSuccessor(TrueMBB, BranchWeight);
+      auto BranchProbability =
+          FuncInfo.BPI->getEdgeProbability(BranchBB, TrueMBB->getBasicBlock());
+      FuncInfo.MBB->addSuccessor(TrueMBB, BranchProbability);
     } else
-      FuncInfo.MBB->addSuccessorWithoutWeight(TrueMBB);
+      FuncInfo.MBB->addSuccessorWithoutProb(TrueMBB);
   }
 
   fastEmitBranch(FalseMBB, DbgLoc);

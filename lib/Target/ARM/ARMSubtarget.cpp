@@ -26,6 +26,7 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetOptions.h"
@@ -111,6 +112,9 @@ void ARMSubtarget::initializeEnvironment() {
   HasV7Ops = false;
   HasV8Ops = false;
   HasV8_1aOps = false;
+  HasV8_2aOps = false;
+  HasV8MBaselineOps = false;
+  HasV8MMainlineOps = false;
   HasVFPv2 = false;
   HasVFPv3 = false;
   HasVFPv4 = false;
@@ -129,6 +133,7 @@ void ARMSubtarget::initializeEnvironment() {
   NoMovt = false;
   SupportsTailCall = false;
   HasFP16 = false;
+  HasFullFP16 = false;
   HasD16 = false;
   HasHardwareDivide = false;
   HasHardwareDivideInARM = false;
@@ -143,6 +148,7 @@ void ARMSubtarget::initializeEnvironment() {
   FPOnlySP = false;
   HasPerfMon = false;
   HasTrustZone = false;
+  Has8MSecExt = false;
   HasCrypto = false;
   HasCRC = false;
   HasZeroCycleZeroing = false;
@@ -151,8 +157,17 @@ void ARMSubtarget::initializeEnvironment() {
   UseNaClTrap = false;
   GenLongCalls = false;
   UnsafeFPMath = false;
-  UseSjLjEH = (isTargetDarwin() &&
-               TargetTriple.getSubArch() != Triple::ARMSubArch_v7k);
+  HasV7Clrex = false;
+  HasAcquireRelease = false;
+
+  // MCAsmInfo isn't always present (e.g. in opt) so we can't initialize this
+  // directly from it, but we can try to make sure they're consistent when both
+  // available.
+  UseSjLjEH = isTargetDarwin() && !isTargetWatchABI();
+  assert((!TM.getMCAsmInfo() ||
+          (TM.getMCAsmInfo()->getExceptionHandlingType() ==
+           ExceptionHandling::SjLj) == UseSjLjEH) &&
+         "inconsistent sjlj choice between CodeGen and MC");
 }
 
 void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
@@ -220,7 +235,7 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   // registers are the 4 used for parameters.  We don't currently do this
   // case.
 
-  SupportsTailCall = !isThumb1Only();
+  SupportsTailCall = !isThumb() || hasV8MBaselineOps();
 
   if (isTargetMachO() && isTargetIOS() && getTargetTriple().isOSVersionLT(5, 0))
     SupportsTailCall = false;
@@ -322,21 +337,21 @@ bool ARMSubtarget::enablePostRAScheduler() const {
 }
 
 bool ARMSubtarget::enableAtomicExpand() const {
-  return hasAnyDataBarrier() && !isThumb1Only();
+  return hasAnyDataBarrier() && (!isThumb() || hasV8MBaselineOps());
 }
 
 bool ARMSubtarget::useStride4VFPs(const MachineFunction &MF) const {
   // For general targets, the prologue can grow when VFPs are allocated with
   // stride 4 (more vpush instructions). But WatchOS uses a compact unwind
   // format which it's more important to get right.
-  return isTargetWatchOS() || (isSwift() && !MF.getFunction()->optForMinSize());
+  return isTargetWatchABI() || (isSwift() && !MF.getFunction()->optForMinSize());
 }
 
 bool ARMSubtarget::useMovt(const MachineFunction &MF) const {
   // NOTE Windows on ARM needs to use mov.w/mov.t pairs to materialise 32-bit
   // immediates as it is inherently position independent, and may be out of
   // range otherwise.
-  return !NoMovt && hasV6T2Ops() &&
+  return !NoMovt && hasV8MBaselineOps() &&
          (isTargetWindows() || !MF.getFunction()->optForMinSize());
 }
 

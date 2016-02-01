@@ -191,7 +191,7 @@ def AMDGPUbfe_i32 : SDNode<"AMDGPUISD::BFE_I32", AMDGPUDTIntTernaryOp>;
 def AMDGPUbfi : SDNode<"AMDGPUISD::BFI", AMDGPUDTIntTernaryOp>;
 def AMDGPUbfm : SDNode<"AMDGPUISD::BFM", SDTIntBinOp>;
 
-def AMDGPUbrev : SDNode<"AMDGPUISD::BREV", SDTIntUnaryOp>;
+def AMDGPUffbh_u32 : SDNode<"AMDGPUISD::FFBH_U32", SDTIntUnaryOp>;
 
 // Signed and unsigned 24-bit mulitply.  The highest 8-bits are ignore when
 // performing the mulitply.  The result is a 32-bit value.
@@ -208,6 +208,16 @@ def AMDGPUmad_u24 : SDNode<"AMDGPUISD::MAD_U24", AMDGPUDTIntTernaryOp,
 def AMDGPUmad_i24 : SDNode<"AMDGPUISD::MAD_I24", AMDGPUDTIntTernaryOp,
   []
 >;
+
+def AMDGPUsmed3 : SDNode<"AMDGPUISD::SMED3", AMDGPUDTIntTernaryOp,
+  []
+>;
+
+def AMDGPUumed3 : SDNode<"AMDGPUISD::UMED3", AMDGPUDTIntTernaryOp,
+  []
+>;
+
+def AMDGPUfmed3 : SDNode<"AMDGPUISD::FMED3", SDTFPTernaryOp, []>;
 
 def AMDGPUsendmsg : SDNode<"AMDGPUISD::SENDMSG",
                     SDTypeProfile<0, 1, [SDTCisInt<0>]>,
@@ -242,4 +252,4 @@ def IL_brcond      : SDNode<"AMDGPUISD::BRANCH_COND", SDTIL_BRCond, [SDNPHasChai
 // Call/Return DAG Nodes
 //===----------------------------------------------------------------------===//
 def IL_retflag       : SDNode<"AMDGPUISD::RET_FLAG", SDTNone,
-    [SDNPHasChain, SDNPOptInGlue]>;
+    [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;

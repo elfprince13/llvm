@@ -79,7 +79,7 @@ class ARMTargetAsmStreamer : public ARMTargetStreamer {
   void emitAttribute(unsigned Attribute, unsigned Value) override;
   void emitTextAttribute(unsigned Attribute, StringRef String) override;
   void emitIntTextAttribute(unsigned Attribute, unsigned IntValue,
-                            StringRef StrinValue) override;
+                            StringRef StringValue) override;
   void emitArch(unsigned Arch) override;
   void emitArchExtension(unsigned ArchExt) override;
   void emitObjectArch(unsigned Arch) override;
@@ -243,7 +243,7 @@ void ARMTargetAsmStreamer::emitUnwindRaw(int64_t Offset,
 class ARMTargetELFStreamer : public ARMTargetStreamer {
 private:
   // This structure holds all attributes, accounting for
-  // their string/numeric value, so we can later emmit them
+  // their string/numeric value, so we can later emit them
   // in declaration order, keeping all in the same vector
   struct AttributeItem {
     enum {
@@ -254,7 +254,7 @@ private:
     } Type;
     unsigned Tag;
     unsigned IntValue;
-    StringRef StringValue;
+    std::string StringValue;
 
     static bool LessTag(const AttributeItem &LHS, const AttributeItem &RHS) {
       // The conformance tag must be emitted first when serialised
@@ -388,6 +388,9 @@ private:
 
   size_t calculateContentSize() const;
 
+  // Reset state between object emissions
+  void reset() override;
+
 public:
   ARMTargetELFStreamer(MCStreamer &S)
     : ARMTargetStreamer(S), CurrentVendor("aeabi"), FPU(ARM::FK_INVALID),
@@ -415,7 +418,7 @@ public:
                  MCCodeEmitter *Emitter, bool IsThumb)
       : MCELFStreamer(Context, TAB, OS, Emitter), IsThumb(IsThumb),
         MappingSymbolCounter(0), LastEMS(EMS_None) {
-    Reset();
+    EHReset();
   }
 
   ~ARMELFStreamer() {}
@@ -579,7 +582,10 @@ private:
   }
 
   // Helper functions for ARM exception handling directives
-  void Reset();
+  void EHReset();
+
+  // Reset state between object emissions
+  void reset() override;
 
   void EmitPersonalityFixup(StringRef Name);
   void FlushPendingOffset();
@@ -710,7 +716,6 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
   case ARM::AK_ARMV5T:
   case ARM::AK_ARMV5TE:
   case ARM::AK_ARMV6:
-  case ARM::AK_ARMV6J:
     setAttributeItem(ARM_ISA_use, Allowed, false);
     setAttributeItem(THUMB_ISA_use, Allowed, false);
     break;
@@ -750,11 +755,18 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
 
   case ARM::AK_ARMV8A:
   case ARM::AK_ARMV8_1A:
+  case ARM::AK_ARMV8_2A:
     setAttributeItem(CPU_arch_profile, ApplicationProfile, false);
     setAttributeItem(ARM_ISA_use, Allowed, false);
     setAttributeItem(THUMB_ISA_use, AllowThumb32, false);
     setAttributeItem(MPextension_use, Allowed, false);
     setAttributeItem(Virtualization_use, AllowTZVirtualization, false);
+    break;
+
+  case ARM::AK_ARMV8MBaseline:
+  case ARM::AK_ARMV8MMainline:
+    setAttributeItem(THUMB_ISA_use, AllowThumbDerived, false);
+    setAttributeItem(CPU_arch_profile, MicroControllerProfile, false);
     break;
 
   case ARM::AK_IWMMXT:
@@ -1040,12 +1052,26 @@ void ARMTargetELFStreamer::emitInst(uint32_t Inst, char Suffix) {
   getStreamer().emitInst(Inst, Suffix);
 }
 
+void ARMTargetELFStreamer::reset() { AttributeSection = nullptr; }
+
 void ARMELFStreamer::FinishImpl() {
   MCTargetStreamer &TS = *getTargetStreamer();
   ARMTargetStreamer &ATS = static_cast<ARMTargetStreamer &>(TS);
   ATS.finishAttributeSection();
 
   MCELFStreamer::FinishImpl();
+}
+
+void ARMELFStreamer::reset() {
+  MCTargetStreamer &TS = *getTargetStreamer();
+  ARMTargetStreamer &ATS = static_cast<ARMTargetStreamer &>(TS);
+  ATS.reset();
+  MappingSymbolCounter = 0;
+  MCELFStreamer::reset();
+  // MCELFStreamer clear's the assembler's e_flags. However, for
+  // arm we manually set the ABI version on streamer creation, so
+  // do the same here
+  getAssembler().setELFHeaderEFlags(ELF::EF_ARM_EABI_VER5);
 }
 
 inline void ARMELFStreamer::SwitchToEHSection(const char *Prefix,
@@ -1094,7 +1120,7 @@ void ARMELFStreamer::EmitFixup(const MCExpr *Expr, MCFixupKind Kind) {
                                               Kind));
 }
 
-void ARMELFStreamer::Reset() {
+void ARMELFStreamer::EHReset() {
   ExTab = nullptr;
   FnStart = nullptr;
   Personality = nullptr;
@@ -1164,7 +1190,7 @@ void ARMELFStreamer::emitFnEnd() {
   SwitchSection(&FnStart->getSection());
 
   // Clean exception handling frame information
-  Reset();
+  EHReset();
 }
 
 void ARMELFStreamer::emitCantUnwind() { CantUnwind = true; }

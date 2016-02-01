@@ -15,30 +15,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
-#include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
-#include "llvm/IR/Dominators.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PatternMatch.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
-using namespace llvm::PatternMatch;
 
 #define DEBUG_TYPE "winehstate"
 
-namespace llvm { void initializeWinEHStatePassPass(PassRegistry &); }
+namespace llvm {
+void initializeWinEHStatePassPass(PassRegistry &);
+}
 
 namespace {
 class WinEHStatePass : public FunctionPass {
@@ -67,7 +59,7 @@ private:
   void linkExceptionRegistration(IRBuilder<> &Builder, Function *Handler);
   void unlinkExceptionRegistration(IRBuilder<> &Builder);
   void addStateStores(Function &F, WinEHFuncInfo &FuncInfo);
-  void insertStateNumberStore(Value *ParentRegNode, Instruction *IP, int State);
+  void insertStateNumberStore(Instruction *IP, int State);
 
   Value *emitEHLSDA(IRBuilder<> &Builder, Function *F);
 
@@ -86,7 +78,6 @@ private:
   Function *FrameRecover = nullptr;
   Function *FrameAddress = nullptr;
   Function *FrameEscape = nullptr;
-  Function *RestoreFrame = nullptr;
 
   // Per-function state
   EHPersonality Personality = EHPersonality::Unknown;
@@ -95,9 +86,6 @@ private:
   /// The stack allocation containing all EH data, including the link in the
   /// fs:00 chain and the current state.
   AllocaInst *RegNode = nullptr;
-
-  /// Struct type of RegNode. Used for GEPing.
-  Type *RegNodeTy = nullptr;
 
   /// The index of the state field of RegNode.
   int StateFieldIndex = ~0U;
@@ -119,8 +107,6 @@ bool WinEHStatePass::doInitialization(Module &M) {
   FrameEscape = Intrinsic::getDeclaration(TheModule, Intrinsic::localescape);
   FrameRecover = Intrinsic::getDeclaration(TheModule, Intrinsic::localrecover);
   FrameAddress = Intrinsic::getDeclaration(TheModule, Intrinsic::frameaddress);
-  RestoreFrame =
-      Intrinsic::getDeclaration(TheModule, Intrinsic::x86_seh_restoreframe);
   return false;
 }
 
@@ -258,6 +244,9 @@ void WinEHStatePass::emitExceptionRegistrationRecord(Function *F) {
   assert(Personality == EHPersonality::MSVC_CXX ||
          Personality == EHPersonality::MSVC_X86SEH);
 
+  // Struct type of RegNode. Used for GEPing.
+  Type *RegNodeTy;
+
   StringRef PersonalityName = PersonalityFn->getName();
   IRBuilder<> Builder(&F->getEntryBlock(), F->getEntryBlock().begin());
   Type *Int8PtrType = Builder.getInt8PtrTy();
@@ -270,7 +259,7 @@ void WinEHStatePass::emitExceptionRegistrationRecord(Function *F) {
     Builder.CreateStore(SP, Builder.CreateStructGEP(RegNodeTy, RegNode, 0));
     // TryLevel = -1
     StateFieldIndex = 2;
-    insertStateNumberStore(RegNode, &*Builder.GetInsertPoint(), -1);
+    insertStateNumberStore(&*Builder.GetInsertPoint(), -1);
     // Handler = __ehhandler$F
     Function *Trampoline = generateLSDAInEAXThunk(F);
     Link = Builder.CreateStructGEP(RegNodeTy, RegNode, 1);
@@ -287,8 +276,7 @@ void WinEHStatePass::emitExceptionRegistrationRecord(Function *F) {
     Builder.CreateStore(SP, Builder.CreateStructGEP(RegNodeTy, RegNode, 0));
     // TryLevel = -2 / -1
     StateFieldIndex = 4;
-    insertStateNumberStore(RegNode, &*Builder.GetInsertPoint(),
-                           UseStackGuard ? -2 : -1);
+    insertStateNumberStore(&*Builder.GetInsertPoint(), UseStackGuard ? -2 : -1);
     // ScopeTable = llvm.x86.seh.lsda(F)
     Value *FI8 = Builder.CreateBitCast(F, Int8PtrType);
     Value *LSDA = Builder.CreateCall(
@@ -416,30 +404,46 @@ void WinEHStatePass::addStateStores(Function &F, WinEHFuncInfo &FuncInfo) {
     calculateWinCXXEHStateNumbers(&F, FuncInfo);
 
   // Iterate all the instructions and emit state number stores.
+  DenseMap<BasicBlock *, ColorVector> BlockColors = colorEHFunclets(F);
   for (BasicBlock &BB : F) {
+    // Figure out what state we should assign calls in this block.
+    int BaseState = -1;
+    auto &BBColors = BlockColors[&BB];
+
+    assert(BBColors.size() == 1 &&
+           "multi-color BB not removed by preparation");
+    BasicBlock *FuncletEntryBB = BBColors.front();
+    if (auto *FuncletPad =
+            dyn_cast<FuncletPadInst>(FuncletEntryBB->getFirstNonPHI())) {
+      // We do not support nesting funclets within cleanuppads.
+      if (isa<CleanupPadInst>(FuncletPad))
+        continue;
+
+      auto BaseStateI = FuncInfo.FuncletBaseStateMap.find(FuncletPad);
+      if (BaseStateI != FuncInfo.FuncletBaseStateMap.end())
+        BaseState = BaseStateI->second;
+    }
+
     for (Instruction &I : BB) {
       if (auto *CI = dyn_cast<CallInst>(&I)) {
         // Possibly throwing call instructions have no actions to take after
         // an unwind. Ensure they are in the -1 state.
         if (CI->doesNotThrow())
           continue;
-        insertStateNumberStore(RegNode, CI, -1);
+        insertStateNumberStore(CI, BaseState);
       } else if (auto *II = dyn_cast<InvokeInst>(&I)) {
         // Look up the state number of the landingpad this unwinds to.
-        Instruction *PadInst = II->getUnwindDest()->getFirstNonPHI();
-        // FIXME: Why does this assertion fail?
-        //assert(FuncInfo.EHPadStateMap.count(PadInst) && "EH Pad has no state!");
-        int State = FuncInfo.EHPadStateMap[PadInst];
-        insertStateNumberStore(RegNode, II, State);
+        assert(FuncInfo.InvokeStateMap.count(II) && "invoke has no state!");
+        int State = FuncInfo.InvokeStateMap[II];
+        insertStateNumberStore(II, State);
       }
     }
   }
 }
 
-void WinEHStatePass::insertStateNumberStore(Value *ParentRegNode,
-                                            Instruction *IP, int State) {
+void WinEHStatePass::insertStateNumberStore(Instruction *IP, int State) {
   IRBuilder<> Builder(IP);
   Value *StateField =
-      Builder.CreateStructGEP(RegNodeTy, ParentRegNode, StateFieldIndex);
+      Builder.CreateStructGEP(nullptr, RegNode, StateFieldIndex);
   Builder.CreateStore(Builder.getInt32(State), StateField);
 }

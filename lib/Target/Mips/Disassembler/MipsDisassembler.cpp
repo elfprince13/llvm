@@ -15,7 +15,7 @@
 #include "MipsRegisterInfo.h"
 #include "MipsSubtarget.h"
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCDisassembler.h"
+#include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "llvm/MC/MCFixedLenDisassembler.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSubtargetInfo.h"
@@ -229,6 +229,13 @@ static DecodeStatus DecodeBranchTargetMM(MCInst &Inst,
                                          uint64_t Address,
                                          const void *Decoder);
 
+// DecodeBranchTarget26MM - Decode microMIPS branch offset, which is
+// shifted left by 1 bit.
+static DecodeStatus DecodeBranchTarget26MM(MCInst &Inst,
+                                           unsigned Offset,
+                                           uint64_t Address,
+                                           const void *Decoder);
+
 // DecodeJumpTargetMM - Decode microMIPS jump target, which is
 // shifted left by 1 bit.
 static DecodeStatus DecodeJumpTargetMM(MCInst &Inst,
@@ -385,11 +392,6 @@ static DecodeStatus DecodeUImmWithOffset(MCInst &Inst, unsigned Value,
                                          uint64_t Address, const void *Decoder);
 
 static DecodeStatus DecodeInsSize(MCInst &Inst,
-                                  unsigned Insn,
-                                  uint64_t Address,
-                                  const void *Decoder);
-
-static DecodeStatus DecodeExtSize(MCInst &Inst,
                                   unsigned Insn,
                                   uint64_t Address,
                                   const void *Decoder);
@@ -867,6 +869,8 @@ DecodeStatus MipsDisassembler::getInstruction(MCInst &Instr, uint64_t &Size,
 
   if (IsMicroMips) {
     Result = readInstruction16(Bytes, Address, Size, Insn, IsBigEndian);
+    if (Result == MCDisassembler::Fail)
+      return MCDisassembler::Fail;
 
     if (hasMips32r6()) {
       DEBUG(dbgs() << "Trying MicroMipsR616 table (16-bit instructions):\n");
@@ -913,12 +917,17 @@ DecodeStatus MipsDisassembler::getInstruction(MCInst &Instr, uint64_t &Size,
       Size = 4;
       return Result;
     }
+    // This is an invalid instruction. Let the disassembler move forward by the
+    // minimum instruction size.
+    Size = 2;
     return MCDisassembler::Fail;
   }
 
   Result = readInstruction32(Bytes, Address, Size, Insn, IsBigEndian, false);
-  if (Result == MCDisassembler::Fail)
+  if (Result == MCDisassembler::Fail) {
+    Size = 4;
     return MCDisassembler::Fail;
+  }
 
   if (hasCOP3()) {
     DEBUG(dbgs() << "Trying COP3_ table (32-bit opcodes):\n");
@@ -979,6 +988,7 @@ DecodeStatus MipsDisassembler::getInstruction(MCInst &Instr, uint64_t &Size,
     return Result;
   }
 
+  Size = 4;
   return MCDisassembler::Fail;
 }
 
@@ -1855,6 +1865,16 @@ static DecodeStatus DecodeBranchTargetMM(MCInst &Inst,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeBranchTarget26MM(MCInst &Inst,
+  unsigned Offset,
+  uint64_t Address,
+  const void *Decoder) {
+  int32_t BranchOffset = SignExtend32<26>(Offset) << 1;
+
+  Inst.addOperand(MCOperand::createImm(BranchOffset));
+  return MCDisassembler::Success;
+}
+
 static DecodeStatus DecodeJumpTargetMM(MCInst &Inst,
                                        unsigned Insn,
                                        uint64_t Address,
@@ -1936,15 +1956,6 @@ static DecodeStatus DecodeInsSize(MCInst &Inst,
   // First we need to grab the pos(lsb) from MCInst.
   int Pos = Inst.getOperand(2).getImm();
   int Size = (int) Insn - Pos + 1;
-  Inst.addOperand(MCOperand::createImm(SignExtend32<16>(Size)));
-  return MCDisassembler::Success;
-}
-
-static DecodeStatus DecodeExtSize(MCInst &Inst,
-                                  unsigned Insn,
-                                  uint64_t Address,
-                                  const void *Decoder) {
-  int Size = (int) Insn  + 1;
   Inst.addOperand(MCOperand::createImm(SignExtend32<16>(Size)));
   return MCDisassembler::Success;
 }

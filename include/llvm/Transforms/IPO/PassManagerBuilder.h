@@ -15,9 +15,12 @@
 #ifndef LLVM_TRANSFORMS_IPO_PASSMANAGERBUILDER_H
 #define LLVM_TRANSFORMS_IPO_PASSMANAGERBUILDER_H
 
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace llvm {
+class FunctionInfoIndex;
 class Pass;
 class TargetLibraryInfoImpl;
 class TargetMachine;
@@ -114,6 +117,9 @@ public:
   /// added to the per-module passes.
   Pass *Inliner;
 
+  /// The function summary index to use for function importing.
+  const FunctionInfoIndex *FunctionIndex;
+
   bool DisableTailCalls;
   bool DisableUnitAtATime;
   bool DisableUnrollLoops;
@@ -127,6 +133,11 @@ public:
   bool VerifyOutput;
   bool MergeFunctions;
   bool PrepareForLTO;
+
+  /// Profile data file name that the instrumentation will be written to.
+  std::string PGOInstrGen;
+  /// Path of the profile data file.
+  std::string PGOInstrUse;
 
 private:
   /// ExtensionList - This is list of all of the extensions that are registered.
@@ -147,6 +158,7 @@ private:
   void addInitialAliasAnalysisPasses(legacy::PassManagerBase &PM) const;
   void addLTOOptimizationPasses(legacy::PassManagerBase &PM);
   void addLateLTOOptimizationPasses(legacy::PassManagerBase &PM);
+  void addPGOInstrPasses(legacy::PassManagerBase &MPM);
 
 public:
   /// populateFunctionPassManager - This fills in the function pass manager,

@@ -156,16 +156,6 @@ Pass *createLoopStrengthReducePass();
 
 //===----------------------------------------------------------------------===//
 //
-// GlobalMerge - This pass merges internal (by default) globals into structs
-// to enable reuse of a base pointer by indexed addressing modes.
-// It can also be configured to focus on size optimizations only.
-//
-Pass *createGlobalMergePass(const TargetMachine *TM, unsigned MaximalOffset,
-                            bool OnlyOptimizeForSize = false,
-                            bool MergeExternalByDefault = false);
-
-//===----------------------------------------------------------------------===//
-//
 // LoopUnswitch - This pass is a simple loop unswitching pass.
 //
 Pass *createLoopUnswitchPass(bool OptimizeForSize = false);
@@ -485,6 +475,13 @@ FunctionPass *createLoopDistributePass();
 // LoopLoadElimination - Perform loop-aware load elimination.
 //
 FunctionPass *createLoopLoadEliminationPass();
+
+//===----------------------------------------------------------------------===//
+//
+// LoopSimplifyCFG - This pass performs basic CFG simplification on loops,
+// primarily to help other loop passes.
+//
+Pass *createLoopSimplifyCFGPass();
 
 } // End llvm namespace
 

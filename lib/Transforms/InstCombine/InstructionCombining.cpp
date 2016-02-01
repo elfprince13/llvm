@@ -42,9 +42,9 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
-#include "llvm/Analysis/LibCallSemantics.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -1245,16 +1245,11 @@ Value *InstCombiner::Descale(Value *Val, APInt Scale, bool &NoSignedWrap) {
 /// specified one but with other operands.
 static Value *CreateBinOpAsGiven(BinaryOperator &Inst, Value *LHS, Value *RHS,
                                  InstCombiner::BuilderTy *B) {
-  Value *BORes = B->CreateBinOp(Inst.getOpcode(), LHS, RHS);
-  if (BinaryOperator *NewBO = dyn_cast<BinaryOperator>(BORes)) {
-    if (isa<OverflowingBinaryOperator>(NewBO)) {
-      NewBO->setHasNoSignedWrap(Inst.hasNoSignedWrap());
-      NewBO->setHasNoUnsignedWrap(Inst.hasNoUnsignedWrap());
-    }
-    if (isa<PossiblyExactOperator>(NewBO))
-      NewBO->setIsExact(Inst.isExact());
-  }
-  return BORes;
+  Value *BO = B->CreateBinOp(Inst.getOpcode(), LHS, RHS);
+  // If LHS and RHS are constant, BO won't be a binary operator.
+  if (BinaryOperator *NewBO = dyn_cast<BinaryOperator>(BO))
+    NewBO->copyIRFlags(&Inst);
+  return BO;
 }
 
 /// \brief Makes transformation of binary operation specific for vector types.
@@ -1288,9 +1283,8 @@ Value *InstCombiner::SimplifyVectorOp(BinaryOperator &Inst) {
         LShuf->getMask() == RShuf->getMask()) {
       Value *NewBO = CreateBinOpAsGiven(Inst, LShuf->getOperand(0),
           RShuf->getOperand(0), Builder);
-      Value *Res = Builder->CreateShuffleVector(NewBO,
+      return Builder->CreateShuffleVector(NewBO,
           UndefValue::get(NewBO->getType()), LShuf->getMask());
-      return Res;
     }
   }
 
@@ -1326,18 +1320,11 @@ Value *InstCombiner::SimplifyVectorOp(BinaryOperator &Inst) {
     }
     if (MayChange) {
       Constant *C2 = ConstantVector::get(C2M);
-      Value *NewLHS, *NewRHS;
-      if (isa<Constant>(LHS)) {
-        NewLHS = C2;
-        NewRHS = Shuffle->getOperand(0);
-      } else {
-        NewLHS = Shuffle->getOperand(0);
-        NewRHS = C2;
-      }
+      Value *NewLHS = isa<Constant>(LHS) ? C2 : Shuffle->getOperand(0);
+      Value *NewRHS = isa<Constant>(LHS) ? Shuffle->getOperand(0) : C2;
       Value *NewBO = CreateBinOpAsGiven(Inst, NewLHS, NewRHS, Builder);
-      Value *Res = Builder->CreateShuffleVector(NewBO,
+      return Builder->CreateShuffleVector(NewBO,
           UndefValue::get(Inst.getType()), Shuffle->getMask());
-      return Res;
     }
   }
 
@@ -1347,7 +1334,7 @@ Value *InstCombiner::SimplifyVectorOp(BinaryOperator &Inst) {
 Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
   SmallVector<Value*, 8> Ops(GEP.op_begin(), GEP.op_end());
 
-  if (Value *V = SimplifyGEPInst(Ops, DL, TLI, DT, AC))
+  if (Value *V = SimplifyGEPInst(GEP.getSourceElementType(), Ops, DL, TLI, DT, AC))
     return ReplaceInstUsesWith(GEP, V);
 
   Value *PtrOp = GEP.getOperand(0);
@@ -1362,19 +1349,18 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
   for (User::op_iterator I = GEP.op_begin() + 1, E = GEP.op_end(); I != E;
        ++I, ++GTI) {
     // Skip indices into struct types.
-    SequentialType *SeqTy = dyn_cast<SequentialType>(*GTI);
-    if (!SeqTy)
+    if (isa<StructType>(*GTI))
       continue;
 
     // Index type should have the same width as IntPtr
     Type *IndexTy = (*I)->getType();
     Type *NewIndexType = IndexTy->isVectorTy() ?
       VectorType::get(IntPtrTy, IndexTy->getVectorNumElements()) : IntPtrTy;
- 
+
     // If the element type has zero size then any index over it is equivalent
     // to an index of zero, so replace it with zero if it is not zero already.
-    if (SeqTy->getElementType()->isSized() &&
-        DL.getTypeAllocSize(SeqTy->getElementType()) == 0)
+    Type *EltTy = GTI.getIndexedType();
+    if (EltTy->isSized() && DL.getTypeAllocSize(EltTy) == 0)
       if (!isa<Constant>(*I) || !cast<Constant>(*I)->isNullValue()) {
         *I = Constant::getNullValue(NewIndexType);
         MadeChange = true;
@@ -1418,7 +1404,7 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
         return nullptr;
 
       // Keep track of the type as we walk the GEP.
-      Type *CurTy = Op1->getOperand(0)->getType()->getScalarType();
+      Type *CurTy = nullptr;
 
       for (unsigned J = 0, F = Op1->getNumOperands(); J != F; ++J) {
         if (Op1->getOperand(J)->getType() != Op2->getOperand(J)->getType())
@@ -1449,7 +1435,9 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
 
         // Sink down a layer of the type for the next iteration.
         if (J > 0) {
-          if (CompositeType *CT = dyn_cast<CompositeType>(CurTy)) {
+          if (J == 1) {
+            CurTy = Op1->getSourceElementType();
+          } else if (CompositeType *CT = dyn_cast<CompositeType>(CurTy)) {
             CurTy = CT->getTypeAtIndex(Op1->getOperand(J));
           } else {
             CurTy = nullptr;
@@ -1578,8 +1566,7 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
     unsigned AS = GEP.getPointerAddressSpace();
     if (GEP.getOperand(1)->getType()->getScalarSizeInBits() ==
         DL.getPointerSizeInBits(AS)) {
-      Type *PtrTy = GEP.getPointerOperandType();
-      Type *Ty = PtrTy->getPointerElementType();
+      Type *Ty = GEP.getSourceElementType();
       uint64_t TyAllocSize = DL.getTypeAllocSize(Ty);
 
       bool Matched = false;
@@ -1642,9 +1629,8 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
     //
     // This occurs when the program declares an array extern like "int X[];"
     if (HasZeroPointerIndex) {
-      PointerType *CPTy = cast<PointerType>(PtrOp->getType());
       if (ArrayType *CATy =
-          dyn_cast<ArrayType>(CPTy->getElementType())) {
+          dyn_cast<ArrayType>(GEP.getSourceElementType())) {
         // GEP (bitcast i8* X to [0 x i8]*), i32 0, ... ?
         if (CATy->getElementType() == StrippedPtrTy->getElementType()) {
           // -> GEP i8* X, ...
@@ -1701,7 +1687,7 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
       // %t = getelementptr i32* bitcast ([2 x i32]* %str to i32*), i32 %V
       // into:  %t1 = getelementptr [2 x i32]* %str, i32 0, i32 %V; bitcast
       Type *SrcElTy = StrippedPtrTy->getElementType();
-      Type *ResElTy = PtrOp->getType()->getPointerElementType();
+      Type *ResElTy = GEP.getSourceElementType();
       if (SrcElTy->isArrayTy() &&
           DL.getTypeAllocSize(SrcElTy->getArrayElementType()) ==
               DL.getTypeAllocSize(ResElTy)) {
@@ -1975,7 +1961,7 @@ Instruction *InstCombiner::visitAllocSite(Instruction &MI) {
 
     if (InvokeInst *II = dyn_cast<InvokeInst>(&MI)) {
       // Replace invoke with a NOP intrinsic to maintain the original CFG
-      Module *M = II->getParent()->getParent()->getParent();
+      Module *M = II->getModule();
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::donothing);
       InvokeInst::Create(F, II->getNormalDest(), II->getUnwindDest(),
                          None, "", II->getParent());
@@ -2324,9 +2310,10 @@ Instruction *InstCombiner::visitExtractValueInst(ExtractValueInst &EV) {
   }
   if (LoadInst *L = dyn_cast<LoadInst>(Agg))
     // If the (non-volatile) load only has one use, we can rewrite this to a
-    // load from a GEP. This reduces the size of the load.
-    // FIXME: If a load is used only by extractvalue instructions then this
-    //        could be done regardless of having multiple uses.
+    // load from a GEP. This reduces the size of the load. If a load is used
+    // only by extractvalue instructions then this either must have been
+    // optimized before, or it is a struct with padding, in which case we
+    // don't want to do the transformation as it loses padding knowledge.
     if (L->isSimple() && L->hasOneUse()) {
       // extractvalue has integer indices, getelementptr has Value*s. Convert.
       SmallVector<Value*, 4> Indices;
@@ -3014,7 +3001,7 @@ static bool prepareICWorklistFromFunction(Function &F, const DataLayout &DL,
   // Do a depth-first traversal of the function, populate the worklist with
   // the reachable instructions.  Ignore blocks that are not reachable.  Keep
   // track of which blocks we visit.
-  SmallPtrSet<BasicBlock *, 64> Visited;
+  SmallPtrSet<BasicBlock *, 32> Visited;
   MadeIRChange |=
       AddReachableCodeToWorklist(&F.front(), DL, Visited, ICWorklist, TLI);
 
@@ -3025,25 +3012,9 @@ static bool prepareICWorklistFromFunction(Function &F, const DataLayout &DL,
     if (Visited.count(&*BB))
       continue;
 
-    // Delete the instructions backwards, as it has a reduced likelihood of
-    // having to update as many def-use and use-def chains.
-    Instruction *EndInst = BB->getTerminator(); // Last not to be deleted.
-    while (EndInst != BB->begin()) {
-      // Delete the next to last instruction.
-      Instruction *Inst = &*--EndInst->getIterator();
-      if (!Inst->use_empty() && !Inst->getType()->isTokenTy())
-        Inst->replaceAllUsesWith(UndefValue::get(Inst->getType()));
-      if (Inst->isEHPad()) {
-        EndInst = Inst;
-        continue;
-      }
-      if (!isa<DbgInfoIntrinsic>(Inst)) {
-        ++NumDeadInst;
-        MadeIRChange = true;
-      }
-      if (!Inst->getType()->isTokenTy())
-        Inst->eraseFromParent();
-    }
+    unsigned NumDeadInstInBB = removeAllNonTerminatorAndEHPadInstructions(&*BB);
+    MadeIRChange |= NumDeadInstInBB > 0;
+    NumDeadInst += NumDeadInstInBB;
   }
 
   return MadeIRChange;
@@ -3072,14 +3043,11 @@ combineInstructionsOverFunction(Function &F, InstCombineWorklist &Worklist,
     DEBUG(dbgs() << "\n\nINSTCOMBINE ITERATION #" << Iteration << " on "
                  << F.getName() << "\n");
 
-    bool Changed = false;
-    if (prepareICWorklistFromFunction(F, DL, &TLI, Worklist))
-      Changed = true;
+    bool Changed = prepareICWorklistFromFunction(F, DL, &TLI, Worklist);
 
-    InstCombiner IC(Worklist, &Builder, F.optForMinSize(),
-                    AA, &AC, &TLI, &DT, DL, LI);
-    if (IC.run())
-      Changed = true;
+    InstCombiner IC(Worklist, &Builder, F.optForMinSize(), AA, &AC, &TLI, &DT,
+                    DL, LI);
+    Changed |= IC.run();
 
     if (!Changed)
       break;

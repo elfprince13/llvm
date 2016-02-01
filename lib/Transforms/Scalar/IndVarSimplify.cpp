@@ -50,6 +50,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/SimplifyIndVar.h"
 using namespace llvm;
 
@@ -128,10 +129,11 @@ private:
   void handleFloatingPointIV(Loop *L, PHINode *PH);
   void rewriteNonIntegerIVs(Loop *L);
 
-  void simplifyAndExtend(Loop *L, SCEVExpander &Rewriter, LPPassManager &LPM);
+  void simplifyAndExtend(Loop *L, SCEVExpander &Rewriter, LoopInfo *LI);
 
   bool canLoopBeDeleted(Loop *L, SmallVector<RewritePhi, 8> &RewritePhiSet);
   void rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter);
+  void rewriteFirstIterationLoopExitValues(Loop *L);
 
   Value *linearFunctionTestReplace(Loop *L, const SCEV *BackedgeTakenCount,
                                    PHINode *IndVar, SCEVExpander &Rewriter);
@@ -215,7 +217,7 @@ bool IndVarSimplify::isValidRewrite(Value *FromVal, Value *ToVal) {
 /// loop. For PHI nodes, there may be multiple uses, so compute the nearest
 /// common dominator for the incoming blocks.
 static Instruction *getInsertPointForUses(Instruction *User, Value *Def,
-                                          DominatorTree *DT) {
+                                          DominatorTree *DT, LoopInfo *LI) {
   PHINode *PHI = dyn_cast<PHINode>(User);
   if (!PHI)
     return User;
@@ -234,10 +236,21 @@ static Instruction *getInsertPointForUses(Instruction *User, Value *Def,
     InsertPt = InsertBB->getTerminator();
   }
   assert(InsertPt && "Missing phi operand");
-  assert((!isa<Instruction>(Def) ||
-          DT->dominates(cast<Instruction>(Def), InsertPt)) &&
-         "def does not dominate all uses");
-  return InsertPt;
+
+  auto *DefI = dyn_cast<Instruction>(Def);
+  if (!DefI)
+    return InsertPt;
+
+  assert(DT->dominates(DefI, InsertPt) && "def does not dominate all uses");
+
+  auto *L = LI->getLoopFor(DefI->getParent());
+  assert(!L || L->contains(LI->getLoopFor(InsertPt->getParent())));
+
+  for (auto *DTN = (*DT)[InsertPt->getParent()]; DTN; DTN = DTN->getIDom())
+    if (LI->getLoopFor(DTN->getBlock()) == L)
+      return DTN->getBlock()->getTerminator();
+
+  llvm_unreachable("DefI dominates InsertPt!");
 }
 
 //===----------------------------------------------------------------------===//
@@ -492,10 +505,9 @@ struct RewritePhi {
   unsigned Ith;  // Ith incoming value.
   Value *Val;    // Exit value after expansion.
   bool HighCost; // High Cost when expansion.
-  bool SafePhi;  // LCSSASafePhiForRAUW.
 
-  RewritePhi(PHINode *P, unsigned I, Value *V, bool H, bool S)
-      : PN(P), Ith(I), Val(V), HighCost(H), SafePhi(S) {}
+  RewritePhi(PHINode *P, unsigned I, Value *V, bool H)
+      : PN(P), Ith(I), Val(V), HighCost(H) {}
 };
 }
 
@@ -528,8 +540,8 @@ Value *IndVarSimplify::expandSCEVIfNeeded(SCEVExpander &Rewriter, const SCEV *S,
 /// able to brute-force evaluate arbitrary instructions as long as they have
 /// constant operands at the beginning of the loop.
 void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
-  // Verify the input to the pass in already in LCSSA form.
-  assert(L->isLCSSAForm(*DT));
+  // Check a pre-condition.
+  assert(L->isRecursivelyLCSSAForm(*DT) && "Indvars did not preserve LCSSA!");
 
   SmallVector<BasicBlock*, 8> ExitBlocks;
   L->getUniqueExitBlocks(ExitBlocks);
@@ -538,9 +550,7 @@ void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
   // Find all values that are computed inside the loop, but used outside of it.
   // Because of LCSSA, these values will only occur in LCSSA PHI Nodes.  Scan
   // the exit blocks of the loop to find them.
-  for (unsigned i = 0, e = ExitBlocks.size(); i != e; ++i) {
-    BasicBlock *ExitBB = ExitBlocks[i];
-
+  for (BasicBlock *ExitBB : ExitBlocks) {
     // If there are no PHI nodes in this exit block, then no values defined
     // inside the loop are used on this path, skip it.
     PHINode *PN = dyn_cast<PHINode>(ExitBB->begin());
@@ -548,29 +558,13 @@ void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
 
     unsigned NumPreds = PN->getNumIncomingValues();
 
-    // We would like to be able to RAUW single-incoming value PHI nodes. We
-    // have to be certain this is safe even when this is an LCSSA PHI node.
-    // While the computed exit value is no longer varying in *this* loop, the
-    // exit block may be an exit block for an outer containing loop as well,
-    // the exit value may be varying in the outer loop, and thus it may still
-    // require an LCSSA PHI node. The safe case is when this is
-    // single-predecessor PHI node (LCSSA) and the exit block containing it is
-    // part of the enclosing loop, or this is the outer most loop of the nest.
-    // In either case the exit value could (at most) be varying in the same
-    // loop body as the phi node itself. Thus if it is in turn used outside of
-    // an enclosing loop it will only be via a separate LCSSA node.
-    bool LCSSASafePhiForRAUW =
-        NumPreds == 1 &&
-        (!L->getParentLoop() || L->getParentLoop() == LI->getLoopFor(ExitBB));
-
     // Iterate over all of the PHI nodes.
     BasicBlock::iterator BBI = ExitBB->begin();
     while ((PN = dyn_cast<PHINode>(BBI++))) {
       if (PN->use_empty())
         continue; // dead use, don't replace it
 
-      // SCEV only supports integer expressions for now.
-      if (!PN->getType()->isIntegerTy() && !PN->getType()->isPointerTy())
+      if (!SE->isSCEVable(PN->getType()))
         continue;
 
       // It's necessary to tell ScalarEvolution about this explicitly so that
@@ -657,8 +651,7 @@ void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
         }
 
         // Collect all the candidate PHINodes to be rewritten.
-        RewritePhiSet.push_back(
-            RewritePhi(PN, i, ExitVal, HighCost, LCSSASafePhiForRAUW));
+        RewritePhiSet.emplace_back(PN, i, ExitVal, HighCost);
       }
     }
   }
@@ -687,9 +680,9 @@ void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
     if (isInstructionTriviallyDead(Inst, TLI))
       DeadInsts.push_back(Inst);
 
-    // If we determined that this PHI is safe to replace even if an LCSSA
-    // PHI, do so.
-    if (Phi.SafePhi) {
+    // Replace PN with ExitVal if that is legal and does not break LCSSA.
+    if (PN->getNumIncomingValues() == 1 &&
+        LI->replacementPreservesLCSSAForm(PN, ExitVal)) {
       PN->replaceAllUsesWith(ExitVal);
       PN->eraseFromParent();
     }
@@ -698,6 +691,80 @@ void IndVarSimplify::rewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
   // The insertion point instruction may have been deleted; clear it out
   // so that the rewriter doesn't trip over it later.
   Rewriter.clearInsertPoint();
+}
+
+//===---------------------------------------------------------------------===//
+// rewriteFirstIterationLoopExitValues: Rewrite loop exit values if we know
+// they will exit at the first iteration.
+//===---------------------------------------------------------------------===//
+
+/// Check to see if this loop has loop invariant conditions which lead to loop
+/// exits. If so, we know that if the exit path is taken, it is at the first
+/// loop iteration. This lets us predict exit values of PHI nodes that live in
+/// loop header.
+void IndVarSimplify::rewriteFirstIterationLoopExitValues(Loop *L) {
+  // Verify the input to the pass is already in LCSSA form.
+  assert(L->isLCSSAForm(*DT));
+
+  SmallVector<BasicBlock *, 8> ExitBlocks;
+  L->getUniqueExitBlocks(ExitBlocks);
+  auto *LoopHeader = L->getHeader();
+  assert(LoopHeader && "Invalid loop");
+
+  for (auto *ExitBB : ExitBlocks) {
+    BasicBlock::iterator BBI = ExitBB->begin();
+    // If there are no more PHI nodes in this exit block, then no more
+    // values defined inside the loop are used on this path.
+    while (auto *PN = dyn_cast<PHINode>(BBI++)) {
+      for (unsigned IncomingValIdx = 0, E = PN->getNumIncomingValues();
+          IncomingValIdx != E; ++IncomingValIdx) {
+        auto *IncomingBB = PN->getIncomingBlock(IncomingValIdx);
+
+        // We currently only support loop exits from loop header. If the
+        // incoming block is not loop header, we need to recursively check
+        // all conditions starting from loop header are loop invariants.
+        // Additional support might be added in the future.
+        if (IncomingBB != LoopHeader)
+          continue;
+
+        // Get condition that leads to the exit path.
+        auto *TermInst = IncomingBB->getTerminator();
+
+        Value *Cond = nullptr;
+        if (auto *BI = dyn_cast<BranchInst>(TermInst)) {
+          // Must be a conditional branch, otherwise the block
+          // should not be in the loop.
+          Cond = BI->getCondition();
+        } else if (auto *SI = dyn_cast<SwitchInst>(TermInst))
+          Cond = SI->getCondition();
+        else
+          continue;
+
+        if (!L->isLoopInvariant(Cond))
+          continue;
+
+        auto *ExitVal =
+            dyn_cast<PHINode>(PN->getIncomingValue(IncomingValIdx));
+
+        // Only deal with PHIs.
+        if (!ExitVal)
+          continue;
+
+        // If ExitVal is a PHI on the loop header, then we know its
+        // value along this exit because the exit can only be taken
+        // on the first iteration.
+        auto *LoopPreheader = L->getLoopPreheader();
+        assert(LoopPreheader && "Invalid loop");
+        int PreheaderIdx = ExitVal->getBasicBlockIndex(LoopPreheader);
+        if (PreheaderIdx != -1) {
+          assert(ExitVal->getParent() == LoopHeader &&
+                 "ExitVal must be in loop header");
+          PN->setIncomingValue(IncomingValIdx,
+              ExitVal->getIncomingValue(PreheaderIdx));
+        }
+      }
+    }
+  }
 }
 
 /// Check whether it is possible to delete the loop after rewriting exit
@@ -747,14 +814,9 @@ bool IndVarSimplify::canLoopBeDeleted(
     ++BI;
   }
 
-  for (Loop::block_iterator LI = L->block_begin(), LE = L->block_end();
-       LI != LE; ++LI) {
-    for (BasicBlock::iterator BI = (*LI)->begin(), BE = (*LI)->end(); BI != BE;
-         ++BI) {
-      if (BI->mayHaveSideEffects())
-        return false;
-    }
-  }
+  for (auto *BB : L->blocks())
+    if (any_of(*BB, [](Instruction &I) { return I.mayHaveSideEffects(); }))
+      return false;
 
   return true;
 }
@@ -981,12 +1043,7 @@ Instruction *WidenIV::cloneBitwiseIVUser(NarrowIVDefUse DU) {
                                         NarrowBO->getName());
   IRBuilder<> Builder(NarrowUse);
   Builder.Insert(WideBO);
-  if (const auto *OBO = dyn_cast<OverflowingBinaryOperator>(NarrowBO)) {
-    if (OBO->hasNoUnsignedWrap())
-      WideBO->setHasNoUnsignedWrap();
-    if (OBO->hasNoSignedWrap())
-      WideBO->setHasNoSignedWrap();
-  }
+  WideBO->copyIRFlags(NarrowBO);
   return WideBO;
 }
 
@@ -1078,12 +1135,7 @@ Instruction *WidenIV::cloneArithmeticIVUser(NarrowIVDefUse DU,
 
   IRBuilder<> Builder(NarrowUse);
   Builder.Insert(WideBO);
-  if (const auto *OBO = dyn_cast<OverflowingBinaryOperator>(NarrowBO)) {
-    if (OBO->hasNoUnsignedWrap())
-      WideBO->setHasNoUnsignedWrap();
-    if (OBO->hasNoSignedWrap())
-      WideBO->setHasNoSignedWrap();
-  }
+  WideBO->copyIRFlags(NarrowBO);
   return WideBO;
 }
 
@@ -1177,10 +1229,11 @@ const SCEVAddRecExpr *WidenIV::getWideRecurrence(Instruction *NarrowUse) {
 
 /// This IV user cannot be widen. Replace this use of the original narrow IV
 /// with a truncation of the new wide IV to isolate and eliminate the narrow IV.
-static void truncateIVUse(NarrowIVDefUse DU, DominatorTree *DT) {
+static void truncateIVUse(NarrowIVDefUse DU, DominatorTree *DT, LoopInfo *LI) {
   DEBUG(dbgs() << "INDVARS: Truncate IV " << *DU.WideDef
         << " for user " << *DU.NarrowUse << "\n");
-  IRBuilder<> Builder(getInsertPointForUses(DU.NarrowUse, DU.NarrowDef, DT));
+  IRBuilder<> Builder(
+      getInsertPointForUses(DU.NarrowUse, DU.NarrowDef, DT, LI));
   Value *Trunc = Builder.CreateTrunc(DU.WideDef, DU.NarrowDef->getType());
   DU.NarrowUse->replaceUsesOfWith(DU.NarrowDef, Trunc);
 }
@@ -1217,7 +1270,8 @@ bool WidenIV::widenLoopCompare(NarrowIVDefUse DU) {
   assert (CastWidth <= IVWidth && "Unexpected width while widening compare.");
 
   // Widen the compare instruction.
-  IRBuilder<> Builder(getInsertPointForUses(DU.NarrowUse, DU.NarrowDef, DT));
+  IRBuilder<> Builder(
+      getInsertPointForUses(DU.NarrowUse, DU.NarrowDef, DT, LI));
   DU.NarrowUse->replaceUsesOfWith(DU.NarrowDef, DU.WideDef);
 
   // Widen the other operand of the compare, if necessary.
@@ -1239,7 +1293,7 @@ Instruction *WidenIV::widenIVUse(NarrowIVDefUse DU, SCEVExpander &Rewriter) {
       // After SimplifyCFG most loop exit targets have a single predecessor.
       // Otherwise fall back to a truncate within the loop.
       if (UsePhi->getNumOperands() != 1)
-        truncateIVUse(DU, DT);
+        truncateIVUse(DU, DT, LI);
       else {
         PHINode *WidePhi =
           PHINode::Create(DU.WideDef->getType(), 1, UsePhi->getName() + ".wide",
@@ -1307,7 +1361,7 @@ Instruction *WidenIV::widenIVUse(NarrowIVDefUse DU, SCEVExpander &Rewriter) {
     // This user does not evaluate to a recurence after widening, so don't
     // follow it. Instead insert a Trunc to kill off the original use,
     // eventually isolating the original narrow IV so it can be removed.
-    truncateIVUse(DU, DT);
+    truncateIVUse(DU, DT, LI);
     return nullptr;
   }
   // Assume block terminators cannot evaluate to a recurrence. We can't to
@@ -1356,8 +1410,7 @@ void WidenIV::pushNarrowIVUsers(Instruction *NarrowDef, Instruction *WideDef) {
     if (!Widened.insert(NarrowUser).second)
       continue;
 
-    NarrowIVUsers.push_back(
-        NarrowIVDefUse(NarrowDef, NarrowUser, WideDef, NeverNegative));
+    NarrowIVUsers.emplace_back(NarrowDef, NarrowUser, WideDef, NeverNegative);
   }
 }
 
@@ -1481,7 +1534,7 @@ public:
 ///
 void IndVarSimplify::simplifyAndExtend(Loop *L,
                                        SCEVExpander &Rewriter,
-                                       LPPassManager &LPM) {
+                                       LoopInfo *LI) {
   SmallVector<WideIVInfo, 8> WideIVs;
 
   SmallVector<PHINode*, 8> LoopPhis;
@@ -1505,7 +1558,7 @@ void IndVarSimplify::simplifyAndExtend(Loop *L,
       // Information about sign/zero extensions of CurrIV.
       IndVarSimplifyVisitor Visitor(CurrIV, SE, TTI, DT);
 
-      Changed |= simplifyUsersOfIV(CurrIV, SE, DT, &LPM, DeadInsts, &Visitor);
+      Changed |= simplifyUsersOfIV(CurrIV, SE, DT, LI, DeadInsts, &Visitor);
 
       if (Visitor.WI.WidestNativeType) {
         WideIVs.push_back(Visitor.WI);
@@ -1671,10 +1724,10 @@ static bool hasConcreteDefImpl(Value *V, SmallPtrSetImpl<Value*> &Visited,
     return false;
 
   // Optimistically handle other instructions.
-  for (User::op_iterator OI = I->op_begin(), E = I->op_end(); OI != E; ++OI) {
-    if (!Visited.insert(*OI).second)
+  for (Value *Op : I->operands()) {
+    if (!Visited.insert(Op).second)
       continue;
-    if (!hasConcreteDefImpl(*OI, Visited, Depth+1))
+    if (!hasConcreteDefImpl(Op, Visited, Depth+1))
       return false;
   }
   return true;
@@ -1730,6 +1783,7 @@ static PHINode *FindLoopCounter(Loop *L, const SCEV *BECount,
   const SCEV *BestInit = nullptr;
   BasicBlock *LatchBlock = L->getLoopLatch();
   assert(LatchBlock && "needsLFTR should guarantee a loop latch");
+  const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
 
   for (BasicBlock::iterator I = L->getHeader()->begin(); isa<PHINode>(I); ++I) {
     PHINode *Phi = cast<PHINode>(I);
@@ -1748,8 +1802,7 @@ static PHINode *FindLoopCounter(Loop *L, const SCEV *BECount,
     // AR may be wider than BECount. With eq/ne tests overflow is immaterial.
     // AR may not be a narrower type, or we may never exit.
     uint64_t PhiWidth = SE->getTypeSizeInBits(AR->getType());
-    if (PhiWidth < BCWidth ||
-        !L->getHeader()->getModule()->getDataLayout().isLegalInteger(PhiWidth))
+    if (PhiWidth < BCWidth || !DL.isLegalInteger(PhiWidth))
       continue;
 
     const SCEV *Step = dyn_cast<SCEVConstant>(AR->getStepRecurrence(*SE));
@@ -1944,8 +1997,8 @@ linearFunctionTestReplace(Loop *L,
     const SCEV *ARStep = AR->getStepRecurrence(*SE);
     // For constant IVCount, avoid truncation.
     if (isa<SCEVConstant>(ARStart) && isa<SCEVConstant>(IVCount)) {
-      const APInt &Start = cast<SCEVConstant>(ARStart)->getValue()->getValue();
-      APInt Count = cast<SCEVConstant>(IVCount)->getValue()->getValue();
+      const APInt &Start = cast<SCEVConstant>(ARStart)->getAPInt();
+      APInt Count = cast<SCEVConstant>(IVCount)->getAPInt();
       // Note that the post-inc value of BackedgeTakenCount may have overflowed
       // above such that IVCount is now zero.
       if (IVCount != BackedgeTakenCount && Count == 0) {
@@ -2121,7 +2174,7 @@ bool IndVarSimplify::runOnLoop(Loop *L, LPPassManager &LPM) {
   // other expressions involving loop IVs have been evaluated. This helps SCEV
   // set no-wrap flags before normalizing sign/zero extension.
   Rewriter.disableCanonicalMode();
-  simplifyAndExtend(L, Rewriter, LPM);
+  simplifyAndExtend(L, Rewriter, LI);
 
   // Check to see if this loop has a computable loop-invariant execution count.
   // If so, this means that we can compute the final value of any expressions
@@ -2173,11 +2226,16 @@ bool IndVarSimplify::runOnLoop(Loop *L, LPPassManager &LPM) {
   // loop may be sunk below the loop to reduce register pressure.
   sinkUnusedInvariants(L);
 
+  // rewriteFirstIterationLoopExitValues does not rely on the computation of
+  // trip count and therefore can further simplify exit values in addition to
+  // rewriteLoopExitValues.
+  rewriteFirstIterationLoopExitValues(L);
+
   // Clean up dead instructions.
   Changed |= DeleteDeadPHIs(L->getHeader(), TLI);
+
   // Check a post-condition.
-  assert(L->isLCSSAForm(*DT) &&
-         "Indvars did not leave the loop in lcssa form!");
+  assert(L->isRecursivelyLCSSAForm(*DT) && "Indvars did not preserve LCSSA!");
 
   // Verify that LFTR, and any other change have not interfered with SCEV's
   // ability to compute trip count.

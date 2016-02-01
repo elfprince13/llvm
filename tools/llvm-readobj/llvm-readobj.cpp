@@ -227,13 +227,19 @@ namespace opts {
                   cl::desc("Display ELF version sections (if present)"));
   cl::alias VersionInfoShort("V", cl::desc("Alias for -version-info"),
                              cl::aliasopt(VersionInfo));
+
+  cl::opt<bool> SectionGroups("elf-section-groups",
+                              cl::desc("Display ELF section group contents"));
+  cl::alias SectionGroupsShort("g", cl::desc("Alias for -elf-sections-groups"),
+                               cl::aliasopt(SectionGroups));
+
 } // namespace opts
 
 namespace llvm {
 
-void reportError(Twine Msg) {
-  outs() << "\nError reading file: " << Msg << ".\n";
-  outs().flush();
+LLVM_ATTRIBUTE_NORETURN void reportError(Twine Msg) {
+  errs() << "\nError reading file: " << Msg << ".\n";
+  errs().flush();
   exit(1);
 }
 
@@ -296,10 +302,8 @@ static std::error_code createDumper(const ObjectFile *Obj, StreamWriter &Writer,
 static void dumpObject(const ObjectFile *Obj) {
   StreamWriter Writer(outs());
   std::unique_ptr<ObjDumper> Dumper;
-  if (std::error_code EC = createDumper(Obj, Writer, Dumper)) {
+  if (std::error_code EC = createDumper(Obj, Writer, Dumper))
     reportError(Obj->getFileName(), EC);
-    return;
-  }
 
   outs() << '\n';
   outs() << "File: " << Obj->getFileName() << "\n";
@@ -336,16 +340,20 @@ static void dumpObject(const ObjectFile *Obj) {
     Dumper->printGnuHashTable();
   if (opts::VersionInfo)
     Dumper->printVersionInfo();
-  if (Obj->getArch() == llvm::Triple::arm && Obj->isELF())
-    if (opts::ARMAttributes)
-      Dumper->printAttributes();
-  if (isMipsArch(Obj->getArch()) && Obj->isELF()) {
-    if (opts::MipsPLTGOT)
-      Dumper->printMipsPLTGOT();
-    if (opts::MipsABIFlags)
-      Dumper->printMipsABIFlags();
-    if (opts::MipsReginfo)
-      Dumper->printMipsReginfo();
+  if (Obj->isELF()) {
+    if (Obj->getArch() == llvm::Triple::arm)
+      if (opts::ARMAttributes)
+        Dumper->printAttributes();
+    if (isMipsArch(Obj->getArch())) {
+      if (opts::MipsPLTGOT)
+        Dumper->printMipsPLTGOT();
+      if (opts::MipsABIFlags)
+        Dumper->printMipsABIFlags();
+      if (opts::MipsReginfo)
+        Dumper->printMipsReginfo();
+    }
+    if (opts::SectionGroups)
+      Dumper->printGroupSections();
   }
   if (Obj->isCOFF()) {
     if (opts::COFFImports)
@@ -356,6 +364,8 @@ static void dumpObject(const ObjectFile *Obj) {
       Dumper->printCOFFDirectives();
     if (opts::COFFBaseRelocs)
       Dumper->printCOFFBaseReloc();
+    if (opts::CodeView)
+      Dumper->printCodeViewDebugInfo();
   }
   if (Obj->isMachO()) {
     if (opts::MachODataInCode)
@@ -414,10 +424,8 @@ static void dumpInput(StringRef File) {
 
   // Attempt to open the binary.
   ErrorOr<OwningBinary<Binary>> BinaryOrErr = createBinary(File);
-  if (std::error_code EC = BinaryOrErr.getError()) {
+  if (std::error_code EC = BinaryOrErr.getError())
     reportError(File, EC);
-    return;
-  }
   Binary &Binary = *BinaryOrErr.get().getBinary();
 
   if (Archive *Arc = dyn_cast<Archive>(&Binary))

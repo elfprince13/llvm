@@ -201,6 +201,12 @@ def NoV6             : Predicate<"!Subtarget->hasV6Ops()">;
 def HasV6M           : Predicate<"Subtarget->hasV6MOps()">,
                                  AssemblerPredicate<"HasV6MOps",
                                                     "armv6m or armv6t2">;
+def HasV8MBaseline   : Predicate<"Subtarget->hasV8MBaselineOps()">,
+                                 AssemblerPredicate<"HasV8MBaselineOps",
+                                                    "armv8m.base">;
+def HasV8MMainline   : Predicate<"Subtarget->hasV8MMainlineOps()">,
+                                 AssemblerPredicate<"HasV8MMainlineOps",
+                                                    "armv8m.main">;
 def HasV6T2          : Predicate<"Subtarget->hasV6T2Ops()">,
                                  AssemblerPredicate<"HasV6T2Ops", "armv6t2">;
 def NoV6T2           : Predicate<"!Subtarget->hasV6T2Ops()">;
@@ -215,6 +221,8 @@ def PreV8            : Predicate<"!Subtarget->hasV8Ops()">,
                                  AssemblerPredicate<"!HasV8Ops", "armv7 or earlier">;
 def HasV8_1a         : Predicate<"Subtarget->hasV8_1aOps()">,
                                  AssemblerPredicate<"HasV8_1aOps", "armv8.1a">;
+def HasV8_2a         : Predicate<"Subtarget->hasV8_2aOps()">,
+                                 AssemblerPredicate<"HasV8_2aOps", "armv8.2a">;
 def NoVFP            : Predicate<"!Subtarget->hasVFP2()">;
 def HasVFP2          : Predicate<"Subtarget->hasVFP2()">,
                                  AssemblerPredicate<"FeatureVFP2", "VFP2">;
@@ -234,7 +242,9 @@ def HasCrypto        : Predicate<"Subtarget->hasCrypto()">,
 def HasCRC           : Predicate<"Subtarget->hasCRC()">,
                                  AssemblerPredicate<"FeatureCRC", "crc">;
 def HasFP16          : Predicate<"Subtarget->hasFP16()">,
-                                 AssemblerPredicate<"FeatureFP16","half-float">;
+                                 AssemblerPredicate<"FeatureFP16","half-float conversions">;
+def HasFullFP16      : Predicate<"Subtarget->hasFullFP16()">,
+                                 AssemblerPredicate<"FeatureFullFP16","full half-float">;
 def HasDivide        : Predicate<"Subtarget->hasDivide()">,
                                  AssemblerPredicate<"FeatureHWDiv", "divide in THUMB">;
 def HasDivideInARM   : Predicate<"Subtarget->hasDivideInARMMode()">,
@@ -247,6 +257,12 @@ def HasDSP           : Predicate<"Subtarget->hasDSP()">,
 def HasDB            : Predicate<"Subtarget->hasDataBarrier()">,
                                  AssemblerPredicate<"FeatureDB",
                                                     "data-barriers">;
+def HasV7Clrex  : Predicate<"Subtarget->hasV7Clrex()">,
+                            AssemblerPredicate<"FeatureV7Clrex",
+                                               "v7 clrex">;
+def HasAcquireRelease : Predicate<"Subtarget->hasAcquireRelease()">,
+                                  AssemblerPredicate<"FeatureAcquireRelease",
+                                                     "acquire/release">;
 def HasMP            : Predicate<"Subtarget->hasMPExtension()">,
                                  AssemblerPredicate<"FeatureMP",
                                                     "mp-extensions">;
@@ -256,6 +272,9 @@ def HasVirtualization: Predicate<"false">,
 def HasTrustZone     : Predicate<"Subtarget->hasTrustZone()">,
                                  AssemblerPredicate<"FeatureTrustZone",
                                                     "TrustZone">;
+def Has8MSecExt      : Predicate<"Subtarget->has8MSecExt()">,
+                                 AssemblerPredicate<"Feature8MSecExt",
+                                                    "ARMv8-M Security Extensions">;
 def HasZCZ           : Predicate<"Subtarget->hasZeroCycleZeroing()">;
 def UseNEONForFP     : Predicate<"Subtarget->useNEONForSinglePrecisionFP()">;
 def DontUseNEONForFP : Predicate<"!Subtarget->useNEONForSinglePrecisionFP()">;
@@ -975,6 +994,21 @@ def addrmode5 : AddrMode5 {
 
 def addrmode5_pre : AddrMode5 {
    let PrintMethod = "printAddrMode5Operand<true>";
+}
+
+// addrmode5fp16 := reg +/- imm8*2
+//
+def AddrMode5FP16AsmOperand : AsmOperandClass { let Name = "AddrMode5FP16"; }
+class AddrMode5FP16 : Operand<i32>,
+                      ComplexPattern<i32, 2, "SelectAddrMode5FP16", []> {
+  let EncoderMethod = "getAddrMode5FP16OpValue";
+  let DecoderMethod = "DecodeAddrMode5FP16Operand";
+  let ParserMatchClass = AddrMode5FP16AsmOperand;
+  let MIOperandInfo = (ops GPR:$base, i32imm);
+}
+
+def addrmode5fp16 : AddrMode5FP16 {
+   let PrintMethod = "printAddrMode5FP16Operand<false>";
 }
 
 // addrmode6 := reg with optional alignment
@@ -4724,7 +4758,7 @@ def STLEXD : AIstlex<0b01, (outs GPR:$Rd),
 
 def CLREX : AXI<(outs), (ins), MiscFrm, NoItinerary, "clrex",
                 [(int_arm_clrex)]>,
-            Requires<[IsARM, HasV7]>  {
+            Requires<[IsARM, HasV6K]>  {
   let Inst{31-0} = 0b11110101011111111111000000011111;
 }
 
@@ -5394,6 +5428,27 @@ def MOV_ga_pcrel_ldr : PseudoInst<(outs GPR:$dst), (ins i32imm:$addr),
                     Requires<[IsARM, UseMovt]>;
 } // isReMaterializable
 
+// The many different faces of TLS access.
+def : ARMPat<(ARMWrapper tglobaltlsaddr :$dst),
+             (MOVi32imm tglobaltlsaddr :$dst)>,
+      Requires<[IsARM, UseMovt]>;
+
+def : Pat<(ARMWrapper tglobaltlsaddr:$src),
+          (LDRLIT_ga_abs tglobaltlsaddr:$src)>,
+      Requires<[IsARM, DontUseMovt]>;
+
+def : Pat<(ARMWrapperPIC tglobaltlsaddr:$addr),
+          (MOV_ga_pcrel tglobaltlsaddr:$addr)>, Requires<[IsARM, UseMovt]>;
+
+def : Pat<(ARMWrapperPIC tglobaltlsaddr:$addr),
+          (LDRLIT_ga_pcrel tglobaltlsaddr:$addr)>,
+      Requires<[IsARM, DontUseMovt]>;
+let AddedComplexity = 10 in
+def : Pat<(load (ARMWrapperPIC tglobaltlsaddr:$addr)),
+          (MOV_ga_pcrel_ldr tglobaltlsaddr:$addr)>,
+      Requires<[IsARM, UseMovt]>;
+
+
 // ConstantPool, GlobalAddress, and JumpTable
 def : ARMPat<(ARMWrapper  tconstpool  :$dst), (LEApcrel tconstpool  :$dst)>;
 def : ARMPat<(ARMWrapper  tglobaladdr :$dst), (MOVi32imm tglobaladdr :$dst)>,
@@ -5558,13 +5613,13 @@ def : MnemonicAlias<"stmfd", "stmdb">;
 def : MnemonicAlias<"stmia", "stm">;
 def : MnemonicAlias<"stmea", "stm">;
 
-// PKHBT/PKHTB with default shift amount. PKHTB is equivalent to PKHBT when the
-// shift amount is zero (i.e., unspecified).
+// PKHBT/PKHTB with default shift amount. PKHTB is equivalent to PKHBT with the
+// input operands swapped when the shift amount is zero (i.e., unspecified).
 def : InstAlias<"pkhbt${p} $Rd, $Rn, $Rm",
                 (PKHBT GPRnopc:$Rd, GPRnopc:$Rn, GPRnopc:$Rm, 0, pred:$p)>,
         Requires<[IsARM, HasV6]>;
 def : InstAlias<"pkhtb${p} $Rd, $Rn, $Rm",
-                (PKHBT GPRnopc:$Rd, GPRnopc:$Rn, GPRnopc:$Rm, 0, pred:$p)>,
+                (PKHBT GPRnopc:$Rd, GPRnopc:$Rm, GPRnopc:$Rn, 0, pred:$p)>,
         Requires<[IsARM, HasV6]>;
 
 // PUSH/POP aliases for STM/LDM
@@ -5651,16 +5706,16 @@ def : ARMInstAlias<"mvn${s}${p} $Rd, $imm",
                    (MOVi rGPR:$Rd, mod_imm_not:$imm, pred:$p, cc_out:$s)>;
 // Same for AND <--> BIC
 def : ARMInstAlias<"bic${s}${p} $Rd, $Rn, $imm",
-                   (ANDri rGPR:$Rd, rGPR:$Rn, mod_imm_not:$imm,
+                   (ANDri GPR:$Rd, GPR:$Rn, mod_imm_not:$imm,
                           pred:$p, cc_out:$s)>;
 def : ARMInstAlias<"bic${s}${p} $Rdn, $imm",
-                   (ANDri rGPR:$Rdn, rGPR:$Rdn, mod_imm_not:$imm,
+                   (ANDri GPR:$Rdn, GPR:$Rdn, mod_imm_not:$imm,
                           pred:$p, cc_out:$s)>;
 def : ARMInstAlias<"and${s}${p} $Rd, $Rn, $imm",
-                   (BICri rGPR:$Rd, rGPR:$Rn, mod_imm_not:$imm,
+                   (BICri GPR:$Rd, GPR:$Rn, mod_imm_not:$imm,
                           pred:$p, cc_out:$s)>;
 def : ARMInstAlias<"and${s}${p} $Rdn, $imm",
-                   (BICri rGPR:$Rdn, rGPR:$Rdn, mod_imm_not:$imm,
+                   (BICri GPR:$Rdn, GPR:$Rdn, mod_imm_not:$imm,
                           pred:$p, cc_out:$s)>;
 
 // Likewise, "add Rd, mod_imm_neg" -> sub

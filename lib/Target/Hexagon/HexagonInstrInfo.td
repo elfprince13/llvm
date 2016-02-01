@@ -1426,9 +1426,6 @@ def retflag : SDNode<"HexagonISD::RET_FLAG", SDTNone,
                      [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 def eh_return: SDNode<"HexagonISD::EH_RETURN", SDTNone, [SDNPHasChain]>;
 
-def SDHexagonBR_JT: SDTypeProfile<0, 1, [SDTCisVT<0, i32>]>;
-def HexagonBR_JT: SDNode<"HexagonISD::BR_JT", SDHexagonBR_JT, [SDNPHasChain]>;
-
 class CondStr<string CReg, bit True, bit New> {
   string S = "if (" # !if(True,"","!") # CReg # !if(New,".new","") # ") ";
 }
@@ -1606,8 +1603,6 @@ def EH_RETURN_JMPR : T_JMPr;
 
 def: Pat<(eh_return),
          (EH_RETURN_JMPR (i32 R31))>;
-def: Pat<(HexagonBR_JT (i32 IntRegs:$dst)),
-         (J2_jumpr IntRegs:$dst)>;
 def: Pat<(brind (i32 IntRegs:$dst)),
          (J2_jumpr IntRegs:$dst)>;
 
@@ -2013,6 +2008,12 @@ def L2_loadbzw4_pr : T_load_pr <"memubh", DoubleRegs, 0b0101, WordAccess>;
 let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 13,
     isCodeGenOnly = 1, isPseudo = 1, hasSideEffects = 0 in
 def LDriw_pred : LDInst<(outs PredRegs:$dst),
+                        (ins IntRegs:$addr, s11_2Ext:$off),
+                        ".error \"should not emit\"", []>;
+// Load modifier.
+let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 13,
+    isCodeGenOnly = 1, isPseudo = 1, hasSideEffects = 0 in
+def LDriw_mod : LDInst<(outs ModRegs:$dst),
                         (ins IntRegs:$addr, s11_2Ext:$off),
                         ".error \"should not emit\"", []>;
 
@@ -3655,6 +3656,12 @@ let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 13,
     isCodeGenOnly = 1, isPseudo = 1, hasSideEffects = 0 in
 def STriw_pred : STInst<(outs),
       (ins IntRegs:$addr, s11_2Ext:$off, PredRegs:$src1),
+      ".error \"should not emit\"", []>;
+// Store modifier.
+let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 13,
+    isCodeGenOnly = 1, isPseudo = 1, hasSideEffects = 0 in
+def STriw_mod : STInst<(outs),
+      (ins IntRegs:$addr, s11_2Ext:$off, ModRegs:$src1),
       ".error \"should not emit\"", []>;
 
 // S2_allocframe: Allocate stack frame.
@@ -5812,3 +5819,5 @@ include "HexagonInstrInfoV60.td"
 include "HexagonInstrInfoVector.td"
 
 include "HexagonInstrAlias.td"
+include "HexagonSystemInst.td"
+

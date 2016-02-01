@@ -15,7 +15,6 @@
 #ifndef LLVM_IR_TYPE_H
 #define LLVM_IR_TYPE_H
 
-#include "llvm-c/Core.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/CBindingWrapping.h"
@@ -107,6 +106,10 @@ protected:
   /// etc.  This pointer may be 0 for types that don't contain other types
   /// (Integer, Double, Float).
   Type * const *ContainedTys;
+
+  static bool isSequentialType(TypeID TyID) {
+    return TyID == ArrayTyID || TyID == PointerTyID || TyID == VectorTyID;
+  }
 
 public:
   void print(raw_ostream &O, bool IsForDebug = false) const;
@@ -338,28 +341,31 @@ public:
   // only intended to cover the core methods that are frequently used, helper
   // methods should not be added here.
 
-  unsigned getIntegerBitWidth() const;
+  inline unsigned getIntegerBitWidth() const;
 
-  Type *getFunctionParamType(unsigned i) const;
-  unsigned getFunctionNumParams() const;
-  bool isFunctionVarArg() const;
+  inline Type *getFunctionParamType(unsigned i) const;
+  inline unsigned getFunctionNumParams() const;
+  inline bool isFunctionVarArg() const;
 
-  StringRef getStructName() const;
-  unsigned getStructNumElements() const;
-  Type *getStructElementType(unsigned N) const;
+  inline StringRef getStructName() const;
+  inline unsigned getStructNumElements() const;
+  inline Type *getStructElementType(unsigned N) const;
 
-  Type *getSequentialElementType() const;
+  inline Type *getSequentialElementType() const {
+    assert(isSequentialType(getTypeID()) && "Not a sequential type!");
+    return ContainedTys[0];
+  }
 
-  uint64_t getArrayNumElements() const;
+  inline uint64_t getArrayNumElements() const;
   Type *getArrayElementType() const { return getSequentialElementType(); }
 
-  unsigned getVectorNumElements() const;
+  inline unsigned getVectorNumElements() const;
   Type *getVectorElementType() const { return getSequentialElementType(); }
 
   Type *getPointerElementType() const { return getSequentialElementType(); }
 
   /// \brief Get the address space of this pointer or pointer vector type.
-  unsigned getPointerAddressSpace() const;
+  inline unsigned getPointerAddressSpace() const;
 
   //===--------------------------------------------------------------------===//
   // Static members exported by the Type class itself.  Useful for getting

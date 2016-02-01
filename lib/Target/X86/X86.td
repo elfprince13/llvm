@@ -125,6 +125,9 @@ def FeatureCDI      : SubtargetFeature<"avx512cd", "HasCDI", "true",
 def FeaturePFI      : SubtargetFeature<"avx512pf", "HasPFI", "true",
                       "Enable AVX-512 PreFetch Instructions",
                                       [FeatureAVX512]>;
+def FeaturePREFETCHWT1  : SubtargetFeature<"prefetchwt1", "HasPFPREFETCHWT1",
+                                   "true",
+                                   "Prefetch with Intent to Write and T1 Hint">;
 def FeatureDQI     : SubtargetFeature<"avx512dq", "HasDQI", "true",
                       "Enable AVX-512 Doubleword and Quadword Instructions",
                                       [FeatureAVX512]>;
@@ -134,6 +137,14 @@ def FeatureBWI     : SubtargetFeature<"avx512bw", "HasBWI", "true",
 def FeatureVLX     : SubtargetFeature<"avx512vl", "HasVLX", "true",
                       "Enable AVX-512 Vector Length eXtensions",
                                       [FeatureAVX512]>;
+def FeatureVBMI     : SubtargetFeature<"avx512vbmi", "HasVBMI", "true",
+                      "Enable AVX-512 Vector Bit Manipulation Instructions",
+                                      [FeatureAVX512]>;
+def FeatureIFMA     : SubtargetFeature<"ifma", "HasIFMA", "true",
+                      "Enable AVX-512 Integer Fused Multiple-Add",
+                                      [FeatureAVX512]>;
+def FeaturePKU   : SubtargetFeature<"pku", "HasPKU", "true",
+                      "Enable protection keys">;
 def FeaturePCLMUL  : SubtargetFeature<"pclmul", "HasPCLMUL", "true",
                          "Enable packed carry-less multiplication instructions",
                                [FeatureSSE2]>;
@@ -182,6 +193,8 @@ def FeaturePRFCHW  : SubtargetFeature<"prfchw", "HasPRFCHW", "true",
                                       "Support PRFCHW instructions">;
 def FeatureRDSEED  : SubtargetFeature<"rdseed", "HasRDSEED", "true",
                                       "Support RDSEED instruction">;
+def FeatureLAHFSAHF : SubtargetFeature<"sahf", "HasLAHFSAHF", "true",
+                                       "Support LAHF and SAHF instructions">;
 def FeatureMPX     : SubtargetFeature<"mpx", "HasMPX", "true",
                                       "Support MPX instructions">;
 def FeatureLEAForSP : SubtargetFeature<"lea-sp", "UseLeaForSP", "true",
@@ -195,6 +208,20 @@ def FeatureSlowDivide64 : SubtargetFeature<"idivq-to-divw",
 def FeaturePadShortFunctions : SubtargetFeature<"pad-short-functions",
                                      "PadShortFunctions", "true",
                                      "Pad short functions">;
+def FeatureINVPCID : SubtargetFeature<"invpcid", "HasInvPCId", "true",
+                                      "Invalidate Process-Context Identifier">;
+def FeatureVMFUNC  : SubtargetFeature<"vmfunc", "HasVMFUNC", "true",
+                                      "VM Functions">;
+def FeatureSMAP    : SubtargetFeature<"smap", "HasSMAP", "true",
+                                      "Supervisor Mode Access Protection">;
+def FeatureSGX     : SubtargetFeature<"sgx", "HasSGX", "true",
+                                      "Enable Software Guard Extensions">;
+def FeatureCLFLUSHOPT : SubtargetFeature<"clflushopt", "HasCLFLUSHOPT", "true",
+                                      "Flush A Cache Line Optimized">;
+def FeaturePCOMMIT : SubtargetFeature<"pcommit", "HasPCOMMIT", "true",
+                                      "Enable Persistent Commit">;
+def FeatureCLWB    : SubtargetFeature<"clwb", "HasCLWB", "true",
+                                      "Cache Line Write Back">;
 // TODO: This feature ought to be renamed.
 // What it really refers to are CPUs for which certain instructions
 // (which ones besides the example below?) are microcoded.
@@ -273,7 +300,8 @@ def : ProcessorModel<"core2", SandyBridgeModel, [
   FeatureSSSE3,
   FeatureFXSR,
   FeatureCMPXCHG16B,
-  FeatureSlowBTMem
+  FeatureSlowBTMem,
+  FeatureLAHFSAHF
 ]>;
 def : ProcessorModel<"penryn", SandyBridgeModel, [
   FeatureSlowUAMem16,
@@ -281,7 +309,8 @@ def : ProcessorModel<"penryn", SandyBridgeModel, [
   FeatureSSE41,
   FeatureFXSR,
   FeatureCMPXCHG16B,
-  FeatureSlowBTMem
+  FeatureSlowBTMem,
+  FeatureLAHFSAHF
 ]>;
 
 // Atom CPUs.
@@ -299,7 +328,8 @@ class BonnellProc<string Name> : ProcessorModel<Name, AtomModel, [
   FeatureSlowDivide64,
   FeatureCallRegIndirect,
   FeatureLEAUsesAG,
-  FeaturePadShortFunctions
+  FeaturePadShortFunctions,
+  FeatureLAHFSAHF
 ]>;
 def : BonnellProc<"bonnell">;
 def : BonnellProc<"atom">; // Pin the generic name to the baseline.
@@ -319,7 +349,8 @@ class SilvermontProc<string Name> : ProcessorModel<Name, SLMModel, [
   FeaturePRFCHW,
   FeatureSlowLEA,
   FeatureSlowIncDec,
-  FeatureSlowBTMem
+  FeatureSlowBTMem,
+  FeatureLAHFSAHF
 ]>;
 def : SilvermontProc<"silvermont">;
 def : SilvermontProc<"slm">; // Legacy alias.
@@ -331,7 +362,8 @@ class NehalemProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
   FeatureFXSR,
   FeatureCMPXCHG16B,
   FeatureSlowBTMem,
-  FeaturePOPCNT
+  FeaturePOPCNT,
+  FeatureLAHFSAHF
 ]>;
 def : NehalemProc<"nehalem">;
 def : NehalemProc<"corei7">;
@@ -346,165 +378,147 @@ class WestmereProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
   FeatureSlowBTMem,
   FeaturePOPCNT,
   FeatureAES,
-  FeaturePCLMUL
+  FeaturePCLMUL,
+  FeatureLAHFSAHF
 ]>;
 def : WestmereProc<"westmere">;
 
 // SSE is not listed here since llvm treats AVX as a reimplementation of SSE,
 // rather than a superset.
-class SandyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
+def ProcIntelSNB : SubtargetFeature<"snb", "X86ProcFamily", "IntelSNB",
+                                    " Intel SandyBridge Processor", [
   FeatureMMX,
   FeatureAVX,
   FeatureFXSR,
   FeatureCMPXCHG16B,
-  FeatureSlowBTMem,
-  FeatureSlowUAMem32,
   FeaturePOPCNT,
   FeatureAES,
   FeaturePCLMUL,
   FeatureXSAVE,
-  FeatureXSAVEOPT
+  FeatureXSAVEOPT,
+  FeatureLAHFSAHF
+]>;
+
+class SandyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
+  ProcIntelSNB,
+  FeatureSlowBTMem,
+  FeatureSlowUAMem32
 ]>;
 def : SandyBridgeProc<"sandybridge">;
 def : SandyBridgeProc<"corei7-avx">; // Legacy alias.
 
-class IvyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
-  FeatureMMX,
-  FeatureAVX,
-  FeatureFXSR,
-  FeatureCMPXCHG16B,
-  FeatureSlowBTMem,
-  FeatureSlowUAMem32,
-  FeaturePOPCNT,
-  FeatureAES,
-  FeaturePCLMUL,
-  FeatureXSAVE,
-  FeatureXSAVEOPT,
+def ProcIntelIVB : SubtargetFeature<"ivb", "X86ProcFamily", "IntelIVB",
+                                    " Intel IvyBridge Processor", [
+  ProcIntelSNB,
   FeatureRDRAND,
   FeatureF16C,
   FeatureFSGSBase
 ]>;
+
+class IvyBridgeProc<string Name> : ProcessorModel<Name, SandyBridgeModel, [
+  ProcIntelIVB,
+  FeatureSlowBTMem,
+  FeatureSlowUAMem32
+]>;
 def : IvyBridgeProc<"ivybridge">;
 def : IvyBridgeProc<"core-avx-i">; // Legacy alias.
 
-class HaswellProc<string Name> : ProcessorModel<Name, HaswellModel, [
-  FeatureMMX,
+def ProcIntelHSW : SubtargetFeature<"hsw", "X86ProcFamily", "IntelHSW",
+                                    " Intel Haswell Processor", [
+  ProcIntelIVB,
   FeatureAVX2,
-  FeatureFXSR,
-  FeatureCMPXCHG16B,
-  FeatureSlowBTMem,
-  FeaturePOPCNT,
-  FeatureAES,
-  FeaturePCLMUL,
-  FeatureRDRAND,
-  FeatureXSAVE,
-  FeatureXSAVEOPT,
-  FeatureF16C,
-  FeatureFSGSBase,
-  FeatureMOVBE,
-  FeatureLZCNT,
   FeatureBMI,
   FeatureBMI2,
   FeatureFMA,
+  FeatureLZCNT,
+  FeatureMOVBE,
+  FeatureINVPCID,
+  FeatureVMFUNC,
   FeatureRTM,
   FeatureHLE,
   FeatureSlowIncDec
 ]>;
+
+class HaswellProc<string Name> : ProcessorModel<Name, HaswellModel,
+                                 [ProcIntelHSW]>;
 def : HaswellProc<"haswell">;
 def : HaswellProc<"core-avx2">; // Legacy alias.
 
-class BroadwellProc<string Name> : ProcessorModel<Name, HaswellModel, [
-  FeatureMMX,
-  FeatureAVX2,
-  FeatureFXSR,
-  FeatureCMPXCHG16B,
-  FeatureSlowBTMem,
-  FeaturePOPCNT,
-  FeatureAES,
-  FeaturePCLMUL,
-  FeatureXSAVE,
-  FeatureXSAVEOPT,
-  FeatureRDRAND,
-  FeatureF16C,
-  FeatureFSGSBase,
-  FeatureMOVBE,
-  FeatureLZCNT,
-  FeatureBMI,
-  FeatureBMI2,
-  FeatureFMA,
-  FeatureRTM,
-  FeatureHLE,
+def ProcIntelBDW : SubtargetFeature<"bdw", "X86ProcFamily", "IntelBDW",
+                                    " Intel Broadwell Processor", [
+  ProcIntelHSW,
   FeatureADX,
   FeatureRDSEED,
-  FeatureSlowIncDec
+  FeatureSMAP
 ]>;
+class BroadwellProc<string Name> : ProcessorModel<Name, HaswellModel,
+                                   [ProcIntelBDW]>;
 def : BroadwellProc<"broadwell">;
 
+def ProcIntelSKL : SubtargetFeature<"skl", "X86ProcFamily", "IntelSKL",
+                                    " Intel Skylake Client Processor", [
+  ProcIntelBDW,
+  FeatureMPX,
+  FeatureXSAVEC,
+  FeatureXSAVES,
+  FeatureSGX,
+  FeatureCLFLUSHOPT
+]>;
+
+// FIXME: define SKL model
+class SkylakeClientProc<string Name> : ProcessorModel<Name, HaswellModel,
+                                       [ProcIntelSKL]>;
+def : SkylakeClientProc<"skl">;
+
 // FIXME: define KNL model
-class KnightsLandingProc<string Name> : ProcessorModel<Name, HaswellModel, [
-  FeatureMMX,
+class KnightsLandingProc<string Name> : ProcessorModel<Name, HaswellModel,[
+  ProcIntelIVB,
   FeatureAVX512,
-  FeatureFXSR,
   FeatureERI,
   FeatureCDI,
   FeaturePFI,
-  FeatureCMPXCHG16B,
-  FeaturePOPCNT,
-  FeatureAES,
-  FeaturePCLMUL,
-  FeatureXSAVE,
-  FeatureXSAVEOPT,
-  FeatureRDRAND,
-  FeatureF16C,
-  FeatureFSGSBase,
+  FeaturePREFETCHWT1,
+  FeatureADX,
+  FeatureRDSEED,
   FeatureMOVBE,
   FeatureLZCNT,
   FeatureBMI,
   FeatureBMI2,
-  FeatureFMA,
-  FeatureRTM,
-  FeatureHLE,
-  FeatureSlowIncDec,
-  FeatureMPX
+  FeatureFMA
 ]>;
 def : KnightsLandingProc<"knl">;
 
-// FIXME: define SKX model
-class SkylakeProc<string Name> : ProcessorModel<Name, HaswellModel, [
-  FeatureMMX,
+def ProcIntelSKX : SubtargetFeature<"skx", "X86ProcFamily", "IntelSKX",
+                                    " Intel Skylake Server Processor", [
+  ProcIntelSKL,
   FeatureAVX512,
-  FeatureFXSR,
   FeatureCDI,
   FeatureDQI,
   FeatureBWI,
   FeatureVLX,
-  FeatureCMPXCHG16B,
-  FeatureSlowBTMem,
-  FeaturePOPCNT,
-  FeatureAES,
-  FeaturePCLMUL,
-  FeatureXSAVE,
-  FeatureXSAVEOPT,
-  FeatureRDRAND,
-  FeatureF16C,
-  FeatureFSGSBase,
-  FeatureMOVBE,
-  FeatureLZCNT,
-  FeatureBMI,
-  FeatureBMI2,
-  FeatureFMA,
-  FeatureRTM,
-  FeatureHLE,
-  FeatureADX,
-  FeatureRDSEED,
-  FeatureSlowIncDec,
-  FeatureMPX,
-  FeatureXSAVEC,
-  FeatureXSAVES
+  FeaturePKU,
+  FeaturePCOMMIT,
+  FeatureCLWB
 ]>;
-def : SkylakeProc<"skylake">;
-def : SkylakeProc<"skx">; // Legacy alias.
 
+// FIXME: define SKX model
+class SkylakeServerProc<string Name> : ProcessorModel<Name, HaswellModel,
+                                       [ ProcIntelSKX]>;
+def : SkylakeServerProc<"skylake">;
+def : SkylakeServerProc<"skx">; // Legacy alias.
+
+def ProcIntelCNL : SubtargetFeature<"cnl", "X86ProcFamily", "IntelCNL",
+                                    " Intel Cannonlake Processor", [
+  ProcIntelSKX,
+  FeatureVBMI,
+  FeatureIFMA,
+  FeatureSHA
+]>;
+
+class CannonlakeProc<string Name> : ProcessorModel<Name, HaswellModel,
+                                    [ ProcIntelCNL ]>;
+def : CannonlakeProc<"cannonlake">;
+def : CannonlakeProc<"cnl">;
 
 // AMD CPUs.
 
@@ -544,10 +558,10 @@ def : Proc<"athlon64-sse3",   [FeatureSlowUAMem16, FeatureSSE3,   Feature3DNowA,
                                FeatureSlowSHLD]>;
 def : Proc<"amdfam10",        [FeatureSSE4A, Feature3DNowA, FeatureFXSR,
                                FeatureCMPXCHG16B, FeatureLZCNT, FeaturePOPCNT,
-                               FeatureSlowBTMem, FeatureSlowSHLD]>;
+                               FeatureSlowBTMem, FeatureSlowSHLD, FeatureLAHFSAHF]>;
 def : Proc<"barcelona",       [FeatureSSE4A, Feature3DNowA, FeatureFXSR,
                                FeatureCMPXCHG16B, FeatureLZCNT, FeaturePOPCNT,
-                               FeatureSlowBTMem, FeatureSlowSHLD]>;
+                               FeatureSlowBTMem, FeatureSlowSHLD, FeatureLAHFSAHF]>;
 
 // Bobcat
 def : Proc<"btver1", [
@@ -560,7 +574,8 @@ def : Proc<"btver1", [
   FeatureLZCNT,
   FeaturePOPCNT,
   FeatureXSAVE,
-  FeatureSlowSHLD
+  FeatureSlowSHLD,
+  FeatureLAHFSAHF
 ]>;
 
 // Jaguar
@@ -580,7 +595,8 @@ def : ProcessorModel<"btver2", BtVer2Model, [
   FeaturePOPCNT,
   FeatureXSAVE,
   FeatureXSAVEOPT,
-  FeatureSlowSHLD
+  FeatureSlowSHLD,
+  FeatureLAHFSAHF
 ]>;
 
 // Bulldozer
@@ -598,7 +614,8 @@ def : Proc<"bdver1", [
   FeatureLZCNT,
   FeaturePOPCNT,
   FeatureXSAVE,
-  FeatureSlowSHLD
+  FeatureSlowSHLD,
+  FeatureLAHFSAHF
 ]>;
 // Piledriver
 def : Proc<"bdver2", [
@@ -619,7 +636,8 @@ def : Proc<"bdver2", [
   FeatureBMI,
   FeatureTBM,
   FeatureFMA,
-  FeatureSlowSHLD
+  FeatureSlowSHLD,
+  FeatureLAHFSAHF
 ]>;
 
 // Steamroller
@@ -643,7 +661,8 @@ def : Proc<"bdver3", [
   FeatureFMA,
   FeatureXSAVEOPT,
   FeatureSlowSHLD,
-  FeatureFSGSBase
+  FeatureFSGSBase,
+  FeatureLAHFSAHF
 ]>;
 
 // Excavator
@@ -666,7 +685,8 @@ def : Proc<"bdver4", [
   FeatureTBM,
   FeatureFMA,
   FeatureXSAVEOPT,
-  FeatureFSGSBase
+  FeatureFSGSBase,
+  FeatureLAHFSAHF
 ]>;
 
 def : Proc<"geode",           [FeatureSlowUAMem16, Feature3DNowA]>;
@@ -715,10 +735,6 @@ include "X86CallingConv.td"
 // Assembly Parser
 //===----------------------------------------------------------------------===//
 
-def ATTAsmParser : AsmParser {
-  string AsmParserClassName = "AsmParser";
-}
-
 def ATTAsmParserVariant : AsmParserVariant {
   int Variant = 0;
 
@@ -763,7 +779,6 @@ def IntelAsmWriter : AsmWriter {
 def X86 : Target {
   // Information about the instructions...
   let InstructionSet = X86InstrInfo;
-  let AssemblyParsers = [ATTAsmParser];
   let AssemblyParserVariants = [ATTAsmParserVariant, IntelAsmParserVariant];
   let AssemblyWriters = [ATTAsmWriter, IntelAsmWriter];
 }

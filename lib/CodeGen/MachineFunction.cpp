@@ -17,7 +17,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunctionInitializer.h"
@@ -46,6 +46,11 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "codegen"
+
+static cl::opt<unsigned>
+    AlignAllFunctions("align-all-functions",
+                      cl::desc("Force the alignment of all functions."),
+                      cl::init(0), cl::Hidden);
 
 void MachineFunctionInitializer::anchor() {}
 
@@ -86,6 +91,9 @@ MachineFunction::MachineFunction(const Function *F, const TargetMachine &TM,
   if (!Fn->hasFnAttribute(Attribute::OptimizeForSize))
     Alignment = std::max(Alignment,
                          STI->getTargetLowering()->getPrefFunctionAlignment());
+
+  if (AlignAllFunctions)
+    Alignment = AlignAllFunctions;
 
   FunctionNumber = FunctionNum;
   JumpTableInfo = nullptr;
@@ -155,7 +163,7 @@ getOrCreateJumpTableInfo(unsigned EntryKind) {
 }
 
 /// Should we be emitting segmented stack stuff for the function
-bool MachineFunction::shouldSplitStack() {
+bool MachineFunction::shouldSplitStack() const {
   return getFunction()->hasFnAttribute("split-stack");
 }
 
@@ -350,7 +358,7 @@ const char *MachineFunction::createExternalSymbolName(StringRef Name) {
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-void MachineFunction::dump() const {
+LLVM_DUMP_METHOD void MachineFunction::dump() const {
   print(dbgs());
 }
 #endif
@@ -620,10 +628,9 @@ BitVector MachineFrameInfo::getPristineRegs(const MachineFunction &MF) const {
     BV.set(*CSR);
 
   // Saved CSRs are not pristine.
-  const std::vector<CalleeSavedInfo> &CSI = getCalleeSavedInfo();
-  for (std::vector<CalleeSavedInfo>::const_iterator I = CSI.begin(),
-         E = CSI.end(); I != E; ++I)
-    BV.reset(I->getReg());
+  for (auto &I : getCalleeSavedInfo())
+    for (MCSubRegIterator S(I.getReg(), TRI, true); S.isValid(); ++S)
+      BV.reset(*S);
 
   return BV;
 }
@@ -812,7 +819,7 @@ void MachineJumpTableInfo::print(raw_ostream &OS) const {
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-void MachineJumpTableInfo::dump() const { print(dbgs()); }
+LLVM_DUMP_METHOD void MachineJumpTableInfo::dump() const { print(dbgs()); }
 #endif
 
 
@@ -888,17 +895,17 @@ static bool CanShareConstantPoolEntry(const Constant *A, const Constant *B,
   // the constant folding APIs to do this so that we get the benefit of
   // DataLayout.
   if (isa<PointerType>(A->getType()))
-    A = ConstantFoldInstOperands(Instruction::PtrToInt, IntTy,
-                                 const_cast<Constant *>(A), DL);
+    A = ConstantFoldCastOperand(Instruction::PtrToInt,
+                                const_cast<Constant *>(A), IntTy, DL);
   else if (A->getType() != IntTy)
-    A = ConstantFoldInstOperands(Instruction::BitCast, IntTy,
-                                 const_cast<Constant *>(A), DL);
+    A = ConstantFoldCastOperand(Instruction::BitCast, const_cast<Constant *>(A),
+                                IntTy, DL);
   if (isa<PointerType>(B->getType()))
-    B = ConstantFoldInstOperands(Instruction::PtrToInt, IntTy,
-                                 const_cast<Constant *>(B), DL);
+    B = ConstantFoldCastOperand(Instruction::PtrToInt,
+                                const_cast<Constant *>(B), IntTy, DL);
   else if (B->getType() != IntTy)
-    B = ConstantFoldInstOperands(Instruction::BitCast, IntTy,
-                                 const_cast<Constant *>(B), DL);
+    B = ConstantFoldCastOperand(Instruction::BitCast, const_cast<Constant *>(B),
+                                IntTy, DL);
 
   return A == B;
 }
@@ -959,5 +966,5 @@ void MachineConstantPool::print(raw_ostream &OS) const {
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-void MachineConstantPool::dump() const { print(dbgs()); }
+LLVM_DUMP_METHOD void MachineConstantPool::dump() const { print(dbgs()); }
 #endif

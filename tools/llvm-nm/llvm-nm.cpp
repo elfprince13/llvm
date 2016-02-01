@@ -239,9 +239,8 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
                               const char *printDashes, const char *printFormat) {
   MachO::mach_header H;
   MachO::mach_header_64 H_64;
-  uint32_t Filetype, Flags;
-  MachO::nlist_64 STE_64;
-  MachO::nlist STE;
+  uint32_t Filetype = MachO::MH_OBJECT;
+  uint32_t Flags = 0;
   uint8_t NType = 0;
   uint8_t NSect = 0;
   uint16_t NDesc = 0;
@@ -261,15 +260,11 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
       // use 1, 2 and 3 for section numbers.  See below where they are used to
       // print out fake section names.
       NType |= MachO::N_SECT;
-      if(SymFlags & SymbolRef::SF_Const)
+      if (SymFlags & SymbolRef::SF_Const)
         NSect = 3;
       else {
         IRObjectFile *IRobj = dyn_cast<IRObjectFile>(&Obj);
-        char c = getSymbolNMTypeChar(*IRobj, I->Sym);
-        if (c == 't')
-          NSect = 1;
-        else
-          NSect = 2;
+        NSect = (getSymbolNMTypeChar(*IRobj, I->Sym) == 't') ? 1 : 2;
       }
     }
     if (SymFlags & SymbolRef::SF_Weak)
@@ -280,7 +275,7 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
       H_64 = MachO->MachOObjectFile::getHeader64();
       Filetype = H_64.filetype;
       Flags = H_64.flags;
-      STE_64 = MachO->getSymbol64TableEntry(SymDRI);
+      MachO::nlist_64 STE_64 = MachO->getSymbol64TableEntry(SymDRI);
       NType = STE_64.n_type;
       NSect = STE_64.n_sect;
       NDesc = STE_64.n_desc;
@@ -290,7 +285,7 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
       H = MachO->MachOObjectFile::getHeader();
       Filetype = H.filetype;
       Flags = H.flags;
-      STE = MachO->getSymbolTableEntry(SymDRI);
+      MachO::nlist STE = MachO->getSymbolTableEntry(SymDRI);
       NType = STE.n_type;
       NSect = STE.n_sect;
       NDesc = STE.n_desc;
@@ -368,7 +363,13 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
         outs() << "(?,?) ";
       break;
     }
-    section_iterator Sec = *MachO->getSymbolSection(I->Sym.getRawDataRefImpl());
+    ErrorOr<section_iterator> SecOrErr =
+      MachO->getSymbolSection(I->Sym.getRawDataRefImpl());
+    if (SecOrErr.getError()) {
+      outs() << "(?,?) ";
+      break;
+    }
+    section_iterator Sec = *SecOrErr;
     DataRefImpl Ref = Sec->getRawDataRefImpl();
     StringRef SectionName;
     MachO->getSectionName(Ref, SectionName);
@@ -582,14 +583,9 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
        I != E; ++I) {
     uint32_t SymFlags = I->Sym.getFlags();
     bool Undefined = SymFlags & SymbolRef::SF_Undefined;
-    if (!Undefined && UndefinedOnly)
-      continue;
-    if (Undefined && DefinedOnly)
-      continue;
     bool Global = SymFlags & SymbolRef::SF_Global;
-    if (!Global && ExternalOnly)
-      continue;
-    if (SizeSort && !PrintAddress)
+    if ((!Undefined && UndefinedOnly) || (Undefined && DefinedOnly) ||
+        (!Global && ExternalOnly) || (SizeSort && !PrintAddress))
       continue;
     if (PrintFileName) {
       if (!ArchitectureName.empty())
@@ -773,19 +769,21 @@ static char getSymbolNMTypeChar(MachOObjectFile &Obj, basic_symbol_iterator I) {
   case MachO::N_INDR:
     return 'i';
   case MachO::N_SECT: {
-    section_iterator Sec = *Obj.getSymbolSection(Symb);
+    ErrorOr<section_iterator> SecOrErr = Obj.getSymbolSection(Symb);
+    if (SecOrErr.getError())
+      return 's';
+    section_iterator Sec = *SecOrErr;
     DataRefImpl Ref = Sec->getRawDataRefImpl();
     StringRef SectionName;
     Obj.getSectionName(Ref, SectionName);
     StringRef SegmentName = Obj.getSectionFinalSegmentName(Ref);
     if (SegmentName == "__TEXT" && SectionName == "__text")
       return 't';
-    else if (SegmentName == "__DATA" && SectionName == "__data")
+    if (SegmentName == "__DATA" && SectionName == "__data")
       return 'd';
-    else if (SegmentName == "__DATA" && SectionName == "__bss")
+    if (SegmentName == "__DATA" && SectionName == "__bss")
       return 'b';
-    else
-      return 's';
+    return 's';
   }
   }
 
@@ -793,7 +791,7 @@ static char getSymbolNMTypeChar(MachOObjectFile &Obj, basic_symbol_iterator I) {
 }
 
 static char getSymbolNMTypeChar(const GlobalValue &GV) {
-  if (GV.getType()->getElementType()->isFunctionTy())
+  if (GV.getValueType()->isFunctionTy())
     return 't';
   // FIXME: should we print 'b'? At the IR level we cannot be sure if this
   // will be in bss or not, but we could approximate.
@@ -952,8 +950,11 @@ static void dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
       S.Address = *AddressOrErr;
     }
     S.TypeChar = getNMTypeChar(Obj, Sym);
-    if (error(Sym.printName(OS)))
-      break;
+    std::error_code EC = Sym.printName(OS);
+    if (EC && MachO)
+      OS << "bad string index";
+    else 
+      error(EC);
     OS << '\0';
     S.Sym = Sym;
     SymbolList.push_back(S);
@@ -1235,9 +1236,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     if (!checkMachOAndArchFlags(O, Filename))
       return;
     dumpSymbolNamesFromObject(*O, true);
-    return;
   }
-  error("unrecognizable file type", Filename);
 }
 
 int main(int argc, char **argv) {
@@ -1252,6 +1251,7 @@ int main(int argc, char **argv) {
   if (error(sys::ChangeStdinToBinary()))
     return 1;
 
+  // These calls are needed so that we can read bitcode correctly.
   llvm::InitializeAllTargetInfos();
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmParsers();

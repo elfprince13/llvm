@@ -612,11 +612,22 @@ Instruction *InstCombiner::visitFMul(BinaryOperator &I) {
     }
   }
 
-  // sqrt(X) * sqrt(X) -> X
-  if (AllowReassociate && (Op0 == Op1))
-    if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Op0))
-      if (II->getIntrinsicID() == Intrinsic::sqrt)
+  if (Op0 == Op1) {
+    if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Op0)) {
+      // sqrt(X) * sqrt(X) -> X
+      if (AllowReassociate && II->getIntrinsicID() == Intrinsic::sqrt)
         return ReplaceInstUsesWith(I, II->getOperand(0));
+
+      // fabs(X) * fabs(X) -> X * X
+      if (II->getIntrinsicID() == Intrinsic::fabs) {
+        Instruction *FMulVal = BinaryOperator::CreateFMul(II->getOperand(0),
+                                                          II->getOperand(0),
+                                                          I.getName());
+        FMulVal->copyFastMathFlags(&I);
+        return FMulVal;
+      }
+    }
+  }
 
   // Under unsafe algebra do:
   // X * log2(0.5*Y) = X*log2(Y) - X
@@ -636,7 +647,7 @@ Instruction *InstCombiner::visitFMul(BinaryOperator &I) {
     // if pattern detected emit alternate sequence
     if (OpX && OpY) {
       BuilderTy::FastMathFlagGuard Guard(*Builder);
-      Builder->SetFastMathFlags(Log2->getFastMathFlags());
+      Builder->setFastMathFlags(Log2->getFastMathFlags());
       Log2->setArgOperand(0, OpY);
       Value *FMulVal = Builder->CreateFMul(OpX, Log2);
       Value *FSub = Builder->CreateFSub(FMulVal, OpX);
@@ -652,7 +663,7 @@ Instruction *InstCombiner::visitFMul(BinaryOperator &I) {
     bool IgnoreZeroSign = I.hasNoSignedZeros();
     if (BinaryOperator::isFNeg(Opnd0, IgnoreZeroSign)) {
       BuilderTy::FastMathFlagGuard Guard(*Builder);
-      Builder->SetFastMathFlags(I.getFastMathFlags());
+      Builder->setFastMathFlags(I.getFastMathFlags());
 
       Value *N0 = dyn_castFNegVal(Opnd0, IgnoreZeroSign);
       Value *N1 = dyn_castFNegVal(Opnd1, IgnoreZeroSign);
@@ -693,7 +704,7 @@ Instruction *InstCombiner::visitFMul(BinaryOperator &I) {
 
         if (Y) {
           BuilderTy::FastMathFlagGuard Guard(*Builder);
-          Builder->SetFastMathFlags(I.getFastMathFlags());
+          Builder->setFastMathFlags(I.getFastMathFlags());
           Value *T = Builder->CreateFMul(Opnd1, Opnd1);
 
           Value *R = Builder->CreateFMul(T, Y);

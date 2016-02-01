@@ -84,6 +84,9 @@ private:
 
   bool LastInstWritesM0;
 
+  /// \brief Whether the machine function returns void
+  bool ReturnsVoid;
+
   /// \brief Get increment/decrement amount for this instruction.
   Counters getHwCounts(MachineInstr &MI);
 
@@ -135,7 +138,7 @@ public:
 
 char SIInsertWaits::ID = 0;
 
-const Counters SIInsertWaits::WaitCounts = { { 15, 7, 7 } };
+const Counters SIInsertWaits::WaitCounts = { { 15, 7, 15 } };
 const Counters SIInsertWaits::ZeroCounts = { { 0, 0, 0 } };
 
 FunctionPass *llvm::createSIInsertWaits(TargetMachine &tm) {
@@ -322,7 +325,9 @@ bool SIInsertWaits::insertWait(MachineBasicBlock &MBB,
                                const Counters &Required) {
 
   // End of program? No need to wait on anything
-  if (I != MBB.end() && I->getOpcode() == AMDGPU::S_ENDPGM)
+  // A function not returning void needs to wait, because other bytecode will
+  // be appended after it and we don't know what it will be.
+  if (I != MBB.end() && I->getOpcode() == AMDGPU::S_ENDPGM && ReturnsVoid)
     return false;
 
   // Figure out if the async instructions execute in order
@@ -374,7 +379,7 @@ bool SIInsertWaits::insertWait(MachineBasicBlock &MBB,
   BuildMI(MBB, I, DebugLoc(), TII->get(AMDGPU::S_WAITCNT))
           .addImm((Counts.Named.VM & 0xF) |
                   ((Counts.Named.EXP & 0x7) << 4) |
-                  ((Counts.Named.LGKM & 0x7) << 8));
+                  ((Counts.Named.LGKM & 0xF) << 8));
 
   LastOpcodeType = OTHER;
   LastInstWritesM0 = false;
@@ -465,6 +470,7 @@ bool SIInsertWaits::runOnMachineFunction(MachineFunction &MF) {
   LastIssued = ZeroCounts;
   LastOpcodeType = OTHER;
   LastInstWritesM0 = false;
+  ReturnsVoid = MF.getInfo<SIMachineFunctionInfo>()->returnsVoid();
 
   memset(&UsedRegs, 0, sizeof(UsedRegs));
   memset(&DefinedRegs, 0, sizeof(DefinedRegs));
@@ -488,6 +494,14 @@ bool SIInsertWaits::runOnMachineFunction(MachineFunction &MF) {
 
     // Wait for everything at the end of the MBB
     Changes |= insertWait(MBB, MBB.getFirstTerminator(), LastIssued);
+
+    // Functions returning something shouldn't contain S_ENDPGM, because other
+    // bytecode will be appended after it.
+    if (!ReturnsVoid) {
+      MachineBasicBlock::iterator I = MBB.getFirstTerminator();
+      if (I != MBB.end() && I->getOpcode() == AMDGPU::S_ENDPGM)
+        I->eraseFromParent();
+    }
   }
 
   return Changes;

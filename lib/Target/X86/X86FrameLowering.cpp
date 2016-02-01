@@ -18,7 +18,7 @@
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -91,7 +91,8 @@ bool X86FrameLowering::hasFP(const MachineFunction &MF) const {
           MFI->isFrameAddressTaken() || MFI->hasOpaqueSPAdjustment() ||
           MF.getInfo<X86MachineFunctionInfo>()->getForceFramePointer() ||
           MMI.callsUnwindInit() || MMI.hasEHFunclets() || MMI.callsEHReturn() ||
-          MFI->hasStackMap() || MFI->hasPatchPoint());
+          MFI->hasStackMap() || MFI->hasPatchPoint() ||
+          MFI->hasCopyImplyingStackAdjustment());
 }
 
 static unsigned getSUBriOpcode(unsigned IsLP64, int64_t Imm) {
@@ -146,21 +147,14 @@ static unsigned getLEArOpcode(unsigned IsLP64) {
 /// to this register without worry about clobbering it.
 static unsigned findDeadCallerSavedReg(MachineBasicBlock &MBB,
                                        MachineBasicBlock::iterator &MBBI,
-                                       const TargetRegisterInfo *TRI,
+                                       const X86RegisterInfo *TRI,
                                        bool Is64Bit) {
   const MachineFunction *MF = MBB.getParent();
   const Function *F = MF->getFunction();
   if (!F || MF->getMMI().callsEHReturn())
     return 0;
 
-  static const uint16_t CallerSavedRegs32Bit[] = {
-    X86::EAX, X86::EDX, X86::ECX, 0
-  };
-
-  static const uint16_t CallerSavedRegs64Bit[] = {
-    X86::RAX, X86::RDX, X86::RCX, X86::RSI, X86::RDI,
-    X86::R8,  X86::R9,  X86::R10, X86::R11, 0
-  };
+  const TargetRegisterClass &AvailableRegs = *TRI->getGPRsForTailCall(*MF);
 
   unsigned Opc = MBBI->getOpcode();
   switch (Opc) {
@@ -189,10 +183,9 @@ static unsigned findDeadCallerSavedReg(MachineBasicBlock &MBB,
         Uses.insert(*AI);
     }
 
-    const uint16_t *CS = Is64Bit ? CallerSavedRegs64Bit : CallerSavedRegs32Bit;
-    for (; *CS; ++CS)
-      if (!Uses.count(*CS))
-        return *CS;
+    for (auto CS : AvailableRegs)
+      if (!Uses.count(CS) && CS != X86::RIP)
+        return CS;
   }
   }
 
@@ -212,8 +205,12 @@ static bool isEAXLiveIn(MachineFunction &MF) {
   return false;
 }
 
-/// Check whether or not the terminators of \p MBB needs to read EFLAGS.
-static bool terminatorsNeedFlagsAsInput(const MachineBasicBlock &MBB) {
+/// Check if the flags need to be preserved before the terminators.
+/// This would be the case, if the eflags is live-in of the region
+/// composed by the terminators or live-out of that region, without
+/// being defined by a terminator.
+static bool
+flagsNeedToBePreservedBeforeTheTerminators(const MachineBasicBlock &MBB) {
   for (const MachineInstr &MI : MBB.terminators()) {
     bool BreakNext = false;
     for (const MachineOperand &MO : MI.operands()) {
@@ -223,15 +220,27 @@ static bool terminatorsNeedFlagsAsInput(const MachineBasicBlock &MBB) {
       if (Reg != X86::EFLAGS)
         continue;
 
-      // This terminator needs an eflag that is not defined
-      // by a previous terminator.
+      // This terminator needs an eflags that is not defined
+      // by a previous another terminator:
+      // EFLAGS is live-in of the region composed by the terminators.
       if (!MO.isDef())
         return true;
+      // This terminator defines the eflags, i.e., we don't need to preserve it.
+      // However, we still need to check this specific terminator does not
+      // read a live-in value.
       BreakNext = true;
     }
+    // We found a definition of the eflags, no need to preserve them.
     if (BreakNext)
-      break;
+      return false;
   }
+
+  // None of the terminators use or define the eflags.
+  // Check if they are live-out, that would imply we need to preserve them.
+  for (const MachineBasicBlock *Succ : MBB.successors())
+    if (Succ->isLiveIn(X86::EFLAGS))
+      return true;
+
   return false;
 }
 
@@ -314,7 +323,11 @@ MachineInstrBuilder X86FrameLowering::BuildStackAdjustment(
   // is tricky.
   bool UseLEA;
   if (!InEpilogue) {
-    UseLEA = STI.useLeaForSP();
+    // Check if inserting the prologue at the beginning
+    // of MBB would require to use LEA operations.
+    // We need to use LEA operations if EFLAGS is live in, because
+    // it means an instruction will read it before it gets defined.
+    UseLEA = STI.useLeaForSP() || MBB.isLiveIn(X86::EFLAGS);
   } else {
     // If we can use LEA for SP but we shouldn't, check that none
     // of the terminators uses the eflags. Otherwise we will insert
@@ -323,10 +336,10 @@ MachineInstrBuilder X86FrameLowering::BuildStackAdjustment(
     // and is an optimization anyway.
     UseLEA = canUseLEAForSPInEpilogue(*MBB.getParent());
     if (UseLEA && !STI.useLeaForSP())
-      UseLEA = terminatorsNeedFlagsAsInput(MBB);
+      UseLEA = flagsNeedToBePreservedBeforeTheTerminators(MBB);
     // If that assert breaks, that means we do not do the right thing
     // in canUseAsEpilogue.
-    assert((UseLEA || !terminatorsNeedFlagsAsInput(MBB)) &&
+    assert((UseLEA || !flagsNeedToBePreservedBeforeTheTerminators(MBB)) &&
            "We shouldn't have allowed this insertion point");
   }
 
@@ -412,23 +425,6 @@ X86FrameLowering::emitCalleeSavedFrameMoves(MachineBasicBlock &MBB,
     BuildCFI(MBB, MBBI, DL,
              MCCFIInstruction::createOffset(nullptr, DwarfReg, Offset));
   }
-}
-
-/// usesTheStack - This function checks if any of the users of EFLAGS
-/// copies the EFLAGS. We know that the code that lowers COPY of EFLAGS has
-/// to use the stack, and if we don't adjust the stack we clobber the first
-/// frame index.
-/// See X86InstrInfo::copyPhysReg.
-static bool usesTheStack(const MachineFunction &MF) {
-  const MachineRegisterInfo &MRI = MF.getRegInfo();
-
-  for (MachineRegisterInfo::reg_instr_iterator
-       ri = MRI.reg_instr_begin(X86::EFLAGS), re = MRI.reg_instr_end();
-       ri != re; ++ri)
-    if (ri->isCopy())
-      return true;
-
-  return false;
 }
 
 MachineInstr *X86FrameLowering::emitStackProbe(MachineFunction &MF,
@@ -900,9 +896,11 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   uint64_t MaxAlign = calculateMaxStackAlign(MF); // Desired stack alignment.
   uint64_t StackSize = MFI->getStackSize();    // Number of bytes to allocate.
   bool IsFunclet = MBB.isEHFuncletEntry();
+  EHPersonality Personality = EHPersonality::Unknown;
+  if (Fn->hasPersonalityFn())
+    Personality = classifyEHPersonality(Fn->getPersonalityFn());
   bool FnHasClrFunclet =
-      MMI.hasEHFunclets() &&
-      classifyEHPersonality(Fn->getPersonalityFn()) == EHPersonality::CoreCLR;
+      MMI.hasEHFunclets() && Personality == EHPersonality::CoreCLR;
   bool IsClrFunclet = IsFunclet && FnHasClrFunclet;
   bool HasFP = hasFP(MF);
   bool IsWin64CC = STI.isCallingConvWin64(Fn->getCallingConv());
@@ -913,8 +911,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   unsigned FramePtr = TRI->getFrameRegister(MF);
   const unsigned MachineFramePtr =
       STI.isTarget64BitILP32()
-          ? getX86SubSuperRegister(FramePtr, MVT::i64, false)
-          : FramePtr;
+          ? getX86SubSuperRegister(FramePtr, 64) : FramePtr;
   unsigned BasePtr = TRI->getBaseRegister();
   
   // Debug location must be unknown since the first debug location is used
@@ -947,11 +944,11 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   // push and pop from the stack.
   if (Is64Bit && !Fn->hasFnAttribute(Attribute::NoRedZone) &&
       !TRI->needsStackRealignment(MF) &&
-      !MFI->hasVarSizedObjects() && // No dynamic alloca.
-      !MFI->adjustsStack() &&       // No calls.
-      !IsWin64CC &&                 // Win64 has no Red Zone
-      !usesTheStack(MF) &&          // Don't push and pop.
-      !MF.shouldSplitStack()) {     // Regular stack
+      !MFI->hasVarSizedObjects() &&             // No dynamic alloca.
+      !MFI->adjustsStack() &&                   // No calls.
+      !IsWin64CC &&                             // Win64 has no Red Zone
+      !MFI->hasCopyImplyingStackAdjustment() && // Don't push and pop.
+      !MF.shouldSplitStack()) {                 // Regular stack
     uint64_t MinSize = X86FI->getCalleeSavedFrameSize();
     if (HasFP) MinSize += SlotSize;
     StackSize = std::max(MinSize, StackSize > 128 ? StackSize - 128 : 0);
@@ -991,7 +988,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   else if (IsFunclet)
     Establisher = Uses64BitFramePtr ? X86::RDX : X86::EDX;
 
-  if (IsWin64Prologue && IsFunclet & !IsClrFunclet) {
+  if (IsWin64Prologue && IsFunclet && !IsClrFunclet) {
     // Immediately spill establisher into the home slot.
     // The runtime cares about this.
     // MOV64mr %rdx, 16(%rsp)
@@ -1013,7 +1010,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
 
     // Callee-saved registers are pushed on stack before the stack is realigned.
     if (TRI->needsStackRealignment(MF) && !IsWin64Prologue)
-      NumBytes = RoundUpToAlignment(NumBytes, MaxAlign);
+      NumBytes = alignTo(NumBytes, MaxAlign);
 
     // Get the offset of the stack slot for the EBP register, which is
     // guaranteed to be the last slot by processFunctionBeforeFrameFinalized.
@@ -1134,7 +1131,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   // virtual memory manager are allocated in correct sequence.
   uint64_t AlignedNumBytes = NumBytes;
   if (IsWin64Prologue && !IsFunclet && TRI->needsStackRealignment(MF))
-    AlignedNumBytes = RoundUpToAlignment(AlignedNumBytes, MaxAlign);
+    AlignedNumBytes = alignTo(AlignedNumBytes, MaxAlign);
   if (AlignedNumBytes >= StackProbeSize && UseStackProbe) {
     // Check whether EAX is livein for this function.
     bool isEAXAlive = isEAXLiveIn(MF);
@@ -1238,19 +1235,21 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
           .addReg(SPOrEstablisher);
 
     // If this is not a funclet, emit the CFI describing our frame pointer.
-    if (NeedsWinCFI && !IsFunclet)
+    if (NeedsWinCFI && !IsFunclet) {
       BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_SetFrame))
           .addImm(FramePtr)
           .addImm(SEHFrameOffset)
           .setMIFlag(MachineInstr::FrameSetup);
+      if (isAsynchronousEHPersonality(Personality))
+        MF.getWinEHFuncInfo()->SEHSetFrameOffset = SEHFrameOffset;
+    }
   } else if (IsFunclet && STI.is32Bit()) {
     // Reset EBP / ESI to something good for funclets.
     MBBI = restoreWin32EHStackPointers(MBB, MBBI, DL);
     // If we're a catch funclet, we can be returned to via catchret. Save ESP
     // into the registration node so that the runtime will restore it for us.
     if (!MBB.isCleanupFuncletEntry()) {
-      assert(classifyEHPersonality(Fn->getPersonalityFn()) ==
-             EHPersonality::MSVC_CXX);
+      assert(Personality == EHPersonality::MSVC_CXX);
       unsigned FrameReg;
       int FI = MF.getWinEHFuncInfo()->EHRegNodeFrameIndex;
       int64_t EHRegOffset = getFrameIndexReference(MF, FI, FrameReg);
@@ -1431,8 +1430,7 @@ X86FrameLowering::getWinEHFuncletFrameSize(const MachineFunction &MF) const {
   // RBP is not included in the callee saved register block. After pushing RBP,
   // everything is 16 byte aligned. Everything we allocate before an outgoing
   // call must also be 16 byte aligned.
-  unsigned FrameSizeMinusRBP =
-      RoundUpToAlignment(CSSize + UsedSize, getStackAlignment());
+  unsigned FrameSizeMinusRBP = alignTo(CSSize + UsedSize, getStackAlignment());
   // Subtract out the size of the callee saved registers. This is how much stack
   // each funclet will allocate.
   return FrameSizeMinusRBP - CSSize;
@@ -1450,8 +1448,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   const bool Is64BitILP32 = STI.isTarget64BitILP32();
   unsigned FramePtr = TRI->getFrameRegister(MF);
   unsigned MachineFramePtr =
-      Is64BitILP32 ? getX86SubSuperRegister(FramePtr, MVT::i64, false)
-                   : FramePtr;
+      Is64BitILP32 ? getX86SubSuperRegister(FramePtr, 64) : FramePtr;
 
   bool IsWin64Prologue = MF.getTarget().getMCAsmInfo()->usesWindowsCFI();
   bool NeedsWinCFI =
@@ -1493,7 +1490,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
     // Callee-saved registers were pushed on stack before the stack was
     // realigned.
     if (TRI->needsStackRealignment(MF) && !IsWin64Prologue)
-      NumBytes = RoundUpToAlignment(FrameSize, MaxAlign);
+      NumBytes = alignTo(FrameSize, MaxAlign);
 
     // Pop EBP.
     BuildMI(MBB, MBBI, DL,
@@ -2033,6 +2030,10 @@ void X86FrameLowering::adjustForSegmentedStacks(
   unsigned TlsReg, TlsOffset;
   DebugLoc DL;
 
+  // To support shrink-wrapping we would need to insert the new blocks
+  // at the right place and update the branches to PrologueMBB.
+  assert(&(*MF.begin()) == &PrologueMBB && "Shrink-wrapping not supported yet");
+
   unsigned ScratchReg = GetScratchRegister(Is64Bit, IsLP64, MF, true);
   assert(!MF.getRegInfo().isLiveIn(ScratchReg) &&
          "Scratch register is live-in");
@@ -2273,6 +2274,11 @@ void X86FrameLowering::adjustForHiPEPrologue(
     MachineFunction &MF, MachineBasicBlock &PrologueMBB) const {
   MachineFrameInfo *MFI = MF.getFrameInfo();
   DebugLoc DL;
+
+  // To support shrink-wrapping we would need to insert the new blocks
+  // at the right place and update the branches to PrologueMBB.
+  assert(&(*MF.begin()) == &PrologueMBB && "Shrink-wrapping not supported yet");
+
   // HiPE-specific values
   const unsigned HipeLeafWords = 24;
   const unsigned CCRegisteredArgs = Is64Bit ? 6 : 5;
@@ -2384,10 +2390,10 @@ void X86FrameLowering::adjustForHiPEPrologue(
                  .addReg(ScratchReg), PReg, false, SPLimitOffset);
     BuildMI(incStackMBB, DL, TII.get(X86::JLE_1)).addMBB(incStackMBB);
 
-    stackCheckMBB->addSuccessor(&PrologueMBB, 99);
-    stackCheckMBB->addSuccessor(incStackMBB, 1);
-    incStackMBB->addSuccessor(&PrologueMBB, 99);
-    incStackMBB->addSuccessor(incStackMBB, 1);
+    stackCheckMBB->addSuccessor(&PrologueMBB, {99, 100});
+    stackCheckMBB->addSuccessor(incStackMBB, {1, 100});
+    incStackMBB->addSuccessor(&PrologueMBB, {99, 100});
+    incStackMBB->addSuccessor(incStackMBB, {1, 100});
   }
 #ifdef XDEBUG
   MF.verify();
@@ -2482,7 +2488,7 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
     // amount of space needed for the outgoing arguments up to the next
     // alignment boundary.
     unsigned StackAlign = getStackAlignment();
-    Amount = RoundUpToAlignment(Amount, StackAlign);
+    Amount = alignTo(Amount, StackAlign);
 
     MachineModuleInfo &MMI = MF.getMMI();
     const Function *Fn = MF.getFunction();
@@ -2512,10 +2518,10 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
     // (Pushes of argument for frame setup, callee pops for frame destroy)
     Amount -= InternalAmt;
 
-    // If this is a callee-pop calling convention, and we're emitting precise
-    // SP-based CFI, emit a CFA adjust for the amount the callee popped.
-    if (isDestroy && InternalAmt && DwarfCFI && !hasFP(MF) && 
-        MMI.usePreciseUnwindInfo())
+    // TODO: This is needed only if we require precise CFA.
+    // If this is a callee-pop calling convention, emit a CFA adjust for
+    // the amount the callee popped.
+    if (isDestroy && InternalAmt && DwarfCFI && !hasFP(MF))
       BuildCFI(MBB, I, DL, 
                MCCFIInstruction::createAdjustCfaOffset(nullptr, -InternalAmt));
 
@@ -2536,11 +2542,14 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
       // offset to be correct at each call site, while for debugging we want
       // it to be more precise.
       int CFAOffset = Amount;
-      if (!MMI.usePreciseUnwindInfo())
-        CFAOffset += InternalAmt;
-      CFAOffset = isDestroy ? -CFAOffset : CFAOffset;
-      BuildCFI(MBB, I, DL, 
-               MCCFIInstruction::createAdjustCfaOffset(nullptr, CFAOffset));
+      // TODO: When not using precise CFA, we also need to adjust for the
+      // InternalAmt here.
+
+      if (CFAOffset) {
+        CFAOffset = isDestroy ? -CFAOffset : CFAOffset;
+        BuildCFI(MBB, I, DL, 
+                 MCCFIInstruction::createAdjustCfaOffset(nullptr, CFAOffset));
+      }
     }
 
     return;
@@ -2574,10 +2583,23 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
     return true;
 
   // If we cannot use LEA to adjust SP, we may need to use ADD, which
-  // clobbers the EFLAGS. Check that none of the terminators reads the
-  // EFLAGS, and if one uses it, conservatively assume this is not
+  // clobbers the EFLAGS. Check that we do not need to preserve it,
+  // otherwise, conservatively assume this is not
   // safe to insert the epilogue here.
-  return !terminatorsNeedFlagsAsInput(MBB);
+  return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
+}
+
+bool X86FrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+  // If we may need to emit frameless compact unwind information, give
+  // up as this is currently broken: PR25614.
+  return (MF.getFunction()->hasFnAttribute(Attribute::NoUnwind) || hasFP(MF)) &&
+         // The lowering of segmented stack and HiPE only support entry blocks
+         // as prologue blocks: PR26107.
+         // This limitation may be lifted if we fix:
+         // - adjustForSegmentedStacks
+         // - adjustForHiPEPrologue
+         MF.getFunction()->getCallingConv() != CallingConv::HiPE &&
+         !MF.shouldSplitStack();
 }
 
 MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(

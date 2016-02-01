@@ -76,6 +76,8 @@ std::string llvm::getEnumName(MVT::SimpleValueType T) {
   case MVT::v16i1:    return "MVT::v16i1";
   case MVT::v32i1:    return "MVT::v32i1";
   case MVT::v64i1:    return "MVT::v64i1";
+  case MVT::v512i1:   return "MVT::v512i1";
+  case MVT::v1024i1:  return "MVT::v1024i1";
   case MVT::v1i8:     return "MVT::v1i8";
   case MVT::v2i8:     return "MVT::v2i8";
   case MVT::v4i8:     return "MVT::v4i8";
@@ -83,22 +85,29 @@ std::string llvm::getEnumName(MVT::SimpleValueType T) {
   case MVT::v16i8:    return "MVT::v16i8";
   case MVT::v32i8:    return "MVT::v32i8";
   case MVT::v64i8:    return "MVT::v64i8";
+  case MVT::v128i8:   return "MVT::v128i8";
+  case MVT::v256i8:   return "MVT::v256i8";
   case MVT::v1i16:    return "MVT::v1i16";
   case MVT::v2i16:    return "MVT::v2i16";
   case MVT::v4i16:    return "MVT::v4i16";
   case MVT::v8i16:    return "MVT::v8i16";
   case MVT::v16i16:   return "MVT::v16i16";
   case MVT::v32i16:   return "MVT::v32i16";
+  case MVT::v64i16:   return "MVT::v64i16";
+  case MVT::v128i16:  return "MVT::v128i16";
   case MVT::v1i32:    return "MVT::v1i32";
   case MVT::v2i32:    return "MVT::v2i32";
   case MVT::v4i32:    return "MVT::v4i32";
   case MVT::v8i32:    return "MVT::v8i32";
   case MVT::v16i32:   return "MVT::v16i32";
+  case MVT::v32i32:   return "MVT::v32i32";
+  case MVT::v64i32:   return "MVT::v64i32";
   case MVT::v1i64:    return "MVT::v1i64";
   case MVT::v2i64:    return "MVT::v2i64";
   case MVT::v4i64:    return "MVT::v4i64";
   case MVT::v8i64:    return "MVT::v8i64";
   case MVT::v16i64:   return "MVT::v16i64";
+  case MVT::v32i64:   return "MVT::v32i64";
   case MVT::v1i128:   return "MVT::v1i128";
   case MVT::v2f16:    return "MVT::v2f16";
   case MVT::v4f16:    return "MVT::v4f16";
@@ -153,7 +162,7 @@ const std::string &CodeGenTarget::getName() const {
 }
 
 std::string CodeGenTarget::getInstNamespace() const {
-  for (const CodeGenInstruction *Inst : instructions()) {
+  for (const CodeGenInstruction *Inst : getInstructionsByEnumValue()) {
     // Make sure not to pick up "TargetOpcode" by accidentally getting
     // the namespace off the PHI instruction or something.
     if (Inst->Namespace != "TargetOpcode")
@@ -253,7 +262,7 @@ void CodeGenTarget::ReadLegalValueTypes() const {
     LegalValueTypes.insert(LegalValueTypes.end(), RC.VTs.begin(), RC.VTs.end());
 
   // Remove duplicates.
-  std::sort(LegalValueTypes.begin(), LegalValueTypes.end());
+  array_pod_sort(LegalValueTypes.begin(), LegalValueTypes.end());
   LegalValueTypes.erase(std::unique(LegalValueTypes.begin(),
                                     LegalValueTypes.end()),
                         LegalValueTypes.end());
@@ -292,6 +301,9 @@ GetInstByName(const char *Name,
 /// their enum value.
 void CodeGenTarget::ComputeInstrsByEnum() const {
   // The ordering here must match the ordering in TargetOpcodes.h.
+  // FIXME: It would be nice to have the opcode directly extracted
+  // to avoid potential errors. At the very, least a compile time
+  // error would be appreciated if the order does not match.
   static const char *const FixedInstrs[] = {
       "PHI",          "INLINEASM",     "CFI_INSTRUCTION",  "EH_LABEL",
       "GC_LABEL",     "KILL",          "EXTRACT_SUBREG",   "INSERT_SUBREG",
@@ -299,6 +311,8 @@ void CodeGenTarget::ComputeInstrsByEnum() const {
       "REG_SEQUENCE", "COPY",          "BUNDLE",           "LIFETIME_START",
       "LIFETIME_END", "STACKMAP",      "PATCHPOINT",       "LOAD_STACK_GUARD",
       "STATEPOINT",   "LOCAL_ESCAPE",   "FAULTING_LOAD_OP",
+      // Generic opcodes for GlobalISel start here.
+      "G_ADD",
       nullptr};
   const auto &Insts = getInstructions();
   for (const char *const *p = FixedInstrs; *p; ++p) {
@@ -433,6 +447,10 @@ std::vector<CodeGenIntrinsic> llvm::LoadIntrinsics(const RecordKeeper &RC,
     if (isTarget == TargetOnly)
       Result.push_back(CodeGenIntrinsic(I[i]));
   }
+  std::sort(Result.begin(), Result.end(),
+            [](CodeGenIntrinsic LHS, CodeGenIntrinsic RHS) {
+              return LHS.Name < RHS.Name;
+            });
   return Result;
 }
 

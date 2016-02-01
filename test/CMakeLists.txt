@@ -39,6 +39,7 @@ set(LLVM_TEST_DEPENDS
           llvm-dis
           llvm-dsymutil
           llvm-dwarfdump
+          llvm-dwp
           llvm-extract
           llvm-lib
           llvm-link
@@ -60,6 +61,7 @@ set(LLVM_TEST_DEPENDS
           obj2yaml
           opt
           sancov
+          sanstats
           verify-uselistorder
           yaml-bench
           yaml2obj

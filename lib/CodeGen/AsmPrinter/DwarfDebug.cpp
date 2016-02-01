@@ -77,17 +77,6 @@ static cl::opt<bool> GenerateARangeSection("generate-arange-section",
                                            cl::desc("Generate dwarf aranges"),
                                            cl::init(false));
 
-static cl::opt<DebuggerKind>
-DebuggerTuningOpt("debugger-tune",
-                  cl::desc("Tune debug info for a particular debugger"),
-                  cl::init(DebuggerKind::Default),
-                  cl::values(
-                      clEnumValN(DebuggerKind::GDB, "gdb", "gdb"),
-                      clEnumValN(DebuggerKind::LLDB, "lldb", "lldb"),
-                      clEnumValN(DebuggerKind::SCE, "sce",
-                                 "SCE targets (e.g. PS4)"),
-                      clEnumValEnd));
-
 namespace {
 enum DefaultOnOff { Default, Enable, Disable };
 }
@@ -228,11 +217,11 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   CurMI = nullptr;
   Triple TT(Asm->getTargetTriple());
 
-  // Make sure we know our "debugger tuning."  The command-line option takes
+  // Make sure we know our "debugger tuning."  The target option takes
   // precedence; fall back to triple-based defaults.
-  if (DebuggerTuningOpt != DebuggerKind::Default)
-    DebuggerTuning = DebuggerTuningOpt;
-  else if (IsDarwin || TT.isOSFreeBSD())
+  if (Asm->TM.Options.DebuggerTuning != DebuggerKind::Default)
+    DebuggerTuning = Asm->TM.Options.DebuggerTuning;
+  else if (IsDarwin)
     DebuggerTuning = DebuggerKind::LLDB;
   else if (TT.isPS4CPU())
     DebuggerTuning = DebuggerKind::SCE;
@@ -624,6 +613,13 @@ void DwarfDebug::finalizeModuleInfo() {
         U.setBaseAddress(TheCU.getRanges().front().getStart());
       U.attachRangesOrLowHighPC(U.getUnitDie(), TheCU.takeRanges());
     }
+
+    auto *CUNode = cast<DICompileUnit>(P.first);
+    // If compile Unit has macros, emit "DW_AT_macro_info" attribute.
+    if (CUNode->getMacros())
+      U.addSectionLabel(U.getUnitDie(), dwarf::DW_AT_macro_info,
+                        U.getMacroLabelBegin(),
+                        TLOF.getDwarfMacinfoSection()->getBeginSymbol());
   }
 
   // Compute DIE offsets and sizes.
@@ -666,6 +662,9 @@ void DwarfDebug::endModule() {
 
   // Emit info into a debug ranges section.
   emitDebugRanges();
+
+  // Emit info into a debug macinfo section.
+  emitDebugMacinfo();
 
   if (useSplitDwarf()) {
     emitDebugStrDWO();
@@ -800,6 +799,24 @@ static bool piecesOverlap(const DIExpression *P1, const DIExpression *P2) {
   unsigned r2 = l2 + P2->getBitPieceSize();
   // True where [l1,r1[ and [r1,r2[ overlap.
   return (l1 < r2) && (l2 < r1);
+}
+
+/// \brief If this and Next are describing different pieces of the same
+/// variable, merge them by appending Next's values to the current
+/// list of values.
+/// Return true if the merge was successful.
+bool DebugLocEntry::MergeValues(const DebugLocEntry &Next) {
+  if (Begin == Next.Begin) {
+    auto *Expr = cast_or_null<DIExpression>(Values[0].Expression);
+    auto *NextExpr = cast_or_null<DIExpression>(Next.Values[0].Expression);
+    if (Expr->isBitPiece() && NextExpr->isBitPiece() &&
+        !piecesOverlap(Expr, NextExpr)) {
+      addValues(Next.Values);
+      End = Next.End;
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Build the location list for all DBG_VALUEs in the function that
@@ -1485,7 +1502,7 @@ void DwarfDebug::emitDebugPubTypes(bool GnuStyle) {
                       &DwarfCompileUnit::getGlobalTypes);
 }
 
-// Emit visible names into a debug str section.
+/// Emit null-terminated strings into a debug str section.
 void DwarfDebug::emitDebugStr() {
   DwarfFile &Holder = useSplitDwarf() ? SkeletonHolder : InfoHolder;
   Holder.emitStrings(Asm->getObjFileLowering().getDwarfStrSection());
@@ -1802,7 +1819,7 @@ void DwarfDebug::emitDebugARanges() {
   }
 }
 
-// Emit visible names into a debug ranges section.
+/// Emit address ranges into a debug ranges section.
 void DwarfDebug::emitDebugRanges() {
   // Start the dwarf ranges section.
   Asm->OutStreamer->SwitchSection(
@@ -1842,6 +1859,61 @@ void DwarfDebug::emitDebugRanges() {
       Asm->OutStreamer->EmitIntValue(0, Size);
     }
   }
+}
+
+void DwarfDebug::handleMacroNodes(DIMacroNodeArray Nodes, DwarfCompileUnit &U) {
+  for (auto *MN : Nodes) {
+    if (auto *M = dyn_cast<DIMacro>(MN))
+      emitMacro(*M);
+    else if (auto *F = dyn_cast<DIMacroFile>(MN))
+      emitMacroFile(*F, U);
+    else
+      llvm_unreachable("Unexpected DI type!");
+  }
+}
+
+void DwarfDebug::emitMacro(DIMacro &M) {
+  Asm->EmitULEB128(M.getMacinfoType());
+  Asm->EmitULEB128(M.getLine());
+  StringRef Name = M.getName();
+  StringRef Value = M.getValue();
+  Asm->OutStreamer->EmitBytes(Name);
+  if (!Value.empty()) {
+    // There should be one space between macro name and macro value.
+    Asm->EmitInt8(' ');
+    Asm->OutStreamer->EmitBytes(Value);
+  }
+  Asm->EmitInt8('\0');
+}
+
+void DwarfDebug::emitMacroFile(DIMacroFile &F, DwarfCompileUnit &U) {
+  assert(F.getMacinfoType() == dwarf::DW_MACINFO_start_file);
+  Asm->EmitULEB128(dwarf::DW_MACINFO_start_file);
+  Asm->EmitULEB128(F.getLine());
+  DIFile *File = F.getFile();
+  unsigned FID =
+      U.getOrCreateSourceID(File->getFilename(), File->getDirectory());
+  Asm->EmitULEB128(FID);
+  handleMacroNodes(F.getElements(), U);
+  Asm->EmitULEB128(dwarf::DW_MACINFO_end_file);
+}
+
+/// Emit macros into a debug macinfo section.
+void DwarfDebug::emitDebugMacinfo() {
+  // Start the dwarf macinfo section.
+  Asm->OutStreamer->SwitchSection(
+      Asm->getObjFileLowering().getDwarfMacinfoSection());
+
+  for (const auto &P : CUMap) {
+    auto &TheCU = *P.second;
+    auto *SkCU = TheCU.getSkeleton();
+    DwarfCompileUnit &U = SkCU ? *SkCU : TheCU;
+    auto *CUNode = cast<DICompileUnit>(P.first);
+    Asm->OutStreamer->EmitLabel(U.getMacroLabelBegin());
+    handleMacroNodes(CUNode->getMacros(), U);
+  }
+  Asm->OutStreamer->AddComment("End Of Macro List Mark");
+  Asm->EmitInt8(0);
 }
 
 // DWARF5 Experimental Separate Dwarf emitters.

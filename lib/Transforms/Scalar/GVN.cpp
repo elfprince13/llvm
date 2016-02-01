@@ -129,6 +129,7 @@ namespace {
     uint32_t lookup(Value *V) const;
     uint32_t lookup_or_add_cmp(unsigned Opcode, CmpInst::Predicate Pred,
                                Value *LHS, Value *RHS);
+    bool exists(Value *V) const;
     void add(Value *V, uint32_t num);
     void clear();
     void erase(Value *v);
@@ -389,6 +390,9 @@ uint32_t ValueTable::lookup_or_add_call(CallInst *C) {
   }
 }
 
+/// Returns true if a value number exists for the specified value.
+bool ValueTable::exists(Value *V) const { return valueNumbering.count(V) != 0; }
+
 /// lookup_or_add - Returns the value number for the specified value, assigning
 /// it a new number if it did not have one before.
 uint32_t ValueTable::lookup_or_add(Value *V) {
@@ -508,9 +512,11 @@ void ValueTable::verifyRemoved(const Value *V) const {
 
 namespace {
   class GVN;
-  struct AvailableValueInBlock {
-    /// BB - The basic block in question.
-    BasicBlock *BB;
+  /// Represents a particular available value that we know how to materialize.
+  /// Materialization of an AvailableValue never fails.  An AvailableValue is
+  /// implicitly associated with a rematerialization point which is the
+  /// location of the instruction from which it was formed. 
+  struct AvailableValue {
     enum ValType {
       SimpleVal,  // A simple offsetted value that is accessed.
       LoadVal,    // A value produced by a load.
@@ -525,39 +531,35 @@ namespace {
     /// Offset - The byte offset in Val that is interesting for the load query.
     unsigned Offset;
   
-    static AvailableValueInBlock get(BasicBlock *BB, Value *V,
-                                     unsigned Offset = 0) {
-      AvailableValueInBlock Res;
-      Res.BB = BB;
+    static AvailableValue get(Value *V,
+                              unsigned Offset = 0) {
+      AvailableValue Res;
       Res.Val.setPointer(V);
       Res.Val.setInt(SimpleVal);
       Res.Offset = Offset;
       return Res;
     }
   
-    static AvailableValueInBlock getMI(BasicBlock *BB, MemIntrinsic *MI,
-                                       unsigned Offset = 0) {
-      AvailableValueInBlock Res;
-      Res.BB = BB;
+    static AvailableValue getMI(MemIntrinsic *MI,
+                                unsigned Offset = 0) {
+      AvailableValue Res;
       Res.Val.setPointer(MI);
       Res.Val.setInt(MemIntrin);
       Res.Offset = Offset;
       return Res;
     }
   
-    static AvailableValueInBlock getLoad(BasicBlock *BB, LoadInst *LI,
-                                         unsigned Offset = 0) {
-      AvailableValueInBlock Res;
-      Res.BB = BB;
+    static AvailableValue getLoad(LoadInst *LI,
+                                  unsigned Offset = 0) {
+      AvailableValue Res;
       Res.Val.setPointer(LI);
       Res.Val.setInt(LoadVal);
       Res.Offset = Offset;
       return Res;
     }
 
-    static AvailableValueInBlock getUndef(BasicBlock *BB) {
-      AvailableValueInBlock Res;
-      Res.BB = BB;
+    static AvailableValue getUndef() {
+      AvailableValue Res;
       Res.Val.setPointer(nullptr);
       Res.Val.setInt(UndefVal);
       Res.Offset = 0;
@@ -583,10 +585,50 @@ namespace {
       assert(isMemIntrinValue() && "Wrong accessor");
       return cast<MemIntrinsic>(Val.getPointer());
     }
+
+    /// Emit code at the specified insertion point to adjust the value defined
+    /// here to the specified type. This handles various coercion cases.
+    Value *MaterializeAdjustedValue(LoadInst *LI, Instruction *InsertPt,
+                                    GVN &gvn) const;
+  };
+
+  /// Represents an AvailableValue which can be rematerialized at the end of
+  /// the associated BasicBlock.
+  struct AvailableValueInBlock {
+    /// BB - The basic block in question.
+    BasicBlock *BB;
+
+    /// AV - The actual available value
+    AvailableValue AV;
+
+    static AvailableValueInBlock get(BasicBlock *BB, AvailableValue &&AV) {
+      AvailableValueInBlock Res;
+      Res.BB = BB;
+      Res.AV = std::move(AV);
+      return Res;
+    }
+
+    static AvailableValueInBlock get(BasicBlock *BB, Value *V,
+                                     unsigned Offset = 0) {
+      return get(BB, AvailableValue::get(V, Offset));
+    }
+    static AvailableValueInBlock getMI(BasicBlock *BB, MemIntrinsic *MI,
+                                       unsigned Offset = 0) {
+      return get(BB, AvailableValue::getMI(MI, Offset));
+    }
+    static AvailableValueInBlock getLoad(BasicBlock *BB, LoadInst *LI,
+                                         unsigned Offset = 0) {
+      return get(BB, AvailableValue::getLoad(LI, Offset));
+    }
+    static AvailableValueInBlock getUndef(BasicBlock *BB) {
+      return get(BB, AvailableValue::getUndef());
+    }
   
-    /// Emit code into this block to adjust the value defined here to the
-    /// specified type. This handles various coercion cases.
-    Value *MaterializeAdjustedValue(LoadInst *LI, GVN &gvn) const;
+    /// Emit code at the end of this block to adjust the value defined here to
+    /// the specified type. This handles various coercion cases.
+    Value *MaterializeAdjustedValue(LoadInst *LI, GVN &gvn) const {
+      return AV.MaterializeAdjustedValue(LI, BB->getTerminator(), gvn);
+    }
   };
 
   class GVN : public FunctionPass {
@@ -701,7 +743,7 @@ namespace {
     }
 
 
-    // Helper functions of redundant load elimination 
+    // Helper functions of redundant load elimination
     bool processLoad(LoadInst *L);
     bool processNonLocalLoad(LoadInst *L);
     bool processAssumeIntrinsic(IntrinsicInst *II);
@@ -1067,6 +1109,11 @@ static int AnalyzeLoadFromClobberingLoad(Type *LoadTy, Value *LoadPtr,
       LoadBase, LoadOffs, LoadSize, DepLI);
   if (Size == 0) return -1;
 
+  // Check non-obvious conditions enforced by MDA which we rely on for being
+  // able to materialize this potentially available value
+  assert(DepLI->isSimple() && "Cannot widen volatile/atomic load!");
+  assert(DepLI->getType()->isIntegerTy() && "Can't widen non-integer load");
+
   return AnalyzeLoadFromClobberingWrite(LoadTy, LoadPtr, DepPtr, Size*8, DL);
 }
 
@@ -1113,7 +1160,7 @@ static int AnalyzeLoadFromClobberingMemInst(Type *LoadTy, Value *LoadPtr,
   Src = ConstantExpr::getGetElementPtr(Type::getInt8Ty(Src->getContext()), Src,
                                        OffsetCst);
   Src = ConstantExpr::getBitCast(Src, PointerType::get(LoadTy, AS));
-  if (ConstantFoldLoadFromConstPtr(Src, DL))
+  if (ConstantFoldLoadFromConstPtr(Src, LoadTy, DL))
     return Offset;
   return -1;
 }
@@ -1275,7 +1322,7 @@ static Value *GetMemInstValueForLoad(MemIntrinsic *SrcInst, unsigned Offset,
   Src = ConstantExpr::getGetElementPtr(Type::getInt8Ty(Src->getContext()), Src,
                                        OffsetCst);
   Src = ConstantExpr::getBitCast(Src, PointerType::get(LoadTy, AS));
-  return ConstantFoldLoadFromConstPtr(Src, DL);
+  return ConstantFoldLoadFromConstPtr(Src, LoadTy, DL);
 }
 
 
@@ -1290,7 +1337,8 @@ static Value *ConstructSSAForLoadSet(LoadInst *LI,
   if (ValuesPerBlock.size() == 1 &&
       gvn.getDominatorTree().properlyDominates(ValuesPerBlock[0].BB,
                                                LI->getParent())) {
-    assert(!ValuesPerBlock[0].isUndefValue() && "Dead BB dominate this block");
+    assert(!ValuesPerBlock[0].AV.isUndefValue() &&
+           "Dead BB dominate this block");
     return ValuesPerBlock[0].MaterializeAdjustedValue(LI, gvn);
   }
 
@@ -1299,8 +1347,7 @@ static Value *ConstructSSAForLoadSet(LoadInst *LI,
   SSAUpdater SSAUpdate(&NewPHIs);
   SSAUpdate.Initialize(LI->getType(), LI->getName());
 
-  for (unsigned i = 0, e = ValuesPerBlock.size(); i != e; ++i) {
-    const AvailableValueInBlock &AV = ValuesPerBlock[i];
+  for (const AvailableValueInBlock &AV : ValuesPerBlock) {
     BasicBlock *BB = AV.BB;
 
     if (SSAUpdate.HasValueForBlock(BB))
@@ -1313,15 +1360,16 @@ static Value *ConstructSSAForLoadSet(LoadInst *LI,
   return SSAUpdate.GetValueInMiddleOfBlock(LI->getParent());
 }
 
-Value *AvailableValueInBlock::MaterializeAdjustedValue(LoadInst *LI,
-                                                       GVN &gvn) const {
+Value *AvailableValue::MaterializeAdjustedValue(LoadInst *LI,
+                                                Instruction *InsertPt,
+                                                GVN &gvn) const {
   Value *Res;
   Type *LoadTy = LI->getType();
   const DataLayout &DL = LI->getModule()->getDataLayout();
   if (isSimpleValue()) {
     Res = getSimpleValue();
     if (Res->getType() != LoadTy) {
-      Res = GetStoreValueForLoad(Res, Offset, LoadTy, BB->getTerminator(), DL);
+      Res = GetStoreValueForLoad(Res, Offset, LoadTy, InsertPt, DL);
 
       DEBUG(dbgs() << "GVN COERCED NONLOCAL VAL:\nOffset: " << Offset << "  "
                    << *getSimpleValue() << '\n'
@@ -1332,16 +1380,15 @@ Value *AvailableValueInBlock::MaterializeAdjustedValue(LoadInst *LI,
     if (Load->getType() == LoadTy && Offset == 0) {
       Res = Load;
     } else {
-      Res = GetLoadValueForLoad(Load, Offset, LoadTy, BB->getTerminator(),
-                                gvn);
-  
+      Res = GetLoadValueForLoad(Load, Offset, LoadTy, InsertPt, gvn);
+      
       DEBUG(dbgs() << "GVN COERCED NONLOCAL LOAD:\nOffset: " << Offset << "  "
                    << *getCoercedLoadValue() << '\n'
                    << *Res << '\n' << "\n\n\n");
     }
   } else if (isMemIntrinValue()) {
     Res = GetMemInstValueForLoad(getMemIntrinValue(), Offset, LoadTy,
-                                 BB->getTerminator(), DL);
+                                 InsertPt, DL);
     DEBUG(dbgs() << "GVN COERCED NONLOCAL MEM INTRIN:\nOffset: " << Offset
                  << "  " << *getMemIntrinValue() << '\n'
                  << *Res << '\n' << "\n\n\n");
@@ -1350,6 +1397,7 @@ Value *AvailableValueInBlock::MaterializeAdjustedValue(LoadInst *LI,
     DEBUG(dbgs() << "GVN COERCED NONLOCAL Undef:\n";);
     return UndefValue::get(LoadTy);
   }
+  assert(Res && "failed to materialize?");
   return Res;
 }
 
@@ -1510,9 +1558,8 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
   // that we only have to insert *one* load (which means we're basically moving
   // the load, not inserting a new one).
 
-  SmallPtrSet<BasicBlock *, 4> Blockers;
-  for (unsigned i = 0, e = UnavailableBlocks.size(); i != e; ++i)
-    Blockers.insert(UnavailableBlocks[i]);
+  SmallPtrSet<BasicBlock *, 4> Blockers(UnavailableBlocks.begin(),
+                                        UnavailableBlocks.end());
 
   // Let's find the first basic block with more than one predecessor.  Walk
   // backwards through predecessors if needed.
@@ -1542,15 +1589,22 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
   // available.
   MapVector<BasicBlock *, Value *> PredLoads;
   DenseMap<BasicBlock*, char> FullyAvailableBlocks;
-  for (unsigned i = 0, e = ValuesPerBlock.size(); i != e; ++i)
-    FullyAvailableBlocks[ValuesPerBlock[i].BB] = true;
-  for (unsigned i = 0, e = UnavailableBlocks.size(); i != e; ++i)
-    FullyAvailableBlocks[UnavailableBlocks[i]] = false;
+  for (const AvailableValueInBlock &AV : ValuesPerBlock)
+    FullyAvailableBlocks[AV.BB] = true;
+  for (BasicBlock *UnavailableBB : UnavailableBlocks)
+    FullyAvailableBlocks[UnavailableBB] = false;
 
   SmallVector<BasicBlock *, 4> CriticalEdgePred;
-  for (pred_iterator PI = pred_begin(LoadBB), E = pred_end(LoadBB);
-       PI != E; ++PI) {
-    BasicBlock *Pred = *PI;
+  for (BasicBlock *Pred : predecessors(LoadBB)) {
+    // If any predecessor block is an EH pad that does not allow non-PHI
+    // instructions before the terminator, we can't PRE the load.
+    if (Pred->getTerminator()->isEHPad()) {
+      DEBUG(dbgs()
+            << "COULD NOT PRE LOAD BECAUSE OF AN EH PAD PREDECESSOR '"
+            << Pred->getName() << "': " << *LI << '\n');
+      return false;
+    }
+
     if (IsValueFullyAvailableInBlock(Pred, FullyAvailableBlocks, 0)) {
       continue;
     }
@@ -1647,12 +1701,12 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
                  << *NewInsts.back() << '\n');
 
   // Assign value numbers to the new instructions.
-  for (unsigned i = 0, e = NewInsts.size(); i != e; ++i) {
+  for (Instruction *I : NewInsts) {
     // FIXME: We really _ought_ to insert these value numbers into their
     // parent's availability map.  However, in doing so, we risk getting into
     // ordering issues.  If a block hasn't been processed yet, we would be
     // marking a value as AVAIL-IN, which isn't what we intend.
-    VN.lookup_or_add(NewInsts[i]);
+    VN.lookup_or_add(I);
   }
 
   for (const auto &PredLoad : PredLoads) {
@@ -1701,6 +1755,10 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
 /// Attempt to eliminate a load whose dependencies are
 /// non-local by performing PHI construction.
 bool GVN::processNonLocalLoad(LoadInst *LI) {
+  // non-local speculations are not allowed under asan.
+  if (LI->getParent()->getParent()->hasFnAttribute(Attribute::SanitizeAddress))
+    return false;
+
   // Step 1: Find the non-local dependencies of the load.
   LoadDepVect Deps;
   MD->getNonLocalPointerDependency(LI, Deps);
@@ -1882,6 +1940,23 @@ bool GVN::processLoad(LoadInst *L) {
   MemDepResult Dep = MD->getDependency(L);
   const DataLayout &DL = L->getModule()->getDataLayout();
 
+  // If it is defined in another block, try harder.
+  if (Dep.isNonLocal())
+    return processNonLocalLoad(L);
+
+  // Only handle the local case below
+  if (!Dep.isDef() && !Dep.isClobber()) {
+    // This might be a NonFuncLocal or an Unknown
+    DEBUG(
+      // fast print dep, using operator<< on instruction is too slow.
+      dbgs() << "GVN: load ";
+      L->printAsOperand(dbgs());
+      dbgs() << " has unknown dependence\n";
+    );
+    return false;
+  }
+
+
   // If we have a clobber and target data is around, see if this is a clobber
   // that we can fix up through code synthesis.
   if (Dep.isClobber()) {
@@ -1953,21 +2028,10 @@ bool GVN::processLoad(LoadInst *L) {
     return false;
   }
 
-  // If it is defined in another block, try harder.
-  if (Dep.isNonLocal())
-    return processNonLocalLoad(L);
-
-  if (!Dep.isDef()) {
-    DEBUG(
-      // fast print dep, using operator<< on instruction is too slow.
-      dbgs() << "GVN: load ";
-      L->printAsOperand(dbgs());
-      dbgs() << " has unknown dependence\n";
-    );
-    return false;
-  }
+  assert(Dep.isDef() && "expected from control flow");
 
   Instruction *DepInst = Dep.getInst();
+  Value *AvailableValue = nullptr;
   if (StoreInst *DepSI = dyn_cast<StoreInst>(DepInst)) {
     Value *StoredVal = DepSI->getValueOperand();
 
@@ -1985,68 +2049,48 @@ bool GVN::processLoad(LoadInst *L) {
                    << '\n' << *L << "\n\n\n");
     }
 
-    // Remove it!
-    L->replaceAllUsesWith(StoredVal);
-    if (StoredVal->getType()->getScalarType()->isPointerTy())
-      MD->invalidateCachedPointerInfo(StoredVal);
-    markInstructionForDeletion(L);
-    ++NumGVNLoad;
-    return true;
+    AvailableValue = StoredVal;
   }
 
   if (LoadInst *DepLI = dyn_cast<LoadInst>(DepInst)) {
-    Value *AvailableVal = DepLI;
-
+    AvailableValue = DepLI;
     // The loads are of a must-aliased pointer, but they may not actually have
     // the same type.  See if we know how to reuse the previously loaded value
     // (depending on its type).
     if (DepLI->getType() != L->getType()) {
       IRBuilder<> Builder(L);
-      AvailableVal =
+      AvailableValue =
           CoerceAvailableValueToLoadType(DepLI, L->getType(), Builder, DL);
-      if (!AvailableVal)
+      if (!AvailableValue)
         return false;
 
-      DEBUG(dbgs() << "GVN COERCED LOAD:\n" << *DepLI << "\n" << *AvailableVal
+      DEBUG(dbgs() << "GVN COERCED LOAD:\n" << *DepLI << "\n" << *AvailableValue
                    << "\n" << *L << "\n\n\n");
     }
-
-    // Remove it!
-    patchAndReplaceAllUsesWith(L, AvailableVal);
-    if (DepLI->getType()->getScalarType()->isPointerTy())
-      MD->invalidateCachedPointerInfo(DepLI);
-    markInstructionForDeletion(L);
-    ++NumGVNLoad;
-    return true;
   }
 
   // If this load really doesn't depend on anything, then we must be loading an
   // undef value.  This can happen when loading for a fresh allocation with no
   // intervening stores, for example.
-  if (isa<AllocaInst>(DepInst) || isMallocLikeFn(DepInst, TLI)) {
-    L->replaceAllUsesWith(UndefValue::get(L->getType()));
-    markInstructionForDeletion(L);
-    ++NumGVNLoad;
-    return true;
-  }
-
-  // If this load occurs either right after a lifetime begin,
-  // then the loaded value is undefined.
-  if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(DepInst)) {
-    if (II->getIntrinsicID() == Intrinsic::lifetime_start) {
-      L->replaceAllUsesWith(UndefValue::get(L->getType()));
-      markInstructionForDeletion(L);
-      ++NumGVNLoad;
-      return true;
-    }
-  }
+  if (isa<AllocaInst>(DepInst) || isMallocLikeFn(DepInst, TLI) ||
+      isLifetimeStart(DepInst)) 
+    AvailableValue = UndefValue::get(L->getType());
 
   // If this load follows a calloc (which zero initializes memory),
   // then the loaded value is zero
-  if (isCallocLikeFn(DepInst, TLI)) {
-    L->replaceAllUsesWith(Constant::getNullValue(L->getType()));
+  if (isCallocLikeFn(DepInst, TLI))
+    AvailableValue = Constant::getNullValue(L->getType());
+
+  if (AvailableValue) {
+    // Do the actual replacement
+    patchAndReplaceAllUsesWith(L, AvailableValue);
     markInstructionForDeletion(L);
     ++NumGVNLoad;
+    // Tell MDA to rexamine the reused pointer since we might have more
+    // information after forwarding it.
+    if (MD && AvailableValue->getType()->getScalarType()->isPointerTy())
+      MD->invalidateCachedPointerInfo(AvailableValue);
+
     return true;
   }
 
@@ -2120,7 +2164,8 @@ bool GVN::replaceOperandsWithConsts(Instruction *Instr) const {
 /// The given values are known to be equal in every block
 /// dominated by 'Root'.  Exploit this, for example by replacing 'LHS' with
 /// 'RHS' everywhere in the scope.  Returns whether a change was made.
-/// If DominatesByEdge is false, then it means that it is dominated by Root.End.
+/// If DominatesByEdge is false, then it means that we will propagate the RHS
+/// value starting from the end of Root.Start.
 bool GVN::propagateEquality(Value *LHS, Value *RHS, const BasicBlockEdge &Root,
                             bool DominatesByEdge) {
   SmallVector<std::pair<Value*, Value*>, 4> Worklist;
@@ -2182,7 +2227,7 @@ bool GVN::propagateEquality(Value *LHS, Value *RHS, const BasicBlockEdge &Root,
       unsigned NumReplacements =
           DominatesByEdge
               ? replaceDominatedUsesWith(LHS, RHS, *DT, Root)
-              : replaceDominatedUsesWith(LHS, RHS, *DT, Root.getEnd());
+              : replaceDominatedUsesWith(LHS, RHS, *DT, Root.getStart());
 
       Changed |= NumReplacements > 0;
       NumGVNEqProp += NumReplacements;
@@ -2258,7 +2303,7 @@ bool GVN::propagateEquality(Value *LHS, Value *RHS, const BasicBlockEdge &Root,
               DominatesByEdge
                   ? replaceDominatedUsesWith(NotCmp, NotVal, *DT, Root)
                   : replaceDominatedUsesWith(NotCmp, NotVal, *DT,
-                                             Root.getEnd());
+                                             Root.getStart());
           Changed |= NumReplacements > 0;
           NumGVNEqProp += NumReplacements;
         }
@@ -2530,7 +2575,14 @@ bool GVN::performScalarPREInsertion(Instruction *Instr, BasicBlock *Pred,
     Value *Op = Instr->getOperand(i);
     if (isa<Argument>(Op) || isa<Constant>(Op) || isa<GlobalValue>(Op))
       continue;
-
+    // This could be a newly inserted instruction, in which case, we won't
+    // find a value number, and should give up before we hurt ourselves.
+    // FIXME: Rewrite the infrastructure to let it easier to value number
+    // and process newly inserted instructions.
+    if (!VN.exists(Op)) {
+      success = false;
+      break;
+    }
     if (Value *V = findLeader(Pred, VN.lookup(Op))) {
       Instr->setOperand(i, V);
     } else {
@@ -2590,9 +2642,7 @@ bool GVN::performScalarPRE(Instruction *CurInst) {
   BasicBlock *CurrentBlock = CurInst->getParent();
   predMap.clear();
 
-  for (pred_iterator PI = pred_begin(CurrentBlock), PE = pred_end(CurrentBlock);
-       PI != PE; ++PI) {
-    BasicBlock *P = *PI;
+  for (BasicBlock *P : predecessors(CurrentBlock)) {
     // We're not interested in PRE where the block is its
     // own predecessor, or in blocks with predecessors
     // that are not reachable.
@@ -2705,7 +2755,7 @@ bool GVN::performPRE(Function &F) {
                               BE = CurrentBlock->end();
          BI != BE;) {
       Instruction *CurInst = &*BI++;
-      Changed = performScalarPRE(CurInst);
+      Changed |= performScalarPRE(CurInst);
     }
   }
 
@@ -2809,17 +2859,14 @@ void GVN::addDeadBlock(BasicBlock *BB) {
     DeadBlocks.insert(Dom.begin(), Dom.end());
     
     // Figure out the dominance-frontier(D).
-    for (SmallVectorImpl<BasicBlock *>::iterator I = Dom.begin(),
-           E = Dom.end(); I != E; I++) {
-      BasicBlock *B = *I;
-      for (succ_iterator SI = succ_begin(B), SE = succ_end(B); SI != SE; SI++) {
-        BasicBlock *S = *SI;
+    for (BasicBlock *B : Dom) {
+      for (BasicBlock *S : successors(B)) {
         if (DeadBlocks.count(S))
           continue;
 
         bool AllPredDead = true;
-        for (pred_iterator PI = pred_begin(S), PE = pred_end(S); PI != PE; PI++)
-          if (!DeadBlocks.count(*PI)) {
+        for (BasicBlock *P : predecessors(S))
+          if (!DeadBlocks.count(P)) {
             AllPredDead = false;
             break;
           }
@@ -2847,10 +2894,7 @@ void GVN::addDeadBlock(BasicBlock *BB) {
       continue;
 
     SmallVector<BasicBlock *, 4> Preds(pred_begin(B), pred_end(B));
-    for (SmallVectorImpl<BasicBlock *>::iterator PI = Preds.begin(),
-           PE = Preds.end(); PI != PE; PI++) {
-      BasicBlock *P = *PI;
-
+    for (BasicBlock *P : Preds) {
       if (!DeadBlocks.count(P))
         continue;
 
@@ -2910,14 +2954,10 @@ bool GVN::processFoldableCondBr(BranchInst *BI) {
 // instructions, it makes more sense just to "fabricate" a val-number for the
 // dead code than checking if instruction involved is dead or not.
 void GVN::assignValNumForDeadCode() {
-  for (SetVector<BasicBlock *>::iterator I = DeadBlocks.begin(),
-        E = DeadBlocks.end(); I != E; I++) {
-    BasicBlock *BB = *I;
-    for (BasicBlock::iterator II = BB->begin(), EE = BB->end();
-          II != EE; II++) {
-      Instruction *Inst = &*II;
-      unsigned ValNum = VN.lookup_or_add(Inst);
-      addToLeaderTable(ValNum, Inst, BB);
+  for (BasicBlock *BB : DeadBlocks) {
+    for (Instruction &Inst : *BB) {
+      unsigned ValNum = VN.lookup_or_add(&Inst);
+      addToLeaderTable(ValNum, &Inst, BB);
     }
   }
 }

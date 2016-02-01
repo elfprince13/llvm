@@ -172,6 +172,7 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
       STRINGIFY_CODE(MODULE_CODE, PURGEVALS)
       STRINGIFY_CODE(MODULE_CODE, GCNAME)
       STRINGIFY_CODE(MODULE_CODE, VSTOFFSET)
+      STRINGIFY_CODE(MODULE_CODE, METADATA_VALUES)
     }
   case bitc::IDENTIFICATION_BLOCK_ID:
     switch (CodeID) {
@@ -258,9 +259,6 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
       STRINGIFY_CODE(FUNC_CODE, INST_CLEANUPRET)
       STRINGIFY_CODE(FUNC_CODE, INST_CATCHRET)
       STRINGIFY_CODE(FUNC_CODE, INST_CATCHPAD)
-      STRINGIFY_CODE(FUNC_CODE, INST_CLEANUPENDPAD)
-      STRINGIFY_CODE(FUNC_CODE, INST_CATCHENDPAD)
-      STRINGIFY_CODE(FUNC_CODE, INST_TERMINATEPAD)
       STRINGIFY_CODE(FUNC_CODE, INST_PHI)
       STRINGIFY_CODE(FUNC_CODE, INST_ALLOCA)
       STRINGIFY_CODE(FUNC_CODE, INST_LOAD)
@@ -602,9 +600,28 @@ static bool openBitcodeFile(StringRef Path,
 
   // If we have a wrapper header, parse it and ignore the non-bc file contents.
   // The magic number is 0x0B17C0DE stored in little endian.
-  if (isBitcodeWrapper(BufPtr, EndBufPtr))
+  if (isBitcodeWrapper(BufPtr, EndBufPtr)) {
+    if (EndBufPtr - BufPtr < BWH_HeaderSize)
+      return Error("Invalid bitcode wrapper header");
+
+    if (Dump) {
+      unsigned Magic = support::endian::read32le(&BufPtr[BWH_MagicField]);
+      unsigned Version = support::endian::read32le(&BufPtr[BWH_VersionField]);
+      unsigned Offset = support::endian::read32le(&BufPtr[BWH_OffsetField]);
+      unsigned Size = support::endian::read32le(&BufPtr[BWH_SizeField]);
+      unsigned CPUType = support::endian::read32le(&BufPtr[BWH_CPUTypeField]);
+
+      outs() << "<BITCODE_WRAPPER_HEADER"
+             << " Magic=" << format_hex(Magic, 10)
+             << " Version=" << format_hex(Version, 10)
+             << " Offset=" << format_hex(Offset, 10)
+             << " Size=" << format_hex(Size, 10)
+             << " CPUType=" << format_hex(CPUType, 10) << "/>\n";
+    }
+
     if (SkipBitcodeWrapperHeader(BufPtr, EndBufPtr, true))
       return Error("Invalid bitcode wrapper header");
+  }
 
   StreamFile = BitstreamReader(BufPtr, EndBufPtr);
   Stream = BitstreamCursor(StreamFile);
