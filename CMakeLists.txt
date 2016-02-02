@@ -209,6 +209,7 @@ set(LLVM_ALL_TARGETS
   ARM
   BPF
   CppBackend
+  eZ80
   Hexagon
   Mips
   MSP430

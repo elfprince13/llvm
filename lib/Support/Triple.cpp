@@ -28,6 +28,7 @@ const char *Triple::getArchTypeName(ArchType Kind) {
   case avr:         return "avr";
   case bpfel:       return "bpfel";
   case bpfeb:       return "bpfeb";
+  case ez80:        return "ez80";
   case hexagon:     return "hexagon";
   case mips:        return "mips";
   case mipsel:      return "mipsel";
@@ -129,6 +130,7 @@ const char *Triple::getArchTypePrefix(ArchType Kind) {
   case shave:       return "shave";
   case wasm32:
   case wasm64:      return "wasm";
+  case ez80:        return "ez80";
   }
 }
 
@@ -235,6 +237,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("armeb", armeb)
     .Case("avr", avr)
     .StartsWith("bpf", BPFArch)
+    .Case("ez80",ez80)
     .Case("mips", mips)
     .Case("mipsel", mipsel)
     .Case("mips64", mips64)
@@ -341,7 +344,8 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .Cases("powerpc", "ppc32", Triple::ppc)
     .Cases("powerpc64", "ppu", "ppc64", Triple::ppc64)
     .Cases("powerpc64le", "ppc64le", Triple::ppc64le)
-    .Case("xscale", Triple::arm)
+    .Cases("ez80","ez80190",Triple::ez80)
+    .Case("xscale", Triple::arme)
     .Case("xscaleeb", Triple::armeb)
     .Case("aarch64", Triple::aarch64)
     .Case("aarch64_be", Triple::aarch64_be)
@@ -562,6 +566,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::avr:
   case Triple::bpfeb:
   case Triple::bpfel:
+  case Triple::ez80:
   case Triple::hexagon:
   case Triple::hsail:
   case Triple::hsail64:
@@ -1094,6 +1099,8 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::avr:
   case llvm::Triple::msp430:
     return 16;
+  case llvm::Triple::ez80:
+    return 24;
 
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
@@ -1165,6 +1172,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::msp430:
   case Triple::systemz:
   case Triple::ppc64le:
+  case Triple::ez80:
     T.setArch(UnknownArch);
     break;
 
